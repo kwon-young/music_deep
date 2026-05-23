@@ -121,9 +121,11 @@ class ViT(Module):
         dim_head=64,
         dropout=0.0,
         emb_dropout=0.0,
+        num_keep_patches=None,
     ):
         super().__init__()
         image_height, image_width = pair(image_size)
+        self.num_keep_patches = num_keep_patches
         self.patch_size = patch_height, patch_width = pair(patch_size)
 
         assert (
@@ -138,18 +140,18 @@ class ViT(Module):
         assert pool in {"cls", "mean"}, (
             "pool type must be either cls (cls token) or mean (mean pooling)"
         )
-        num_cls_tokens = 1 if pool == "cls" else 0
+        self.num_cls_tokens = 1 if pool == "cls" else 0
 
-        self.to_patch_embedding = nn.Sequential(
-            PatchRearrange(patch_height, patch_width),
+        self.patch_rearrange = PatchRearrange(patch_height, patch_width)
+        self.patch_embed = nn.Sequential(
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
         )
 
-        self.cls_token = nn.Parameter(torch.randn(num_cls_tokens, dim))
+        self.cls_token = nn.Parameter(torch.randn(self.num_cls_tokens, dim))
         self.pos_embedding = nn.Parameter(
-            torch.randn(num_patches + num_cls_tokens, dim)
+            torch.randn(num_patches + self.num_cls_tokens, dim)
         )
 
         self.dropout = nn.Dropout(emb_dropout)
@@ -165,14 +167,35 @@ class ViT(Module):
 
     def forward(self, img):
         batch = img.shape[0]
-        x = self.to_patch_embedding(img)
+        x = self.patch_rearrange(img)
+        num_patches = x.shape[1]
+
+        if self.num_keep_patches is not None and self.num_keep_patches < num_patches:
+            variances = x.var(dim=-1)
+            _, indices = variances.topk(self.num_keep_patches, dim=-1)
+            indices, _ = indices.sort(dim=-1)
+            x = torch.gather(x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+        else:
+            indices = None
+
+        x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(batch, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
 
-        seq = x.shape[1]
+        if indices is not None:
+            pos = self.pos_embedding.expand(batch, -1, -1)
+            cls_pos = pos[:, :self.num_cls_tokens, :]
+            patch_pos = pos[:, self.num_cls_tokens : self.num_cls_tokens + num_patches, :]
+            
+            patch_pos = torch.gather(patch_pos, 1, indices.unsqueeze(-1).expand(-1, -1, patch_pos.shape[-1]))
+            
+            pos = torch.cat((cls_pos, patch_pos), dim=1)
+            x = x + pos
+        else:
+            seq = x.shape[1]
+            x = x + self.pos_embedding[:seq]
 
-        x = x + self.pos_embedding[:seq]
         x = self.dropout(x)
 
         x = self.transformer(x)
