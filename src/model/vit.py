@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.nn import Module, ModuleList
+from typing import Any
 
 
 def pair(t):
@@ -183,3 +184,57 @@ class ViT(Module):
 
         x = self.to_latent(x)
         return self.mlp_head(x)
+
+
+def vit_nano(
+    image_size: int | tuple[int, int],
+    num_classes: int,
+    patch_size: int | tuple[int, int] = 16,
+    **kwargs: Any,
+) -> ViT:
+    return ViT(
+        image_size=image_size,
+        patch_size=patch_size,
+        num_classes=num_classes,
+        dim=192,
+        depth=12,
+        heads=3,
+        mlp_dim=768,
+        **kwargs,
+    )
+
+
+def vit_small(
+    image_size: int | tuple[int, int],
+    num_classes: int,
+    patch_size: int | tuple[int, int] = 16,
+    **kwargs: Any,
+) -> ViT:
+    return ViT(
+        image_size=image_size,
+        patch_size=patch_size,
+        num_classes=num_classes,
+        dim=384,
+        depth=12,
+        heads=6,
+        mlp_dim=1536,
+        **kwargs,
+    )
+
+
+def vit_base(
+    image_size: int | tuple[int, int],
+    num_classes: int,
+    patch_size: int | tuple[int, int] = 16,
+    **kwargs: Any,
+) -> ViT:
+    return ViT(
+        image_size=image_size,
+        patch_size=patch_size,
+        num_classes=num_classes,
+        dim=768,
+        depth=12,
+        heads=12,
+        mlp_dim=3072,
+        **kwargs,
+    )
