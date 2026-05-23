@@ -151,7 +151,7 @@ class ViT(Module):
 
         self.cls_token = nn.Parameter(torch.randn(self.num_cls_tokens, dim))
         self.pos_embedding = nn.Parameter(
-            torch.randn(num_patches + self.num_cls_tokens, dim)
+            torch.randn(num_patches, dim)
         )
 
         self.dropout = nn.Dropout(emb_dropout)
@@ -180,21 +180,16 @@ class ViT(Module):
 
         x = self.patch_embed(x)
 
-        cls_tokens = self.cls_token.expand(batch, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-
         if indices is not None:
             pos = self.pos_embedding.expand(batch, -1, -1)
-            cls_pos = pos[:, :self.num_cls_tokens, :]
-            patch_pos = pos[:, self.num_cls_tokens : self.num_cls_tokens + num_patches, :]
-            
-            patch_pos = torch.gather(patch_pos, 1, indices.unsqueeze(-1).expand(-1, -1, patch_pos.shape[-1]))
-            
-            pos = torch.cat((cls_pos, patch_pos), dim=1)
+            pos = torch.gather(pos, 1, indices.unsqueeze(-1).expand(-1, -1, pos.shape[-1]))
             x = x + pos
         else:
             seq = x.shape[1]
             x = x + self.pos_embedding[:seq]
+
+        cls_tokens = self.cls_token.expand(batch, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
 
         x = self.dropout(x)
 
