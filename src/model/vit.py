@@ -163,7 +163,7 @@ class ViT(Module):
 
         self.mlp_head = nn.Linear(dim, num_classes) if num_classes > 0 else None
 
-    def forward(self, img):
+    def forward(self, img, random_drop=False):
         batch = img.shape[0]
         x = self.patch_rearrange(img)
         num_patches = x.shape[1]
@@ -172,9 +172,13 @@ class ViT(Module):
             self.num_keep_patches is not None
             and self.num_keep_patches < num_patches
         ):
-            variances = x.var(dim=-1)
-            _, indices = variances.topk(self.num_keep_patches, dim=-1)
-            indices, _ = indices.sort(dim=-1)
+            if random_drop:
+                rand_indices = torch.rand(batch, num_patches, device=x.device).argsort(dim=-1)[:, :self.num_keep_patches]
+                indices, _ = rand_indices.sort(dim=-1)
+            else:
+                variances = x.var(dim=-1)
+                _, indices = variances.topk(self.num_keep_patches, dim=-1)
+                indices, _ = indices.sort(dim=-1)
             x = torch.gather(
                 x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])
             )
