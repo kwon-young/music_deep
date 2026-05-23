@@ -2,9 +2,6 @@ import torch
 from torch import nn
 from torch.nn import Module, ModuleList
 
-from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-
 # helpers
 
 def pair(t):
@@ -52,7 +49,7 @@ class Attention(Module):
         x = self.norm(x)
 
         qkv = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
+        q, k, v = map(lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2), qkv)
 
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
 
@@ -60,7 +57,7 @@ class Attention(Module):
         attn = self.dropout(attn)
 
         out = torch.matmul(attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = out.transpose(1, 2).flatten(2)
         return self.to_out(out)
 
 class Transformer(Module):
@@ -82,6 +79,18 @@ class Transformer(Module):
 
         return self.norm(x)
 
+class PatchRearrange(Module):
+    def __init__(self, patch_height, patch_width):
+        super().__init__()
+        self.ph = patch_height
+        self.pw = patch_width
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x = x.unflatten(2, (h // self.ph, self.ph)).unflatten(4, (w // self.pw, self.pw))
+        x = x.permute(0, 2, 4, 3, 5, 1)
+        return x.reshape(b, -1, self.ph * self.pw * c)
+
 class ViT(Module):
     def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
         super().__init__()
@@ -97,7 +106,7 @@ class ViT(Module):
         num_cls_tokens = 1 if pool == 'cls' else 0
 
         self.to_patch_embedding = nn.Sequential(
-            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_height, p2 = patch_width),
+            PatchRearrange(patch_height, patch_width),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
@@ -119,7 +128,7 @@ class ViT(Module):
         batch = img.shape[0]
         x = self.to_patch_embedding(img)
 
-        cls_tokens = repeat(self.cls_token, '... d -> b ... d', b = batch)
+        cls_tokens = self.cls_token.expand(batch, -1, -1)
         x = torch.cat((cls_tokens, x), dim = 1)
 
         seq = x.shape[1]
