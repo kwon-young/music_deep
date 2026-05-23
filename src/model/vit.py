@@ -150,9 +150,7 @@ class ViT(Module):
         )
 
         self.cls_token = nn.Parameter(torch.randn(self.num_cls_tokens, dim))
-        self.pos_embedding = nn.Parameter(
-            torch.randn(num_patches, dim)
-        )
+        self.pos_embedding = nn.Parameter(torch.randn(num_patches, dim))
 
         self.dropout = nn.Dropout(emb_dropout)
 
@@ -170,11 +168,16 @@ class ViT(Module):
         x = self.patch_rearrange(img)
         num_patches = x.shape[1]
 
-        if self.num_keep_patches is not None and self.num_keep_patches < num_patches:
+        if (
+            self.num_keep_patches is not None
+            and self.num_keep_patches < num_patches
+        ):
             variances = x.var(dim=-1)
             _, indices = variances.topk(self.num_keep_patches, dim=-1)
             indices, _ = indices.sort(dim=-1)
-            x = torch.gather(x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+            x = torch.gather(
+                x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])
+            )
         else:
             indices = None
 
@@ -182,7 +185,9 @@ class ViT(Module):
 
         if indices is not None:
             pos = self.pos_embedding.expand(batch, -1, -1)
-            pos = torch.gather(pos, 1, indices.unsqueeze(-1).expand(-1, -1, pos.shape[-1]))
+            pos = torch.gather(
+                pos, 1, indices.unsqueeze(-1).expand(-1, -1, pos.shape[-1])
+            )
             x = x + pos
         else:
             seq = x.shape[1]
