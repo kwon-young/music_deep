@@ -7,12 +7,14 @@ import torch
 import torch.nn.functional as F
 from dataset.imslp import (
     Data,
+    BatchedData,
     Layout,
     Mode,
     PILImage,
     ArrayImage,
     TensorImage,
     Image,
+    BatchedImage,
 )
 
 
@@ -22,6 +24,18 @@ def image_transform[T: Image, U: Image, **P](
     @wraps(func)
     def wrapper(img: Data[T], *args: P.args, **kwargs: P.kwargs) -> Data[U]:
         return Data(img.metadata, func(img.image, *args, **kwargs))
+
+    return wrapper
+
+
+def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
+    func: Callable[Concatenate[T, P], U],
+) -> Callable[Concatenate[BatchedData[T], P], BatchedData[U]]:
+    @wraps(func)
+    def wrapper(
+        img: BatchedData[T], *args: P.args, **kwargs: P.kwargs
+    ) -> BatchedData[U]:
+        return BatchedData(img.metadata, func(img.image, *args, **kwargs))
 
     return wrapper
 
