@@ -102,16 +102,21 @@ def train():
     for epoch in range(epochs):
         encoder.train()
         iterator = create_lejepa_iterator(
-            manifest_path, image_dir, batch_size, v_views
+            manifest_path=manifest_path,
+            image_dir=image_dir,
+            crop_size=224,
+            batch_size=batch_size,
+            n_views=v_views,
+            device=device,
+            mode="L",
         )
 
         for step, batch in enumerate(iterator):
-            batch = batch.to(device)
-            N, V, C, H, W = batch.shape
+            image = batch.image
+            N, V, C, H, W = image.shape
 
-            # Flatten batch and views for the model, then apply GPU augmentations
-            x_flat = batch.view(N * V, C, H, W)
-            x_aug = random_affine(BatchedData([], x_flat)).image
+            # Flatten batch and views for the model
+            x_aug = image.view(N * V, C, H, W)
 
             # Forward pass
             emb, proj = encoder(x_aug, random_drop=True)
