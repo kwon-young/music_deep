@@ -16,9 +16,9 @@ from dataset.imslp import (
     TensorImage,
     Image,
     BatchedImage,
-    BHWC,
+    Batch,
     HWC,
-    VHWC,
+    View,
 )
 
 
@@ -100,7 +100,7 @@ def random_affine[L: BatchedLayout, M: Mode](
     return cast(TensorImage[L, M], x_transformed + 1.0)
 
 
-def random_crops[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage[BHWC, M]:
+def random_crops[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage[tuple[Batch, *HWC], M]:
     # random crop n time where n*crop_size**2 will in average == h*w
     (h, w, c) = x.shape
     num_crop_frac = (h / crop_size) * (w / crop_size)
@@ -113,7 +113,7 @@ def random_crops[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage
     xs = torch.randint(0, x_max, size=(num_crop,))
     ys = torch.randint(0, y_max, size=(num_crop,))
     crops = [x[y:y+crop_size, x_val:x_val+crop_size, :] for y, x_val in zip(ys, xs)]
-    return cast(TensorImage[BHWC, M], torch.stack(crops))
+    return cast(TensorImage[tuple[Batch, *HWC], M], torch.stack(crops))
 
 
 @image_transform
@@ -128,5 +128,5 @@ def random_crop[M: Mode](image: TensorImage[HWC, M], crop_size: int) -> TensorIm
 
 
 @image_transform
-def make_views[M: Mode](image: TensorImage[HWC, M], n: int) -> TensorImage[VHWC, M]:
-    return cast(TensorImage[VHWC, M], torch.stack([image]*n))
+def make_views[L: Layout, M: Mode](image: TensorImage[L, M], n: int) -> TensorImage[tuple[View, *L], M]:
+    return cast(TensorImage[tuple[View, *L], M], torch.stack([image]*n))
