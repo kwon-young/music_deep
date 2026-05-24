@@ -5,10 +5,10 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-from dataset.imslp import Data, Layout, Mode, PILImage, ArrayImage, TensorImage
+from dataset.imslp import Data, Layout, Mode, PILImage, ArrayImage, TensorImage, Image
 
 
-def image_transform[T, U, **P](
+def image_transform[T: Image, U: Image, **P](
     func: Callable[Concatenate[T, P], U],
 ) -> Callable[Concatenate[Data[T], P], Data[U]]:
     @wraps(func)
