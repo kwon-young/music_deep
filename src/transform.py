@@ -9,7 +9,7 @@ from PIL import Image as PILImage
 from dataset.imslp import Image, Layout, Mode, TypedImage
 
 
-class TypedArray[Layout, Mode](np.ndarray):
+class TypedArray[L: Layout, M: Mode](np.ndarray):
     def __new__(cls, input_array: np.ndarray) -> "TypedArray[Layout, Mode]":
         return np.asarray(input_array).view(cls)
 
