@@ -58,10 +58,8 @@ def shuffle[T](it: Iterator[T]) -> Generator[T]:
 
 
 @image_transform
-def to[L: Layout, M: Mode](
-    image: TensorImage[L, M], device: torch.device
-) -> TensorImage[L, M]:
-    return cast(TensorImage[L, M], image.to(device))
+def to[I: TensorImage](image: I, device: torch.device) -> I:
+    return cast(I, image.to(device))
 
 
 @batched_image_transform
@@ -97,3 +95,18 @@ def random_affine[L: BatchedLayout, M: Mode](
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
     return cast(TensorImage[L, M], x_transformed + 1.0)
+
+
+def random_crop[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage[BHWC, M]:
+    # random crop n time where n*crop_size**2 will in average == h*w
+    (b, h, w, c) = x.shape
+    num_crop_frac = (h / crop_size) * (w / crop_size)
+    num_crop = int(num_crop_frac)
+    frac = num_crop_frac - num_crop
+    last_crop = random.binomialvariate(n=1, p=frac)
+    num_crop += last_crop
+    x_max = w - crop_size
+    y_max = h - crop_size
+    xs = torch.randint(0, x_max, size=num_crop)
+    ys = torch.randint(0, y_max, size=num_crop)
+    # sample xs and ys from x creating a new batch dimension
