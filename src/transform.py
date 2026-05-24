@@ -95,7 +95,9 @@ def random_affine[L: BatchedLayouts, M: Mode](
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
 ) -> TensorImage[L, M, Float1]:
-    N = x.size(0)
+    original_shape = x.shape
+    x_flat = x.view(-1, *original_shape[-3:])
+    N = x_flat.size(0)
     device = x.device
 
     max_angle_rad = max_angle_deg * math.pi / 180.0
@@ -115,15 +117,16 @@ def random_affine[L: BatchedLayouts, M: Mode](
     matrix[:, 1, 1] = cos_a
     matrix[:, 1, 2] = ty
 
-    grid = F.affine_grid(matrix, x.size(), align_corners=False)
+    grid = F.affine_grid(matrix, x_flat.size(), align_corners=False)
 
     # Assuming normalized image where white is 1.0.
     # Shift so white is 0.0, apply grid_sample (pads with 0.0), then shift back to 1.0
-    x_shifted = x - 1.0
+    x_shifted = x_flat - 1.0
     x_transformed = F.grid_sample(
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
-    return cast(TensorImage[L, M, Float1], x_transformed + 1.0)
+    x_out = x_transformed + 1.0
+    return cast(TensorImage[L, M, Float1], x_out.view(original_shape))
 
 
 def random_crops[M: Mode, R: Range](
