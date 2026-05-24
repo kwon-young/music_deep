@@ -58,7 +58,9 @@ class TensorImage[L: AnyLayouts, M: Mode, R: Range](torch.Tensor):
 type Image[L: Layouts, M, R] = (
     PILImage[L, M, R] | ArrayImage[L, M, R] | TensorImage[L, M, R]
 )
-type BatchedImage[L: BatchedLayouts, M, R] = ArrayImage[L, M, R] | TensorImage[L, M, R]
+type BatchedImage[L: BatchedLayouts, M, R] = (
+    ArrayImage[L, M, R] | TensorImage[L, M, R]
+)
 
 
 @dataclass
