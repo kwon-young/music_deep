@@ -1,5 +1,6 @@
-from typing import Iterator, Generator, Callable, Concatenate, cast
+from typing import Iterable, Generator, Callable, Concatenate, cast
 from functools import wraps
+from itertools import batched
 import random
 import math
 import numpy as np
@@ -9,7 +10,6 @@ from dataset.imslp import (
     Data,
     BatchedData,
     Layout,
-    BatchedLayout,
     Mode,
     PILImage,
     ArrayImage,
@@ -18,7 +18,8 @@ from dataset.imslp import (
     BatchedImage,
     Batch,
     HWC,
-    View,
+    CHW,
+    VCHW,
 )
 
 
@@ -54,7 +55,7 @@ def to_tensor[L: Layout, M: Mode](image: ArrayImage[L, M]) -> TensorImage[L, M]:
     return cast(TensorImage[L, M], torch.as_tensor(image))
 
 
-def shuffle[T](it: Iterator[T]) -> Generator[T]:
+def shuffle[T](it: Iterable[T]) -> Generator[T]:
     l = list(it)
     random.shuffle(l)
     yield from l
@@ -66,8 +67,10 @@ def to[I: TensorImage](image: I, device: torch.device) -> I:
 
 
 @batched_image_transform
-def random_affine[L: BatchedLayout, M: Mode](
-    x: TensorImage[L, M], max_angle_deg: float = 3.0, max_translate: float = 0.05
+def random_affine[L: BatchedLayouts, M: Mode](
+    x: TensorImage[L, M],
+    max_angle_deg: float = 3.0,
+    max_translate: float = 0.05,
 ) -> TensorImage[L, M]:
     N = x.size(0)
     device = x.device
@@ -100,7 +103,9 @@ def random_affine[L: BatchedLayout, M: Mode](
     return cast(TensorImage[L, M], x_transformed + 1.0)
 
 
-def random_crops[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage[tuple[Batch, *HWC], M]:
+def random_crops[M: Mode](
+    x: TensorImage[HWC, M], crop_size: int
+) -> TensorImage[tuple[Batch, *HWC], M]:
     # random crop n time where n*crop_size**2 will in average == h*w
     (h, w, c) = x.shape
     num_crop_frac = (h / crop_size) * (w / crop_size)
@@ -112,21 +117,34 @@ def random_crops[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage
     y_max = h - crop_size + 1
     xs = torch.randint(0, x_max, size=(num_crop,))
     ys = torch.randint(0, y_max, size=(num_crop,))
-    crops = [x[y:y+crop_size, x_val:x_val+crop_size, :] for y, x_val in zip(ys, xs)]
+    crops = [
+        x[y:y + crop_size, x_val:x_val + crop_size, :]
+        for y, x_val in zip(ys, xs)
+    ]
     return cast(TensorImage[tuple[Batch, *HWC], M], torch.stack(crops))
 
 
 @image_transform
-def random_crop[M: Mode](image: TensorImage[HWC, M], crop_size: int) -> TensorImage[HWC, M]:
+def random_crop[M: Mode](
+    image: TensorImage[HWC, M], crop_size: int
+) -> TensorImage[HWC, M]:
     (h, w, c) = image.shape
     x_max = w - crop_size + 1
     y_max = h - crop_size + 1
     x = torch.randint(0, x_max, size=(1,))[0]
     y = torch.randint(0, y_max, size=(1,))[0]
-    image = image[y:y+crop_size, x:x+crop_size, :]
+    image = image[y:y + crop_size, x:x + crop_size, :]
     return image
 
 
 @image_transform
-def make_views[L: Layout, M: Mode](image: TensorImage[L, M], n: int) -> TensorImage[tuple[View, *L], M]:
-    return cast(TensorImage[tuple[View, *L], M], torch.stack([image]*n))
+def make_views[M: Mode](image: TensorImage[CHW, M], n: int) -> TensorImage[VCHW, M]:
+    return cast(TensorImage[VCHW, M], torch.stack([image] * n))
+
+
+def collate[M: Mode](it: Iterable[Data[TensorImage[VCHW, M]]], batch_size: int
+                     ) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M]]]:
+    for batch in batched(it, n=batch_size):
+        m = [b.metadata for b in batch]
+        i = [b.image for b in batch]
+        yield BatchedData(m, torch.stack(i))
