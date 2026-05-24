@@ -16,15 +16,15 @@ def create_lejepa_iterator(
     device: torch.device
 ) -> Generator[BatchedData]:
 
-    gen = load_imslp(manifest_path)
-    gen = shuffle(gen)
-    data_pil = map(partial(load_image, image_dir=image_dir, mode='L'), gen)
-    data_np = map(to_numpy, data_pil)
-    data_t = map(to_tensor, data_np)
-    data_t = map(partial(to, device=device), data_t)
-    data_t = map(partial(random_crop, crop_size=crop_size), data_t)
-    data_t = map(partial(make_views, n=n_views), data_t)
-    yield from data_t
+    gen = shuffle(load_imslp(manifest_path))
+    for metadata in gen:
+        data = load_image(metadata, image_dir=image_dir, mode='L')
+        data = to_numpy(data)
+        data = to_tensor(data)
+        data = to(data, device=device)
+        data = random_crop(data, crop_size=crop_size)
+        data = make_views(data, n=n_views)
+        yield data
 
 
 def train():
