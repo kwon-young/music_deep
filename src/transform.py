@@ -55,6 +55,11 @@ def to_tensor[L: Layout, M: Mode](image: ArrayImage[L, M]) -> TensorImage[L, M]:
     return cast(TensorImage[L, M], torch.as_tensor(image))
 
 
+@image_transform
+def to_chw[M: Mode](image: TensorImage[HWC, M]) -> TensorImage[CHW, M]:
+    return cast(TensorImage[CHW, M], image.permute(2, 0, 1))
+
+
 def shuffle[T](it: Iterable[T]) -> Generator[T]:
     l = list(it)
     random.shuffle(l)
