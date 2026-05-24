@@ -2,29 +2,35 @@ from typing import Generator
 import torch
 import torch.optim as optim
 from pathlib import Path
+from itertools import batched
 from functools import partial
 
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
 from transform import random_affine, shuffle, random_crop, to_numpy, \
     to_tensor, to, make_views
-from dataset.imslp import load_imslp, load_image, BatchedData
+from dataset.imslp import load_imslp, load_image, BatchedData, Metadata, Data, Mode
+
+
+def transform_image(metadata: Metadata, image_dir: Path, mode: Mode, device: torch.device, crop_size: int, n_views: int) -> Data:
+    data_pil = load_image(metadata, image_dir=image_dir, mode=mode)
+    data_np = to_numpy(data_pil)
+    data_t = to_tensor(data_np)
+    data_t = to(data_t, device=device)
+    data_t = random_crop(data_t, crop_size=crop_size)
+    data_t = make_views(data_t, n=n_views)
+    return data_t
 
 
 def create_lejepa_iterator(
     manifest_path: Path, image_dir: Path, crop_size: int, batch_size: int, n_views: int,
-    device: torch.device
+    device: torch.device, mode: Mode
 ) -> Generator[BatchedData]:
 
     gen = shuffle(load_imslp(manifest_path))
-    for metadata in gen:
-        data = load_image(metadata, image_dir=image_dir, mode='L')
-        data = to_numpy(data)
-        data = to_tensor(data)
-        data = to(data, device=device)
-        data = random_crop(data, crop_size=crop_size)
-        data = make_views(data, n=n_views)
-        yield data
+    data = map(partial(transform_image, image_dir=image_dir, mode=mode, device=device, crop_size=crop_size, n_views=n_views), gen)
+    batched_data = collate(data, batch_size=batch_size)
+
 
 
 def train():

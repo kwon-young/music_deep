@@ -1,10 +1,11 @@
-from typing import Literal, cast
+from typing import Literal, cast, Concatenate
 import json
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Generator
-from PIL import Image as PILImage
-from threaded_generator import partial_generator
+from PIL import Image as Image_
+import numpy as np
+import torch
 
 
 @dataclass
@@ -14,36 +15,70 @@ class Metadata:
     name: str
 
 
-HWC = Literal["HWC"]
-CHW = Literal["CHW"]
-Layout = HWC | CHW
-Binary = Literal["1"]
-Gray = Literal["L"]
-RGB = Literal["RGB"]
-Mode = Binary | Gray | RGB
+type Batch = int
+type Height = int
+type Width = int
+type Channel = int
+type View = int
+type Dim = Batch | View | Height | Width | Channel
+type Shape = tuple[Dim, ...]
+type HWC = tuple[Height, Width, Channel]
+type CHW = tuple[Channel, Height, Width]
+type Layout = HWC | CHW
+type VCHW = tuple[View, *CHW]
+type ViewLayout = tuple[View, *HWC] | VCHW
+type Layouts = Layout | ViewLayout
+type BatchedLayout = tuple[Batch, *HWC] | tuple[Batch, *CHW]
+type BVCHW = tuple[Batch, *VCHW]
+type BatchedViewLayout = tuple[Batch, View, *HWC] | BVCHW
+type BatchedLayouts = BatchedLayout | BatchedViewLayout
+type AnyLayouts = Layouts | BatchedLayouts
+type Binary = Literal["1"]
+type Gray = Literal["L"]
+type RGB = Literal["RGB"]
+type Mode = Binary | Gray | RGB
 
 
-class TypedImage[L: Layout, M: Mode](PILImage.Image):
+class PILImage[L: HWC, M: Mode](Image_.Image):
     pass
 
 
+class ArrayImage[L: AnyLayouts, M: Mode](np.ndarray):
+    pass
+
+
+class TensorImage[L: AnyLayouts, M: Mode](torch.Tensor):
+    pass
+
+
+type Image[L: Layouts, M] = (
+    PILImage[L, M] | ArrayImage[L, M] | TensorImage[L, M]
+)
+type BatchedImage[L: BatchedLayouts, M] = ArrayImage[L, M] | TensorImage[L, M]
+
+
 @dataclass
-class Image[T]:
+class Data[I: Image]:
     metadata: Metadata
-    image: T
+    image: I
 
 
-@partial_generator
-def load_imslp(manifest: Path, image_dir: Path) -> Generator[Metadata]:
+@dataclass
+class BatchedData[I: BatchedImage]:
+    metadata: list[Metadata]
+    image: I
+
+
+def load_imslp(manifest: Path) -> Generator[Metadata]:
     with manifest.open("r") as f:
         for line in f:
             yield Metadata(**json.loads(line))
 
 
-def load_image[T: Mode](
+def load_image[M: Mode](
     metadata: Metadata,
     image_dir: Path,
-    mode: Mode,
-) -> Image[TypedImage[HWC, T]]:
-    pil_img = PILImage.open(image_dir / metadata.name).convert(mode)
-    return Image(metadata, cast(TypedImage[HWC, T], pil_img))
+    mode: M,
+) -> Data[PILImage[HWC, M]]:
+    pil_img = Image_.open(image_dir / metadata.name).convert(mode)
+    return Data(metadata, cast(PILImage[HWC, M], pil_img))
