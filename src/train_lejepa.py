@@ -32,8 +32,8 @@ def transform_image(
     device: torch.device,
     crop_size: int,
     n_views: int,
-    max_angle_deg: float,
-    max_translate: float,
+    max_angle_deg: float = 3.0,
+    max_translate: float = 0.05,
 ) -> Data:
     data_pil = load_image(metadata, image_dir=image_dir)
     data_np = to_numpy(data_pil)
