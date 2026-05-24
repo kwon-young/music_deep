@@ -44,16 +44,9 @@ type Float1 = Literal["Float1"]
 type Range = Int255 | Float1
 
 
-class PILImage[L: HWC, M: Mode, R: Range](Image_.Image):
-    pass
-
-
-class ArrayImage[L: AnyLayouts, M: Mode, R: Range](np.ndarray):
-    pass
-
-
-class TensorImage[L: AnyLayouts, M: Mode, R: Range](torch.Tensor):
-    pass
+type PILImage[L: HWC, M: Mode, R: Range] = Image_.Image
+type ArrayImage[L: AnyLayouts, M: Mode, R: Range] = np.ndarray
+type TensorImage[L: AnyLayouts, M: Mode, R: Range] = torch.Tensor
 
 
 type Image[L: Layouts, M, R] = (
