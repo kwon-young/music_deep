@@ -2,37 +2,78 @@ from typing import Generator
 import torch
 import torch.optim as optim
 from pathlib import Path
-from itertools import batched
 from functools import partial
 
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
-from transform import random_affine, shuffle, random_crop, to_numpy, \
-    to_tensor, to, make_views, to_float1, to_chw
-from dataset.imslp import load_imslp, load_image, BatchedData, Metadata, Data, Mode
+from transform import (
+    random_affine,
+    shuffle,
+    random_crop,
+    to_numpy,
+    to_tensor,
+    to,
+    make_views,
+    to_float1,
+    to_chw,
+    collate,
+)
+from dataset.imslp import (
+    load_imslp,
+    load_image,
+    BatchedData,
+    Metadata,
+    Data,
+    Mode,
+)
 
 
-def transform_image(metadata: Metadata, image_dir: Path, mode: Mode, device: torch.device, crop_size: int, n_views: int) -> Data:
+def transform_image(
+    metadata: Metadata,
+    image_dir: Path,
+    mode: Mode,
+    device: torch.device,
+    crop_size: int,
+    n_views: int,
+    max_angle_deg: float,
+    max_translate: float,
+) -> Data:
     data_pil = load_image(metadata, image_dir=image_dir, mode=mode)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
-    data_t = to_float1(data_t)
-    data_t = to(data_t, device=device)
     data_t = random_crop(data_t, crop_size=crop_size)
+    data_t = to_float1(data_t)
     data_t = to_chw(data_t)
     data_t = make_views(data_t, n=n_views)
+    data_t = random_affine(data_t, max_angle_deg, max_translate)
     return data_t
 
 
 def create_lejepa_iterator(
-    manifest_path: Path, image_dir: Path, crop_size: int, batch_size: int, n_views: int,
-    device: torch.device, mode: Mode
+    manifest_path: Path,
+    image_dir: Path,
+    crop_size: int,
+    batch_size: int,
+    n_views: int,
+    device: torch.device,
+    mode: Mode,
 ) -> Generator[BatchedData]:
 
     gen = shuffle(load_imslp(manifest_path))
-    data = map(partial(transform_image, image_dir=image_dir, mode=mode, device=device, crop_size=crop_size, n_views=n_views), gen)
+    data = map(
+        partial(
+            transform_image,
+            image_dir=image_dir,
+            mode=mode,
+            device=device,
+            crop_size=crop_size,
+            n_views=n_views,
+        ),
+        gen,
+    )
     batched_data = collate(data, batch_size=batch_size)
-
+    batched_data = map(partial(to, device=device), batched_data)
+    yield from batched_data
 
 
 def train():
