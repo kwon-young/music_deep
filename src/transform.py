@@ -11,6 +11,7 @@ from dataset.imslp import (
     BatchedData,
     Layout,
     AnyLayouts,
+    BatchedLayouts,
     Mode,
     Range,
     Int255,
@@ -50,22 +51,30 @@ def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
 
 
 @image_transform
-def to_numpy[L: Layout, M: Mode, R: Range](image: PILImage[L, M, R]) -> ArrayImage[L, M, R]:
+def to_numpy[L: Layout, M: Mode, R: Range](
+    image: PILImage[L, M, R],
+) -> ArrayImage[L, M, R]:
     return cast(ArrayImage[L, M, R], np.array(image))
 
 
 @image_transform
-def to_tensor[L: Layout, M: Mode, R: Range](image: ArrayImage[L, M, R]) -> TensorImage[L, M, R]:
+def to_tensor[L: Layout, M: Mode, R: Range](
+    image: ArrayImage[L, M, R],
+) -> TensorImage[L, M, R]:
     return cast(TensorImage[L, M, R], torch.as_tensor(image))
 
 
 @image_transform
-def to_chw[M: Mode, R: Range](image: TensorImage[HWC, M, R]) -> TensorImage[CHW, M, R]:
+def to_chw[M: Mode, R: Range](
+    image: TensorImage[HWC, M, R],
+) -> TensorImage[CHW, M, R]:
     return cast(TensorImage[CHW, M, R], image.permute(2, 0, 1))
 
 
 @image_transform
-def to_float1[L: AnyLayouts, M: Mode](image: TensorImage[L, M, Int255]) -> TensorImage[L, M, Float1]:
+def to_float1[L: AnyLayouts, M: Mode](
+    image: TensorImage[L, M, Int255],
+) -> TensorImage[L, M, Float1]:
     return cast(TensorImage[L, M, Float1], image.float() / 255.0)
 
 
@@ -75,17 +84,17 @@ def shuffle[T](it: Iterable[T]) -> Generator[T]:
     yield from l
 
 
-@image_transform
+@batched_image_transform
 def to[I: TensorImage](image: I, device: torch.device) -> I:
     return cast(I, image.to(device))
 
 
 @batched_image_transform
-def random_affine[L: BatchedLayouts, M: Mode, R: Range](
-    x: TensorImage[L, M, R],
+def random_affine[L: BatchedLayouts, M: Mode](
+    x: TensorImage[L, M, Float1],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
-) -> TensorImage[L, M, R]:
+) -> TensorImage[L, M, Float1]:
     N = x.size(0)
     device = x.device
 
@@ -114,7 +123,7 @@ def random_affine[L: BatchedLayouts, M: Mode, R: Range](
     x_transformed = F.grid_sample(
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
-    return cast(TensorImage[L, M, R], x_transformed + 1.0)
+    return cast(TensorImage[L, M, Float1], x_transformed + 1.0)
 
 
 def random_crops[M: Mode, R: Range](
@@ -152,12 +161,15 @@ def random_crop[M: Mode, R: Range](
 
 
 @image_transform
-def make_views[M: Mode, R: Range](image: TensorImage[CHW, M, R], n: int) -> TensorImage[VCHW, M, R]:
+def make_views[M: Mode, R: Range](
+    image: TensorImage[CHW, M, R], n: int
+) -> TensorImage[VCHW, M, R]:
     return cast(TensorImage[VCHW, M, R], torch.stack([image] * n))
 
 
-def collate[M: Mode, R: Range](it: Iterable[Data[TensorImage[VCHW, M, R]]], batch_size: int
-                     ) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M, R]]]:
+def collate[M: Mode, R: Range](
+    it: Iterable[Data[TensorImage[VCHW, M, R]]], batch_size: int
+) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M, R]]]:
     for batch in batched(it, n=batch_size):
         m = [b.metadata for b in batch]
         i = [b.image for b in batch]
