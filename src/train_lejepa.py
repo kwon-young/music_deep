@@ -8,7 +8,7 @@ from functools import partial
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
 from transform import random_affine, shuffle, random_crop, to_numpy, \
-    to_tensor, to, make_views
+    to_tensor, to, make_views, to_float1, to_chw
 from dataset.imslp import load_imslp, load_image, BatchedData, Metadata, Data, Mode
 
 
@@ -16,8 +16,10 @@ def transform_image(metadata: Metadata, image_dir: Path, mode: Mode, device: tor
     data_pil = load_image(metadata, image_dir=image_dir, mode=mode)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
+    data_t = to_float1(data_t)
     data_t = to(data_t, device=device)
     data_t = random_crop(data_t, crop_size=crop_size)
+    data_t = to_chw(data_t)
     data_t = make_views(data_t, n=n_views)
     return data_t
 

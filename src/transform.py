@@ -10,7 +10,11 @@ from dataset.imslp import (
     Data,
     BatchedData,
     Layout,
+    AnyLayouts,
     Mode,
+    Range,
+    Int255,
+    Float1,
     PILImage,
     ArrayImage,
     TensorImage,
@@ -46,18 +50,23 @@ def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
 
 
 @image_transform
-def to_numpy[L: Layout, M: Mode](image: PILImage[L, M]) -> ArrayImage[L, M]:
-    return cast(ArrayImage[L, M], np.array(image))
+def to_numpy[L: Layout, M: Mode, R: Range](image: PILImage[L, M, R]) -> ArrayImage[L, M, R]:
+    return cast(ArrayImage[L, M, R], np.array(image))
 
 
 @image_transform
-def to_tensor[L: Layout, M: Mode](image: ArrayImage[L, M]) -> TensorImage[L, M]:
-    return cast(TensorImage[L, M], torch.as_tensor(image))
+def to_tensor[L: Layout, M: Mode, R: Range](image: ArrayImage[L, M, R]) -> TensorImage[L, M, R]:
+    return cast(TensorImage[L, M, R], torch.as_tensor(image))
 
 
 @image_transform
-def to_chw[M: Mode](image: TensorImage[HWC, M]) -> TensorImage[CHW, M]:
-    return cast(TensorImage[CHW, M], image.permute(2, 0, 1))
+def to_chw[M: Mode, R: Range](image: TensorImage[HWC, M, R]) -> TensorImage[CHW, M, R]:
+    return cast(TensorImage[CHW, M, R], image.permute(2, 0, 1))
+
+
+@image_transform
+def to_float1[L: AnyLayouts, M: Mode](image: TensorImage[L, M, Int255]) -> TensorImage[L, M, Float1]:
+    return cast(TensorImage[L, M, Float1], image.float() / 255.0)
 
 
 def shuffle[T](it: Iterable[T]) -> Generator[T]:
@@ -72,11 +81,11 @@ def to[I: TensorImage](image: I, device: torch.device) -> I:
 
 
 @batched_image_transform
-def random_affine[L: BatchedLayouts, M: Mode](
-    x: TensorImage[L, M],
+def random_affine[L: BatchedLayouts, M: Mode, R: Range](
+    x: TensorImage[L, M, R],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
-) -> TensorImage[L, M]:
+) -> TensorImage[L, M, R]:
     N = x.size(0)
     device = x.device
 
@@ -105,12 +114,12 @@ def random_affine[L: BatchedLayouts, M: Mode](
     x_transformed = F.grid_sample(
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
-    return cast(TensorImage[L, M], x_transformed + 1.0)
+    return cast(TensorImage[L, M, R], x_transformed + 1.0)
 
 
-def random_crops[M: Mode](
-    x: TensorImage[HWC, M], crop_size: int
-) -> TensorImage[tuple[Batch, *HWC], M]:
+def random_crops[M: Mode, R: Range](
+    x: TensorImage[HWC, M, R], crop_size: int
+) -> TensorImage[tuple[Batch, *HWC], M, R]:
     # random crop n time where n*crop_size**2 will in average == h*w
     (h, w, c) = x.shape
     num_crop_frac = (h / crop_size) * (w / crop_size)
@@ -126,13 +135,13 @@ def random_crops[M: Mode](
         x[y:y + crop_size, x_val:x_val + crop_size, :]
         for y, x_val in zip(ys, xs)
     ]
-    return cast(TensorImage[tuple[Batch, *HWC], M], torch.stack(crops))
+    return cast(TensorImage[tuple[Batch, *HWC], M, R], torch.stack(crops))
 
 
 @image_transform
-def random_crop[M: Mode](
-    image: TensorImage[HWC, M], crop_size: int
-) -> TensorImage[HWC, M]:
+def random_crop[M: Mode, R: Range](
+    image: TensorImage[HWC, M, R], crop_size: int
+) -> TensorImage[HWC, M, R]:
     (h, w, c) = image.shape
     x_max = w - crop_size + 1
     y_max = h - crop_size + 1
@@ -143,12 +152,12 @@ def random_crop[M: Mode](
 
 
 @image_transform
-def make_views[M: Mode](image: TensorImage[CHW, M], n: int) -> TensorImage[VCHW, M]:
-    return cast(TensorImage[VCHW, M], torch.stack([image] * n))
+def make_views[M: Mode, R: Range](image: TensorImage[CHW, M, R], n: int) -> TensorImage[VCHW, M, R]:
+    return cast(TensorImage[VCHW, M, R], torch.stack([image] * n))
 
 
-def collate[M: Mode](it: Iterable[Data[TensorImage[VCHW, M]]], batch_size: int
-                     ) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M]]]:
+def collate[M: Mode, R: Range](it: Iterable[Data[TensorImage[VCHW, M, R]]], batch_size: int
+                     ) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M, R]]]:
     for batch in batched(it, n=batch_size):
         m = [b.metadata for b in batch]
         i = [b.image for b in batch]

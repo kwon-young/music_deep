@@ -38,23 +38,27 @@ type Gray = Literal["L"]
 type RGB = Literal["RGB"]
 type Mode = Binary | Gray | RGB
 
+type Int255 = Literal["Int255"]
+type Float1 = Literal["Float1"]
+type Range = Int255 | Float1
 
-class PILImage[L: HWC, M: Mode](Image_.Image):
+
+class PILImage[L: HWC, M: Mode, R: Range](Image_.Image):
     pass
 
 
-class ArrayImage[L: AnyLayouts, M: Mode](np.ndarray):
+class ArrayImage[L: AnyLayouts, M: Mode, R: Range](np.ndarray):
     pass
 
 
-class TensorImage[L: AnyLayouts, M: Mode](torch.Tensor):
+class TensorImage[L: AnyLayouts, M: Mode, R: Range](torch.Tensor):
     pass
 
 
-type Image[L: Layouts, M] = (
-    PILImage[L, M] | ArrayImage[L, M] | TensorImage[L, M]
+type Image[L: Layouts, M, R] = (
+    PILImage[L, M, R] | ArrayImage[L, M, R] | TensorImage[L, M, R]
 )
-type BatchedImage[L: BatchedLayouts, M] = ArrayImage[L, M] | TensorImage[L, M]
+type BatchedImage[L: BatchedLayouts, M, R] = ArrayImage[L, M, R] | TensorImage[L, M, R]
 
 
 @dataclass
@@ -79,6 +83,6 @@ def load_image[M: Mode](
     metadata: Metadata,
     image_dir: Path,
     mode: M,
-) -> Data[PILImage[HWC, M]]:
+) -> Data[PILImage[HWC, M, Int255]]:
     pil_img = Image_.open(image_dir / metadata.name).convert(mode)
-    return Data(metadata, cast(PILImage[HWC, M], pil_img))
+    return Data(metadata, cast(PILImage[HWC, M, Int255], pil_img))
