@@ -37,7 +37,7 @@ def image_transform[T, U, **P](
 
 
 @image_transform
-def to_numpy[L, M](image: TypedImage[L, M]) -> TypedArray[L, M]:
+def to_numpy[L: Layout, M: Mode](image: TypedImage[L, M]) -> TypedArray[L, M]:
     return TypedArray(np.array(image))
 
 
