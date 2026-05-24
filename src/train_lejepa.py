@@ -1,48 +1,30 @@
-import itertools
-import numpy as np
+from typing import Generator
 import torch
 import torch.optim as optim
 from pathlib import Path
-from PIL import Image as Image
+from functools import partial
 
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
-from transform import random_affine, shuffle
+from transform import random_affine, shuffle, random_crop, to_numpy, \
+    to_tensor, to, make_views
 from dataset.imslp import load_imslp, load_image, BatchedData
 
 
 def create_lejepa_iterator(
-    manifest_path: Path, image_dir: Path, batch_size: int, v_views: int = 4
-):
+    manifest_path: Path, image_dir: Path, crop_size: int, batch_size: int, n_views: int,
+    device: torch.device
+) -> Generator[BatchedData]:
 
-    meta_gen = shuffle(load_imslp(manifest_path, image_dir))
-
-    while True:
-        batch_meta = list(itertools.islice(meta_gen, batch_size))
-        if not batch_meta:
-            break
-
-        batch_views = []
-        for meta in batch_meta:
-            # Using L for grayscale
-            pil_img = load_image(meta, image_dir, mode="L").image
-
-            # Simple resize for uniform batching (ViT default is usually 224x224)
-            pil_img = pil_img.resize((224, 224), Image.Resampling.BILINEAR)
-
-            # Convert to tensor manually without torchvision
-            tensor_img = (
-                torch.from_numpy(np.array(pil_img)).float().unsqueeze(0) / 255.0
-            )
-            # Normalize: mean=0.5, std=0.5
-            tensor_img = (tensor_img - 0.5) / 0.5
-
-            # Create identical copies to be uniquely augmented later on the GPU
-            views = [tensor_img for _ in range(v_views)]
-            batch_views.append(torch.stack(views))
-
-        # Yields shape: (batch_size, v_views, C, H, W)
-        yield torch.stack(batch_views)
+    gen = load_imslp(manifest_path)
+    gen = shuffle(gen)
+    data_pil = map(partial(load_image, image_dir=image_dir, mode='L'), gen)
+    data_np = map(to_numpy, data_pil)
+    data_t = map(to_tensor, data_np)
+    data_t = map(partial(to, device=device), data_t)
+    data_t = map(partial(random_crop, crop_size=crop_size), data_t)
+    data_t = map(partial(make_views, n=n_views), data_t)
+    yield from data_t
 
 
 def train():
