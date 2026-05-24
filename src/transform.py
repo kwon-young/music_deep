@@ -5,7 +5,7 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-from dataset.imslp import Data, Layout, Mode, PILImage
+from dataset.imslp import Data, Layout, Mode, PILImage, ArrayImage, TensorImage
 
 
 def image_transform[T, U, **P](
