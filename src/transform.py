@@ -56,7 +56,10 @@ def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
 def to_numpy[L: Layout, M: Mode, R: Range](
     image: PILImage[L, M, R],
 ) -> ArrayImage[L, M, R]:
-    return cast(ArrayImage[L, M, R], np.array(image))
+    arr = np.array(image)
+    if arr.ndim == 2:
+        arr = np.expand_dims(arr, axis=-1)
+    return cast(ArrayImage[L, M, R], arr)
 
 
 @image_transform
