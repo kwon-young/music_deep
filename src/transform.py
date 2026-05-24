@@ -25,6 +25,8 @@ from dataset.imslp import (
     HWC,
     CHW,
     VCHW,
+    BCHW,
+    BVCHW,
 )
 
 
@@ -90,7 +92,7 @@ def to[I: TensorImage](image: I, device: torch.device) -> I:
 
 
 @batched_image_transform
-def random_affine[L: BatchedLayouts, M: Mode](
+def random_affine[L: BCHW | BVCHW, M: Mode](
     x: TensorImage[L, M, Float1],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
