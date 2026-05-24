@@ -99,14 +99,16 @@ def random_affine[L: BatchedLayout, M: Mode](
 
 def random_crop[M: Mode](x: TensorImage[HWC, M], crop_size: int) -> TensorImage[BHWC, M]:
     # random crop n time where n*crop_size**2 will in average == h*w
-    (b, h, w, c) = x.shape
+    (h, w, c) = x.shape
     num_crop_frac = (h / crop_size) * (w / crop_size)
     num_crop = int(num_crop_frac)
     frac = num_crop_frac - num_crop
     last_crop = random.binomialvariate(n=1, p=frac)
     num_crop += last_crop
-    x_max = w - crop_size
-    y_max = h - crop_size
-    xs = torch.randint(0, x_max, size=num_crop)
-    ys = torch.randint(0, y_max, size=num_crop)
+    x_max = w - crop_size + 1
+    y_max = h - crop_size + 1
+    xs = torch.randint(0, x_max, size=(num_crop,))
+    ys = torch.randint(0, y_max, size=(num_crop,))
     # sample xs and ys from x creating a new batch dimension
+    crops = [x[y:y+crop_size, x_val:x_val+crop_size, :] for y, x_val in zip(ys, xs)]
+    return cast(TensorImage[BHWC, M], torch.stack(crops))
