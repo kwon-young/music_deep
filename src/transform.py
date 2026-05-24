@@ -91,8 +91,8 @@ def to[I: TensorImage](image: I, device: torch.device) -> I:
     return cast(I, image.to(device))
 
 
-@batched_image_transform
-def random_affine[L: BCHW | BVCHW, M: Mode](
+@image_transform
+def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
     x: TensorImage[L, M, Float1],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
