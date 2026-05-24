@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from pathlib import Path
-from PIL import Image as PILImage
+from PIL import Image as Image
 
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
@@ -28,7 +28,7 @@ def create_lejepa_iterator(
             pil_img = load_image(meta, image_dir, mode="L").image
 
             # Simple resize for uniform batching (ViT default is usually 224x224)
-            pil_img = pil_img.resize((224, 224), PILImage.Resampling.BILINEAR)
+            pil_img = pil_img.resize((224, 224), Image.Resampling.BILINEAR)
 
             # Convert to tensor manually without torchvision
             tensor_img = (
