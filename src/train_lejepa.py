@@ -15,7 +15,6 @@ from transform import (
     to,
     make_views,
     to_float1,
-    to_chw,
     collate,
 )
 from dataset.imslp import (
@@ -24,26 +23,23 @@ from dataset.imslp import (
     BatchedData,
     Metadata,
     Data,
-    Mode,
 )
 
 
 def transform_image(
     metadata: Metadata,
     image_dir: Path,
-    mode: Mode,
     device: torch.device,
     crop_size: int,
     n_views: int,
     max_angle_deg: float,
     max_translate: float,
 ) -> Data:
-    data_pil = load_image(metadata, image_dir=image_dir, mode=mode)
+    data_pil = load_image(metadata, image_dir=image_dir)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
     data_t = random_crop(data_t, crop_size=crop_size)
     data_t = to_float1(data_t)
-    data_t = to_chw(data_t)
     data_t = make_views(data_t, n=n_views)
     data_t = random_affine(data_t, max_angle_deg, max_translate)
     return data_t
@@ -56,7 +52,6 @@ def create_lejepa_iterator(
     batch_size: int,
     n_views: int,
     device: torch.device,
-    mode: Mode,
 ) -> Generator[BatchedData]:
 
     gen = shuffle(load_imslp(manifest_path))
@@ -64,7 +59,6 @@ def create_lejepa_iterator(
         partial(
             transform_image,
             image_dir=image_dir,
-            mode=mode,
             device=device,
             crop_size=crop_size,
             n_views=n_views,
@@ -108,7 +102,6 @@ def train():
             batch_size=batch_size,
             n_views=v_views,
             device=device,
-            mode="L",
         )
 
         for step, batch in enumerate(iterator):

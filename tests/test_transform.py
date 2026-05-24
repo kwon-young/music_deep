@@ -14,8 +14,8 @@ class TestTransformToNumpy(unittest.TestCase):
         # Apply the transform
         result = to_numpy(data)
         
-        # Verify the shape is 3D (H, W, C)
-        self.assertEqual(result.image.shape, (256, 256, 1))
+        # Verify the shape is 3D (C, H, W)
+        self.assertEqual(result.image.shape, (1, 256, 256))
         self.assertEqual(len(result.image.shape), 3)
 
 if __name__ == "__main__":

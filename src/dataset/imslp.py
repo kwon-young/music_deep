@@ -22,9 +22,10 @@ type Channel = int
 type View = int
 type Dim = Batch | View | Height | Width | Channel
 type Shape = tuple[Dim, ...]
+HW = tuple[Height, Width]
 HWC = tuple[Height, Width, Channel]
 CHW = tuple[Channel, Height, Width]
-type Layout = HWC | CHW
+type Layout = HW | HWC | CHW
 VCHW = tuple[View, *CHW]
 type ViewLayout = tuple[View, *HWC] | VCHW
 type Layouts = Layout | ViewLayout
@@ -75,10 +76,9 @@ def load_imslp(manifest: Path) -> Generator[Metadata]:
             yield Metadata(**json.loads(line))
 
 
-def load_image[M: Mode](
+def load_image(
     metadata: Metadata,
     image_dir: Path,
-    mode: M,
-) -> Data[PILImage[HWC, M, Int255]]:
-    pil_img = Image_.open(image_dir / metadata.name).convert(mode)
-    return Data(metadata, cast(PILImage[HWC, M, Int255], pil_img))
+) -> Data[PILImage[HW, Gray, Int255]]:
+    pil_img = Image_.open(image_dir / metadata.name).convert("L")
+    return Data(metadata, cast(PILImage[HW, Gray, Int255], pil_img))

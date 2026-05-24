@@ -22,11 +22,13 @@ from dataset.imslp import (
     Image,
     BatchedImage,
     Batch,
+    HW,
     HWC,
     CHW,
     VCHW,
     BCHW,
     BVCHW,
+    Gray,
 )
 
 
@@ -53,13 +55,12 @@ def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
 
 
 @image_transform
-def to_numpy[L: Layout, M: Mode, R: Range](
-    image: PILImage[L, M, R],
-) -> ArrayImage[L, M, R]:
+def to_numpy[R: Range](
+    image: PILImage[HW, Gray, R],
+) -> ArrayImage[CHW, Gray, R]:
     arr = np.array(image)
-    if arr.ndim == 2:
-        arr = np.expand_dims(arr, axis=-1)
-    return cast(ArrayImage[L, M, R], arr)
+    arr = np.expand_dims(arr, axis=0)
+    return cast(ArrayImage[CHW, Gray, R], arr)
 
 
 @image_transform
@@ -67,13 +68,6 @@ def to_tensor[L: Layout, M: Mode, R: Range](
     image: ArrayImage[L, M, R],
 ) -> TensorImage[L, M, R]:
     return cast(TensorImage[L, M, R], torch.as_tensor(image))
-
-
-@image_transform
-def to_chw[M: Mode, R: Range](
-    image: TensorImage[HWC, M, R],
-) -> TensorImage[CHW, M, R]:
-    return cast(TensorImage[CHW, M, R], image.permute(2, 0, 1))
 
 
 @image_transform
@@ -135,10 +129,10 @@ def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
 
 
 def random_crops[M: Mode, R: Range](
-    x: TensorImage[HWC, M, R], crop_size: int
-) -> TensorImage[tuple[Batch, *HWC], M, R]:
+    x: TensorImage[CHW, M, R], crop_size: int
+) -> TensorImage[tuple[Batch, *CHW], M, R]:
     # random crop n time where n*crop_size**2 will in average == h*w
-    (h, w, c) = x.shape
+    (c, h, w) = x.shape
     num_crop_frac = (h / crop_size) * (w / crop_size)
     num_crop = int(num_crop_frac)
     frac = num_crop_frac - num_crop
@@ -149,22 +143,22 @@ def random_crops[M: Mode, R: Range](
     xs = torch.randint(0, x_max, size=(num_crop,))
     ys = torch.randint(0, y_max, size=(num_crop,))
     crops = [
-        x[y:y + crop_size, x_val:x_val + crop_size, :]
+        x[:, y:y + crop_size, x_val:x_val + crop_size]
         for y, x_val in zip(ys, xs)
     ]
-    return cast(TensorImage[tuple[Batch, *HWC], M, R], torch.stack(crops))
+    return cast(TensorImage[tuple[Batch, *CHW], M, R], torch.stack(crops))
 
 
 @image_transform
 def random_crop[M: Mode, R: Range](
-    image: TensorImage[HWC, M, R], crop_size: int
-) -> TensorImage[HWC, M, R]:
-    (h, w, c) = image.shape
+    image: TensorImage[CHW, M, R], crop_size: int
+) -> TensorImage[CHW, M, R]:
+    (c, h, w) = image.shape
     x_max = w - crop_size + 1
     y_max = h - crop_size + 1
     x = torch.randint(0, x_max, size=(1,))[0]
     y = torch.randint(0, y_max, size=(1,))[0]
-    image = image[y:y + crop_size, x:x + crop_size, :]
+    image = image[:, y:y + crop_size, x:x + crop_size]
     return image
 
 
