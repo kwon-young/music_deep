@@ -23,8 +23,15 @@ RGB = Literal["RGB"]
 Mode = Binary | Gray | RGB
 
 
+class TypedImage[Layout, Mode](PILImage.Image):
+    @classmethod
+    def create(cls, img: PILImage.Image) -> "TypedImage[Layout, Mode]":
+        img.__class__ = cls
+        return img
+
+
 @dataclass
-class Image[T, Layout, Mode]:
+class Image[T]:
     metadata: Metadata
     image: T
 
@@ -40,7 +47,6 @@ def load_image[T: Mode](
     metadata: Metadata,
     image_dir: Path,
     mode: Mode,
-) -> Image[PILImage.Image, HWC, T]:
-    return Image(
-        metadata, PILImage.open(image_dir / metadata.name).convert(mode)
-    )
+) -> Image[TypedImage[HWC, T]]:
+    pil_img = PILImage.open(image_dir / metadata.name).convert(mode)
+    return Image(metadata, TypedImage.create(pil_img))

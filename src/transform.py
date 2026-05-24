@@ -1,25 +1,49 @@
-from typing import Iterator, Generator
+from typing import Iterator, Generator, Callable, Concatenate
+from functools import wraps
 import random
 import math
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image as PILImage
-from dataset.imslp import Image, Layout, Mode
+from dataset.imslp import Image, Layout, Mode, TypedImage
 
 
-type NpImage = Image[np.ndarray, Layout, Mode]
-type TensorImage = Image[torch.Tensor, Layout, Mode]
+class TypedArray[Layout, Mode](np.ndarray):
+    def __new__(cls, input_array: np.ndarray) -> "TypedArray[Layout, Mode]":
+        return np.asarray(input_array).view(cls)
 
 
-def to_numpy(
-    image: Image[PILImage.Image, Layout, Mode],
-) -> Image[np.ndarray, Layout, Mode]:
-    return Image(image.metadata, np.array(image.image))
+class TypedTensor[Layout, Mode](torch.Tensor):
+    @classmethod
+    def create(cls, data: torch.Tensor) -> "TypedTensor[Layout, Mode]":
+        return data.as_subclass(cls)
 
 
-def to_tensor(image: NpImage) -> TensorImage:
-    return Image(image.metadata, torch.as_tensor(image.image))
+type NpImage[Layout, Mode] = Image[TypedArray[Layout, Mode]]
+type TensorImage[Layout, Mode] = Image[TypedTensor[Layout, Mode]]
+
+
+def image_transform[T, U, **P](
+    func: Callable[Concatenate[T, P], U]
+) -> Callable[Concatenate[Image[T], P], Image[U]]:
+    @wraps(func)
+    def wrapper(
+        img: Image[T], *args: P.args, **kwargs: P.kwargs
+    ) -> Image[U]:
+        return Image(img.metadata, func(img.image, *args, **kwargs))
+
+    return wrapper
+
+
+@image_transform
+def to_numpy[L, M](image: TypedImage[L, M]) -> TypedArray[L, M]:
+    return TypedArray(np.array(image))
+
+
+@image_transform
+def to_tensor[L, M](image: TypedArray[L, M]) -> TypedTensor[L, M]:
+    return TypedTensor.create(torch.as_tensor(image))
 
 
 def shuffle[T](it: Iterator[T]) -> Generator[T]:
@@ -28,8 +52,9 @@ def shuffle[T](it: Iterator[T]) -> Generator[T]:
     yield from l
 
 
-def to(image: TensorImage, device: torch.device) -> TensorImage:
-    return Image(image.metadata, image.image.to(device))
+@image_transform
+def to[L, M](image: TypedTensor[L, M], device: torch.device) -> TypedTensor[L, M]:
+    return TypedTensor.create(image.to(device))
 
 
 def gpu_random_affine(
