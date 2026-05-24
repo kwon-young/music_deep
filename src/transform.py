@@ -5,42 +5,27 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image as PILImage
-from dataset.imslp import Image, Layout, Mode, TypedImage
-
-
-class TypedArray[L: Layout, M: Mode](np.ndarray):
-    pass
-
-
-class TypedTensor[L: Layout, M: Mode](torch.Tensor):
-    pass
-
-
-type NpImage[L: Layout, M: Mode] = Image[TypedArray[L, M]]
-type TensorImage[L: Layout, M: Mode] = Image[TypedTensor[L, M]]
+from dataset.imslp import Data, Layout, Mode, PILImage
 
 
 def image_transform[T, U, **P](
-    func: Callable[Concatenate[T, P], U]
-) -> Callable[Concatenate[Image[T], P], Image[U]]:
+    func: Callable[Concatenate[T, P], U],
+) -> Callable[Concatenate[Data[T], P], Data[U]]:
     @wraps(func)
-    def wrapper(
-        img: Image[T], *args: P.args, **kwargs: P.kwargs
-    ) -> Image[U]:
-        return Image(img.metadata, func(img.image, *args, **kwargs))
+    def wrapper(img: Data[T], *args: P.args, **kwargs: P.kwargs) -> Data[U]:
+        return Data(img.metadata, func(img.image, *args, **kwargs))
 
     return wrapper
 
 
 @image_transform
-def to_numpy[L: Layout, M: Mode](image: TypedImage[L, M]) -> TypedArray[L, M]:
-    return cast(TypedArray[L, M], np.array(image))
+def to_numpy[L: Layout, M: Mode](image: PILImage[L, M]) -> ArrayImage[L, M]:
+    return cast(ArrayImage[L, M], np.array(image))
 
 
 @image_transform
-def to_tensor[L: Layout, M: Mode](image: TypedArray[L, M]) -> TypedTensor[L, M]:
-    return cast(TypedTensor[L, M], torch.as_tensor(image))
+def to_tensor[L: Layout, M: Mode](image: ArrayImage[L, M]) -> TensorImage[L, M]:
+    return cast(TensorImage[L, M], torch.as_tensor(image))
 
 
 def shuffle[T](it: Iterator[T]) -> Generator[T]:
@@ -50,8 +35,10 @@ def shuffle[T](it: Iterator[T]) -> Generator[T]:
 
 
 @image_transform
-def to[L: Layout, M: Mode](image: TypedTensor[L, M], device: torch.device) -> TypedTensor[L, M]:
-    return cast(TypedTensor[L, M], image.to(device))
+def to[L: Layout, M: Mode](
+    image: TensorImage[L, M], device: torch.device
+) -> TensorImage[L, M]:
+    return cast(TensorImage[L, M], image.to(device))
 
 
 def gpu_random_affine(
