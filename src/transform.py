@@ -42,7 +42,7 @@ def to_numpy[L: Layout, M: Mode](image: TypedImage[L, M]) -> TypedArray[L, M]:
 
 
 @image_transform
-def to_tensor[L, M](image: TypedArray[L, M]) -> TypedTensor[L, M]:
+def to_tensor[L: Layout, M: Mode](image: TypedArray[L, M]) -> TypedTensor[L, M]:
     return TypedTensor.create(torch.as_tensor(image))
 
 
@@ -53,7 +53,7 @@ def shuffle[T](it: Iterator[T]) -> Generator[T]:
 
 
 @image_transform
-def to[L, M](image: TypedTensor[L, M], device: torch.device) -> TypedTensor[L, M]:
+def to[L: Layout, M: Mode](image: TypedTensor[L, M], device: torch.device) -> TypedTensor[L, M]:
     return TypedTensor.create(image.to(device))
 
 
