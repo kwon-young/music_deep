@@ -7,8 +7,8 @@ from PIL import Image as Image
 
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
-from transform import gpu_random_affine, shuffle
-from dataset.imslp import load_imslp, load_image
+from transform import random_affine, shuffle
+from dataset.imslp import load_imslp, load_image, BatchedData
 
 
 def create_lejepa_iterator(
@@ -80,7 +80,7 @@ def train():
 
             # Flatten batch and views for the model, then apply GPU augmentations
             x_flat = batch.view(N * V, C, H, W)
-            x_aug = gpu_random_affine(x_flat)
+            x_aug = random_affine(BatchedData([], x_flat)).image
 
             # Forward pass
             emb, proj = encoder(x_aug, random_drop=True)
