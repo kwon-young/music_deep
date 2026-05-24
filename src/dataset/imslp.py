@@ -23,9 +23,9 @@ RGB = Literal["RGB"]
 Mode = Binary | Gray | RGB
 
 
-class TypedImage[Layout, Mode](PILImage.Image):
+class TypedImage[L: Layout, M: Mode](PILImage.Image):
     @classmethod
-    def create(cls, img: PILImage.Image) -> "TypedImage[Layout, Mode]":
+    def create(cls, img: PILImage.Image) -> "TypedImage[L, M]":
         img.__class__ = cls
         return img
 

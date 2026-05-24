@@ -10,18 +10,18 @@ from dataset.imslp import Image, Layout, Mode, TypedImage
 
 
 class TypedArray[L: Layout, M: Mode](np.ndarray):
-    def __new__(cls, input_array: np.ndarray) -> "TypedArray[Layout, Mode]":
+    def __new__(cls, input_array: np.ndarray) -> "TypedArray[L, M]":
         return np.asarray(input_array).view(cls)
 
 
-class TypedTensor[Layout, Mode](torch.Tensor):
+class TypedTensor[L: Layout, M: Mode](torch.Tensor):
     @classmethod
-    def create(cls, data: torch.Tensor) -> "TypedTensor[Layout, Mode]":
+    def create(cls, data: torch.Tensor) -> "TypedTensor[L, M]":
         return data.as_subclass(cls)
 
 
-type NpImage[Layout, Mode] = Image[TypedArray[Layout, Mode]]
-type TensorImage[Layout, Mode] = Image[TypedTensor[Layout, Mode]]
+type NpImage[L: Layout, M: Mode] = Image[TypedArray[L, M]]
+type TensorImage[L: Layout, M: Mode] = Image[TypedTensor[L, M]]
 
 
 def image_transform[T, U, **P](
