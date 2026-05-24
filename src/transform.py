@@ -9,6 +9,7 @@ from dataset.imslp import (
     Data,
     BatchedData,
     Layout,
+    BatchedLayout,
     Mode,
     PILImage,
     ArrayImage,
@@ -63,9 +64,10 @@ def to[L: Layout, M: Mode](
     return cast(TensorImage[L, M], image.to(device))
 
 
-def random_affine(
-    x: torch.Tensor, max_angle_deg: float = 3.0, max_translate: float = 0.05
-) -> torch.Tensor:
+@batched_image_transform
+def random_affine[L: BatchedLayout, M: Mode](
+    x: TensorImage[L, M], max_angle_deg: float = 3.0, max_translate: float = 0.05
+) -> TensorImage[L, M]:
     N = x.size(0)
     device = x.device
 
@@ -94,4 +96,4 @@ def random_affine(
     x_transformed = F.grid_sample(
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
-    return x_transformed + 1.0
+    return cast(TensorImage[L, M], x_transformed + 1.0)
