@@ -1,4 +1,4 @@
-from typing import Iterator, Generator, Callable, Concatenate
+from typing import Iterator, Generator, Callable, Concatenate, cast
 from functools import wraps
 import random
 import math
@@ -10,14 +10,11 @@ from dataset.imslp import Image, Layout, Mode, TypedImage
 
 
 class TypedArray[L: Layout, M: Mode](np.ndarray):
-    def __new__(cls, input_array: np.ndarray) -> "TypedArray[L, M]":
-        return np.asarray(input_array).view(cls)
+    pass
 
 
 class TypedTensor[L: Layout, M: Mode](torch.Tensor):
-    @classmethod
-    def create(cls, data: torch.Tensor) -> "TypedTensor[L, M]":
-        return data.as_subclass(cls)
+    pass
 
 
 type NpImage[L: Layout, M: Mode] = Image[TypedArray[L, M]]
@@ -38,12 +35,12 @@ def image_transform[T, U, **P](
 
 @image_transform
 def to_numpy[L: Layout, M: Mode](image: TypedImage[L, M]) -> TypedArray[L, M]:
-    return TypedArray(np.array(image))
+    return cast(TypedArray[L, M], np.array(image))
 
 
 @image_transform
 def to_tensor[L: Layout, M: Mode](image: TypedArray[L, M]) -> TypedTensor[L, M]:
-    return TypedTensor.create(torch.as_tensor(image))
+    return cast(TypedTensor[L, M], torch.as_tensor(image))
 
 
 def shuffle[T](it: Iterator[T]) -> Generator[T]:
@@ -54,7 +51,7 @@ def shuffle[T](it: Iterator[T]) -> Generator[T]:
 
 @image_transform
 def to[L: Layout, M: Mode](image: TypedTensor[L, M], device: torch.device) -> TypedTensor[L, M]:
-    return TypedTensor.create(image.to(device))
+    return cast(TypedTensor[L, M], image.to(device))
 
 
 def gpu_random_affine(

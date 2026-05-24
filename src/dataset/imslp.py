@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, cast
 import json
 from pathlib import Path
 from dataclasses import dataclass
@@ -24,10 +24,7 @@ Mode = Binary | Gray | RGB
 
 
 class TypedImage[L: Layout, M: Mode](PILImage.Image):
-    @classmethod
-    def create(cls, img: PILImage.Image) -> "TypedImage[L, M]":
-        img.__class__ = cls
-        return img
+    pass
 
 
 @dataclass
@@ -49,4 +46,4 @@ def load_image[T: Mode](
     mode: Mode,
 ) -> Image[TypedImage[HWC, T]]:
     pil_img = PILImage.open(image_dir / metadata.name).convert(mode)
-    return Image(metadata, TypedImage.create(pil_img))
+    return Image(metadata, cast(TypedImage[HWC, T], pil_img))
