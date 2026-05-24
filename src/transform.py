@@ -63,7 +63,7 @@ def to[L: Layout, M: Mode](
     return cast(TensorImage[L, M], image.to(device))
 
 
-def gpu_random_affine(
+def random_affine(
     x: torch.Tensor, max_angle_deg: float = 3.0, max_translate: float = 0.05
 ) -> torch.Tensor:
     N = x.size(0)
