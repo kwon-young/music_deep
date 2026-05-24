@@ -8,8 +8,8 @@ from PIL import Image as PILImage
 from dataset.imslp import Image, Layout, Mode
 
 
-NpImage = Image[np.ndarray, Layout, Mode]
-TensorImage = Image[torch.Tensor, Layout, Mode]
+type NpImage = Image[np.ndarray, Layout, Mode]
+type TensorImage = Image[torch.Tensor, Layout, Mode]
 
 
 def to_numpy(
