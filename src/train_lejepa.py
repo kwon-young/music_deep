@@ -1,4 +1,5 @@
 import argparse
+import time
 from typing import Generator
 import torch
 import torch.optim as optim
@@ -125,7 +126,8 @@ def train(params: TrainParams):
     best_loss = float("inf")
 
     running_loss = None
-    window_samples = 0
+    samples = 0
+    start_time = time.time()
 
     for epoch in range(params.epochs):
         encoder.train()
@@ -161,7 +163,7 @@ def train(params: TrainParams):
                 else:
                     running_loss = 0.99 * running_loss + 0.01 * loss.item()
 
-                window_samples += N
+                samples += N
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -169,13 +171,16 @@ def train(params: TrainParams):
                 optimizer.step()
 
                 if step % params.log_interval == 0:
+                    elapsed = time.time() - start_time
+                    speed = samples / elapsed if elapsed > 0 else 0.0
                     print(
-                        f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
+                        f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
                         f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
-                        f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f})"
+                        f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f}) "
+                        f"Speed: {speed:.1f} sample/s"
                     )
 
-                if window_samples >= params.checkpoint_window_size:
+                if samples // params.checkpoint_window_size > (samples - N) // params.checkpoint_window_size:
                     print(
                         f"Sample Window Reached [{params.checkpoint_window_size}]. "
                         f"Running Average Loss: {running_loss:.4f}"
@@ -188,8 +193,6 @@ def train(params: TrainParams):
                             params.checkpoint_dir / "best_model.pt",
                         )
                         print(f"Saved new best model with loss {best_loss:.4f}")
-
-                    window_samples = 0
 
 
 if __name__ == "__main__":
