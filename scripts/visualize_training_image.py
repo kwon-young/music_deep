@@ -15,7 +15,7 @@ def visualize(
     image_dir: Path,
     image_size: int = 224,
     patch_size: int = 16,
-    num_keep_patches: int = 128,
+    drop_rate: float = 0.5,
 ):
     metadata_gen = load_imslp(manifest_path)
     metadata = next(metadata_gen)
@@ -47,7 +47,7 @@ def visualize(
         image_size=image_size,
         patch_size=patch_size,
         num_classes=0,
-        num_keep_patches=num_keep_patches,
+        drop_rate=drop_rate,
     )
 
     # Intercept torch.rand inside model/vit.py to get the patch drop indices
@@ -69,6 +69,7 @@ def visualize(
     num_patches_x = image_size // patch_size
     num_patches_y = image_size // patch_size
     num_patches = num_patches_x * num_patches_y
+    num_keep_patches = int(num_patches * (1.0 - drop_rate))
 
     rand_val = captured_rands[0]
     keep_indices = rand_val.argsort(dim=-1)[:, :num_keep_patches][0]
@@ -129,7 +130,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--patch_size", type=int, default=16)
-    parser.add_argument("--num_keep_patches", type=int, default=128)
+    parser.add_argument("--drop_rate", type=float, default=0.5)
     args = parser.parse_args()
 
     visualize(
@@ -137,5 +138,5 @@ if __name__ == "__main__":
         image_dir=args.image_dir,
         image_size=args.image_size,
         patch_size=args.patch_size,
-        num_keep_patches=args.num_keep_patches,
+        drop_rate=args.drop_rate,
     )
