@@ -83,7 +83,7 @@ def shuffle[T](it: Iterable[T]) -> Generator[T]:
     yield from l
 
 
-@batched_image_transform
+@image_transform
 def to[I: TensorImage](image: I, device: torch.device) -> I:
     return cast(I, image.to(device))
 
@@ -140,8 +140,8 @@ def random_crops[M: Mode, R: Range](
     num_crop += last_crop
     x_max = w - crop_size + 1
     y_max = h - crop_size + 1
-    xs = torch.randint(0, x_max, size=(num_crop,))
-    ys = torch.randint(0, y_max, size=(num_crop,))
+    xs = torch.randint(0, x_max, size=(num_crop,), device=x.device)
+    ys = torch.randint(0, y_max, size=(num_crop,), device=x.device)
     crops = [
         x[:, y : y + crop_size, x_val : x_val + crop_size]
         for y, x_val in zip(ys, xs)
@@ -156,8 +156,8 @@ def random_crop[M: Mode, R: Range](
     (c, h, w) = image.shape
     x_max = w - crop_size + 1
     y_max = h - crop_size + 1
-    x = torch.randint(0, x_max, size=(1,))[0]
-    y = torch.randint(0, y_max, size=(1,))[0]
+    x = torch.randint(0, x_max, size=(1,), device=image.device)[0]
+    y = torch.randint(0, y_max, size=(1,), device=image.device)[0]
     image = image[:, y : y + crop_size, x : x + crop_size]
     return image
 

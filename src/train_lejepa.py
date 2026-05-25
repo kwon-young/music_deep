@@ -65,6 +65,7 @@ def transform_image(
     data_pil = load_image(metadata, image_dir=params.image_dir)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
+    data_t = to(data_t, device=params.device)
     data_t = random_crop(data_t, crop_size=params.image_size)
     data_t = to_float1(data_t)
     data_t = make_views(data_t, n=params.n_views)
@@ -86,7 +87,6 @@ def create_lejepa_iterator(
         gen,
     )
     batched_data = collate(data, batch_size=params.batch_size)
-    batched_data = map(partial(to, device=params.device), batched_data)
     yield from batched_data
 
 
