@@ -9,7 +9,12 @@ from dataclasses import dataclass
 
 from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
-from threaded_generator import ThreadedGenerator, ParallelGenerator, Monitor, partial_generator
+from threaded_generator import (
+    ThreadedGenerator,
+    ParallelGenerator,
+    Monitor,
+    partial_generator,
+)
 from transform import (
     random_affine,
     shuffle,
@@ -80,7 +85,9 @@ def create_lejepa_iterator(
     monitor: Monitor,
 ) -> Generator[BatchedData]:
 
-    gen = partial_generator(shuffle)(partial_generator(load_imslp)(params.manifest_path))
+    gen = partial_generator(shuffle)(
+        partial_generator(load_imslp)(params.manifest_path)
+    )
     data = partial_generator(map)(
         partial(
             transform_image,
@@ -90,9 +97,9 @@ def create_lejepa_iterator(
     )
     data_gen = ParallelGenerator(
         data,
-        num_workers=params.batch_size,
-        maxsize=params.batch_size * 2,
-        monitor=monitor,
+        num_workers=2,
+        maxsize=params.batch_size,
+        # monitor=monitor,
         name="transform",
     )
     batched_data = collate(data_gen, batch_size=params.batch_size)
@@ -127,6 +134,7 @@ def train(params: TrainParams):
 
     running_loss = None
     samples = 0
+    checkpoint_number = 0
     start_time = time.time()
 
     for epoch in range(params.epochs):
@@ -135,64 +143,64 @@ def train(params: TrainParams):
         iterator = ThreadedGenerator(
             create_lejepa_iterator(params, monitor=monitor),
             maxsize=2,
-            monitor=monitor,
+            # monitor=monitor,
         )
 
-        with monitor:
-            for step, batch in enumerate(iterator):
-                image = batch.image
-                N, V, C, H, W = image.shape
+        for step, batch in enumerate(iterator):
+            image = batch.image
+            N, V, C, H, W = image.shape
 
-                # Flatten batch and views for the model
-                x_aug = image.view(N * V, C, H, W)
+            # Flatten batch and views for the model
+            x_aug = image.view(N * V, C, H, W)
 
-                # Forward pass
-                emb, proj = encoder(x_aug, random_drop=True)
+            # Forward pass
+            emb, proj = encoder(x_aug, random_drop=True)
 
-                # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
-                proj = proj.view(N, V, -1).transpose(0, 1)
+            # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
+            proj = proj.view(N, V, -1).transpose(0, 1)
 
-                # Compute losses
-                inv_loss = (proj.mean(0) - proj).square().mean()
-                sigreg_loss = sigreg(proj)
+            # Compute losses
+            inv_loss = (proj.mean(0) - proj).square().mean()
+            sigreg_loss = sigreg(proj)
 
-                loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
+            loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
-                if running_loss is None:
-                    running_loss = loss.item()
-                else:
-                    running_loss = 0.99 * running_loss + 0.01 * loss.item()
+            if running_loss is None:
+                running_loss = loss.item()
+            else:
+                running_loss = 0.99 * running_loss + 0.01 * loss.item()
 
-                samples += N
+            samples += N
 
-                # Backward pass
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-                if step % params.log_interval == 0:
-                    elapsed = time.time() - start_time
-                    speed = samples / elapsed if elapsed > 0 else 0.0
-                    print(
-                        f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
-                        f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
-                        f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f}) "
-                        f"Speed: {speed:.1f} sample/s"
+            if step % params.log_interval == 0:
+                elapsed = time.time() - start_time
+                speed = samples / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
+                    f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
+                    f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f}) "
+                    f"Speed: {speed:.1f} sample/s"
+                )
+
+            if samples > checkpoint_number * params.checkpoint_window_size:
+                print(
+                    f"Sample Window Reached [{checkpoint_number}]. "
+                    f"Running Average Loss: {running_loss:.4f}"
+                )
+                checkpoint_number += 1
+
+                if running_loss < best_loss:
+                    best_loss = running_loss
+                    torch.save(
+                        encoder.state_dict(),
+                        params.checkpoint_dir / "best_model.pt",
                     )
-
-                if samples // params.checkpoint_window_size > (samples - N) // params.checkpoint_window_size:
-                    print(
-                        f"Sample Window Reached [{params.checkpoint_window_size}]. "
-                        f"Running Average Loss: {running_loss:.4f}"
-                    )
-
-                    if running_loss < best_loss:
-                        best_loss = running_loss
-                        torch.save(
-                            encoder.state_dict(),
-                            params.checkpoint_dir / "best_model.pt",
-                        )
-                        print(f"Saved new best model with loss {best_loss:.4f}")
+                    print(f"Saved new best model with loss {best_loss:.4f}")
 
 
 if __name__ == "__main__":
