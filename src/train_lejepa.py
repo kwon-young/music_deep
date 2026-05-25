@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
-from threaded_generator import ThreadedGenerator
+from threaded_generator import ParallelGenerator, Monitor, partial_generator
 from transform import (
     random_affine,
     shuffle,
@@ -71,6 +71,7 @@ def transform_image(
     return data_t
 
 
+@partial_generator
 def create_lejepa_iterator(
     params: TrainParams,
 ) -> Generator[BatchedData]:
@@ -116,43 +117,50 @@ def train(params: TrainParams):
 
     for epoch in range(params.epochs):
         encoder.train()
-        iterator = ThreadedGenerator(create_lejepa_iterator(params), maxsize=2)
+        monitor = Monitor()
+        iterator = ParallelGenerator(
+            create_lejepa_iterator(params),
+            maxsize=2,
+            monitor=monitor,
+            num_workers=2,
+        )
 
         epoch_loss = 0.0
         steps = 0
-        for step, batch in enumerate(iterator):
-            image = batch.image
-            N, V, C, H, W = image.shape
+        with monitor:
+            for step, batch in enumerate(iterator):
+                image = batch.image
+                N, V, C, H, W = image.shape
 
-            # Flatten batch and views for the model
-            x_aug = image.view(N * V, C, H, W)
+                # Flatten batch and views for the model
+                x_aug = image.view(N * V, C, H, W)
 
-            # Forward pass
-            emb, proj = encoder(x_aug, random_drop=True)
+                # Forward pass
+                emb, proj = encoder(x_aug, random_drop=True)
 
-            # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
-            proj = proj.view(N, V, -1).transpose(0, 1)
+                # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
+                proj = proj.view(N, V, -1).transpose(0, 1)
 
-            # Compute losses
-            inv_loss = (proj.mean(0) - proj).square().mean()
-            sigreg_loss = sigreg(proj)
+                # Compute losses
+                inv_loss = (proj.mean(0) - proj).square().mean()
+                sigreg_loss = sigreg(proj)
 
-            loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
+                loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
-            epoch_loss += loss.item()
-            steps += 1
+                epoch_loss += loss.item()
+                steps += 1
 
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            if step % params.log_interval == 0:
-                print(
-                    f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
-                    f"Loss: {loss.item():.4f} "
-                    f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f})"
-                )
+                if step % params.log_interval == 0:
+                    print(
+                        f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
+                        f"Loss: {loss.item():.4f} "
+                        f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f})"
+                    )
 
         if steps > 0:
             avg_loss = epoch_loss / steps
