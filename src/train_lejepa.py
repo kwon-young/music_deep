@@ -53,6 +53,7 @@ class TrainParams:
     lr: float
     weight_decay: float
     log_interval: int
+    checkpoint_window_size: int
     device: torch.device
     checkpoint_dir: Path
 
@@ -115,6 +116,9 @@ def train(params: TrainParams):
     params.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     best_loss = float("inf")
 
+    running_loss = None
+    window_samples = 0
+
     for epoch in range(params.epochs):
         encoder.train()
         monitor = Monitor()
@@ -125,8 +129,6 @@ def train(params: TrainParams):
             num_workers=2,
         )
 
-        epoch_loss = 0.0
-        steps = 0
         with monitor:
             for step, batch in enumerate(iterator):
                 image = batch.image
@@ -147,8 +149,12 @@ def train(params: TrainParams):
 
                 loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
-                epoch_loss += loss.item()
-                steps += 1
+                if running_loss is None:
+                    running_loss = loss.item()
+                else:
+                    running_loss = 0.99 * running_loss + 0.01 * loss.item()
+
+                window_samples += N
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -158,23 +164,25 @@ def train(params: TrainParams):
                 if step % params.log_interval == 0:
                     print(
                         f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
-                        f"Loss: {loss.item():.4f} "
+                        f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
                         f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f})"
                     )
 
-        if steps > 0:
-            avg_loss = epoch_loss / steps
-            print(
-                f"Epoch [{epoch}/{params.epochs}] Average Loss: {avg_loss:.4f}"
-            )
+                if window_samples >= params.checkpoint_window_size:
+                    print(
+                        f"Sample Window Reached [{params.checkpoint_window_size}]. "
+                        f"Running Average Loss: {running_loss:.4f}"
+                    )
 
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                torch.save(
-                    encoder.state_dict(),
-                    params.checkpoint_dir / "best_model.pt",
-                )
-                print(f"Saved new best model with loss {best_loss:.4f}")
+                    if running_loss < best_loss:
+                        best_loss = running_loss
+                        torch.save(
+                            encoder.state_dict(),
+                            params.checkpoint_dir / "best_model.pt",
+                        )
+                        print(f"Saved new best model with loss {best_loss:.4f}")
+
+                    window_samples = 0
 
 
 if __name__ == "__main__":
@@ -205,6 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=0.05)
     parser.add_argument("--log_interval", type=int, default=10)
+    parser.add_argument("--checkpoint_window_size", type=int, default=10000)
     parser.add_argument(
         "--checkpoint_dir", type=Path, default=Path("data/train_lejepa/")
     )
@@ -236,6 +245,7 @@ if __name__ == "__main__":
         lr=args.lr,
         weight_decay=args.weight_decay,
         log_interval=args.log_interval,
+        checkpoint_window_size=args.checkpoint_window_size,
         device=device,
         checkpoint_dir=args.checkpoint_dir,
     )
