@@ -5,7 +5,7 @@ from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 
-from model.vit import vit_small
+from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
 from transform import (
     random_affine,
@@ -39,6 +39,11 @@ class TrainParams:
     num_classes: int
     channels: int
     num_keep_patches: int
+    patch_size: int
+    dim: int
+    depth: int
+    heads: int
+    mlp_dim: int
     embed_dim: int
     proj_dim: int
     batch_size: int
@@ -95,6 +100,11 @@ def train():
         num_classes=0,
         channels=1,
         num_keep_patches=128,
+        patch_size=16,
+        dim=192,
+        depth=12,
+        heads=3,
+        mlp_dim=768,
         embed_dim=384,
         proj_dim=16,
         batch_size=128,
@@ -108,9 +118,14 @@ def train():
 
     # Model Setup
     # Note: image channels=1 since `create_lejepa_iterator` uses "L" (Grayscale)
-    backbone = vit_small(
+    backbone = ViT(
         image_size=params.image_size,
+        patch_size=params.patch_size,
         num_classes=params.num_classes,
+        dim=params.dim,
+        depth=params.depth,
+        heads=params.heads,
+        mlp_dim=params.mlp_dim,
         channels=params.channels,
         num_keep_patches=params.num_keep_patches
     )
