@@ -31,7 +31,6 @@ from dataset.imslp import (
 class TrainParams:
     manifest_path: Path
     image_dir: Path
-    crop_size: int
     n_views: int
     max_angle_deg: float
     max_translate: float
@@ -62,7 +61,7 @@ def transform_image(
     data_pil = load_image(metadata, image_dir=params.image_dir)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
-    data_t = random_crop(data_t, crop_size=params.crop_size)
+    data_t = random_crop(data_t, crop_size=params.image_size)
     data_t = to_float1(data_t)
     data_t = make_views(data_t, n=params.n_views)
     data_t = random_affine(data_t, params.max_angle_deg, params.max_translate)
@@ -92,7 +91,6 @@ def train():
     params = TrainParams(
         manifest_path=Path("data/imslp/imslp.jsonl"),
         image_dir=Path("data/imslp/images"),
-        crop_size=224,
         n_views=4,
         max_angle_deg=3.0,
         max_translate=0.05,
@@ -107,7 +105,7 @@ def train():
         mlp_dim=768,
         embed_dim=192,
         proj_dim=16,
-        batch_size=32,
+        batch_size=16,
         lamb=0.05,
         epochs=100,
         lr=5e-4,
