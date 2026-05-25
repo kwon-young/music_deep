@@ -3,6 +3,7 @@ import torch
 import torch.optim as optim
 from pathlib import Path
 from functools import partial
+from dataclasses import dataclass
 
 from model.vit import vit_small
 from model.lejepa import LeJEPAEncoder, SIGReg
@@ -26,83 +27,101 @@ from dataset.imslp import (
 )
 
 
+@dataclass
+class TrainParams:
+    manifest_path: Path
+    image_dir: Path
+    crop_size: int
+    n_views: int
+    max_angle_deg: float
+    max_translate: float
+    image_size: int
+    num_classes: int
+    channels: int
+    num_keep_patches: int
+    embed_dim: int
+    proj_dim: int
+    batch_size: int
+    lamb: float
+    epochs: int
+    lr: float
+    weight_decay: float
+    log_interval: int
+    device: torch.device
+
+
 def transform_image(
     metadata: Metadata,
-    image_dir: Path,
-    device: torch.device,
-    crop_size: int,
-    n_views: int,
-    max_angle_deg: float = 3.0,
-    max_translate: float = 0.05,
+    params: TrainParams,
 ) -> Data:
-    data_pil = load_image(metadata, image_dir=image_dir)
+    data_pil = load_image(metadata, image_dir=params.image_dir)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
-    data_t = random_crop(data_t, crop_size=crop_size)
+    data_t = random_crop(data_t, crop_size=params.crop_size)
     data_t = to_float1(data_t)
-    data_t = make_views(data_t, n=n_views)
-    data_t = random_affine(data_t, max_angle_deg, max_translate)
+    data_t = make_views(data_t, n=params.n_views)
+    data_t = random_affine(data_t, params.max_angle_deg, params.max_translate)
     return data_t
 
 
 def create_lejepa_iterator(
-    manifest_path: Path,
-    image_dir: Path,
-    crop_size: int,
-    batch_size: int,
-    n_views: int,
-    device: torch.device,
+    params: TrainParams,
 ) -> Generator[BatchedData]:
 
-    gen = shuffle(load_imslp(manifest_path))
+    gen = shuffle(load_imslp(params.manifest_path))
     data = map(
         partial(
             transform_image,
-            image_dir=image_dir,
-            device=device,
-            crop_size=crop_size,
-            n_views=n_views,
+            params=params,
         ),
         gen,
     )
-    batched_data = collate(data, batch_size=batch_size)
-    batched_data = map(partial(to, device=device), batched_data)
+    batched_data = collate(data, batch_size=params.batch_size)
+    batched_data = map(partial(to, device=params.device), batched_data)
     yield from batched_data
 
 
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Hyperparameters
-    batch_size = 128
-    v_views = 4
-    lamb = 0.05
-    epochs = 100
-    lr = 5e-4
-
-    manifest_path = Path("data/imslp/imslp.jsonl")
-    image_dir = Path("data/imslp/images")
+    params = TrainParams(
+        manifest_path=Path("data/imslp/imslp.jsonl"),
+        image_dir=Path("data/imslp/images"),
+        crop_size=224,
+        n_views=4,
+        max_angle_deg=3.0,
+        max_translate=0.05,
+        image_size=224,
+        num_classes=0,
+        channels=1,
+        num_keep_patches=128,
+        embed_dim=384,
+        proj_dim=16,
+        batch_size=128,
+        lamb=0.05,
+        epochs=100,
+        lr=5e-4,
+        weight_decay=0.05,
+        log_interval=10,
+        device=device,
+    )
 
     # Model Setup
     # Note: image channels=1 since `create_lejepa_iterator` uses "L" (Grayscale)
     backbone = vit_small(
-        image_size=224, num_classes=0, channels=1, num_keep_patches=128
+        image_size=params.image_size,
+        num_classes=params.num_classes,
+        channels=params.channels,
+        num_keep_patches=params.num_keep_patches
     )
-    encoder = LeJEPAEncoder(backbone, embed_dim=384, proj_dim=16).to(device)
-    sigreg = SIGReg().to(device)
+    encoder = LeJEPAEncoder(backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim).to(params.device)
+    sigreg = SIGReg().to(params.device)
 
-    optimizer = optim.AdamW(encoder.parameters(), lr=lr, weight_decay=0.05)
+    optimizer = optim.AdamW(encoder.parameters(), lr=params.lr, weight_decay=params.weight_decay)
 
-    for epoch in range(epochs):
+    for epoch in range(params.epochs):
         encoder.train()
-        iterator = create_lejepa_iterator(
-            manifest_path=manifest_path,
-            image_dir=image_dir,
-            crop_size=224,
-            batch_size=batch_size,
-            n_views=v_views,
-            device=device,
-        )
+        iterator = create_lejepa_iterator(params)
 
         for step, batch in enumerate(iterator):
             image = batch.image
@@ -121,16 +140,16 @@ def train():
             inv_loss = (proj.mean(0) - proj).square().mean()
             sigreg_loss = sigreg(proj)
 
-            loss = sigreg_loss * lamb + inv_loss * (1 - lamb)
+            loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            if step % 10 == 0:
+            if step % params.log_interval == 0:
                 print(
-                    f"Epoch [{epoch}/{epochs}] Step [{step}] "
+                    f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
                     f"Loss: {loss.item():.4f} "
                     f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f})"
                 )
