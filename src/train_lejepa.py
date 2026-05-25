@@ -105,7 +105,7 @@ def train():
         depth=12,
         heads=3,
         mlp_dim=768,
-        embed_dim=384,
+        embed_dim=192,
         proj_dim=16,
         batch_size=32,
         lamb=0.05,
