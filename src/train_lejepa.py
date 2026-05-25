@@ -79,8 +79,8 @@ def create_lejepa_iterator(
     monitor: Monitor,
 ) -> Generator[BatchedData]:
 
-    gen = shuffle(load_imslp(params.manifest_path))
-    data = map(
+    gen = partial_generator(shuffle)(partial_generator(load_imslp)(params.manifest_path))
+    data = partial_generator(map)(
         partial(
             transform_image,
             params=params,
@@ -89,7 +89,7 @@ def create_lejepa_iterator(
     )
     data_gen = ParallelGenerator(
         data,
-        num_workers=4,
+        num_workers=params.batch_size,
         maxsize=params.batch_size * 2,
         monitor=monitor,
         name="transform",
