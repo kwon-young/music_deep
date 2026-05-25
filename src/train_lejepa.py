@@ -53,6 +53,7 @@ class TrainParams:
     weight_decay: float
     log_interval: int
     device: torch.device
+    checkpoint_dir: Path
 
 
 def transform_image(
@@ -109,10 +110,15 @@ def train(params: TrainParams):
         encoder.parameters(), lr=params.lr, weight_decay=params.weight_decay
     )
 
+    params.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_loss = float("inf")
+
     for epoch in range(params.epochs):
         encoder.train()
         iterator = create_lejepa_iterator(params)
 
+        epoch_loss = 0.0
+        steps = 0
         for step, batch in enumerate(iterator):
             image = batch.image
             N, V, C, H, W = image.shape
@@ -132,6 +138,9 @@ def train(params: TrainParams):
 
             loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
+            epoch_loss += loss.item()
+            steps += 1
+
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
@@ -144,11 +153,29 @@ def train(params: TrainParams):
                     f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f})"
                 )
 
+        if steps > 0:
+            avg_loss = epoch_loss / steps
+            print(
+                f"Epoch [{epoch}/{params.epochs}] Average Loss: {avg_loss:.4f}"
+            )
+
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                torch.save(
+                    encoder.state_dict(),
+                    params.checkpoint_dir / "best_model.pt",
+                )
+                print(f"Saved new best model with loss {best_loss:.4f}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train LeJEPA ViT")
-    parser.add_argument("--manifest_path", type=Path, default=Path("data/imslp/imslp.jsonl"))
-    parser.add_argument("--image_dir", type=Path, default=Path("data/imslp/images"))
+    parser.add_argument(
+        "--manifest_path", type=Path, default=Path("data/imslp/imslp.jsonl")
+    )
+    parser.add_argument(
+        "--image_dir", type=Path, default=Path("data/imslp/images")
+    )
     parser.add_argument("--n_views", type=int, default=4)
     parser.add_argument("--max_angle_deg", type=float, default=3.0)
     parser.add_argument("--max_translate", type=float, default=0.05)
@@ -169,6 +196,9 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=0.05)
     parser.add_argument("--log_interval", type=int, default=10)
+    parser.add_argument(
+        "--checkpoint_dir", type=Path, default=Path("data/train_lejepa/")
+    )
 
     args = parser.parse_args()
 
@@ -198,6 +228,7 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         log_interval=args.log_interval,
         device=device,
+        checkpoint_dir=args.checkpoint_dir,
     )
 
     train(params)
