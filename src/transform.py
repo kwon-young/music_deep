@@ -143,7 +143,7 @@ def random_crops[M: Mode, R: Range](
     xs = torch.randint(0, x_max, size=(num_crop,))
     ys = torch.randint(0, y_max, size=(num_crop,))
     crops = [
-        x[:, y:y + crop_size, x_val:x_val + crop_size]
+        x[:, y : y + crop_size, x_val : x_val + crop_size]
         for y, x_val in zip(ys, xs)
     ]
     return cast(TensorImage[tuple[Batch, *CHW], M, R], torch.stack(crops))
@@ -158,7 +158,7 @@ def random_crop[M: Mode, R: Range](
     y_max = h - crop_size + 1
     x = torch.randint(0, x_max, size=(1,))[0]
     y = torch.randint(0, y_max, size=(1,))[0]
-    image = image[:, y:y + crop_size, x:x + crop_size]
+    image = image[:, y : y + crop_size, x : x + crop_size]
     return image
 
 

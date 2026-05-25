@@ -173,7 +173,9 @@ class ViT(Module):
             and self.num_keep_patches < num_patches
         ):
             if random_drop:
-                rand_indices = torch.rand(batch, num_patches, device=x.device).argsort(dim=-1)[:, :self.num_keep_patches]
+                rand_indices = torch.rand(
+                    batch, num_patches, device=x.device
+                ).argsort(dim=-1)[:, : self.num_keep_patches]
                 indices, _ = rand_indices.sort(dim=-1)
             else:
                 variances = x.var(dim=-1)

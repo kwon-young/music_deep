@@ -1,0 +1,18 @@
+- the goal is to use a vision transformer (ViT) for optical music recognition (OMR)
+- this include dataset loading for
+    - self-supervised learning (SSL)
+    - symbol classification
+    - symbol detection
+    - instance segmentation
+- the only dependencies of this project are
+    - python 3.14 or later
+    - pytorch 2.10 or later
+    - numpy
+    - latest pillow for image loading
+- no other dependencies are allowed
+- everything should be thoroughly type checked using the latest type hint expressions
+- no multiprocessing allowed, everything should be done through threads
+- no pytorch Dataset or DataLoader allowed, everything should be done through standard python iterator/generator + Thread + Queue
+- test should be written only with the builtin unittest module
+- your response should always be motivated and pedagogical. never answer with just a code dump but make sure to explain what you are doing
+    - therefore, you don't need to litter your code with comments. use comments for code that absolutely needs it
