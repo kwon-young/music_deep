@@ -40,7 +40,10 @@ class ProjectorMLP(nn.Module):
         )
 
     def forward(self, x):
-        return self.net(x)
+        orig_shape = x.shape
+        x = x.reshape(-1, orig_shape[-1])
+        x = self.net(x)
+        return x.view(*orig_shape[:-1], -1)
 
 
 class LeJEPAEncoder(nn.Module):
