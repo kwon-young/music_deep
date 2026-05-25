@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
-from threaded_generator import ParallelGenerator, Monitor, partial_generator
+from threaded_generator import ThreadedGenerator, Monitor, partial_generator
 from transform import (
     random_affine,
     shuffle,
@@ -122,11 +122,10 @@ def train(params: TrainParams):
     for epoch in range(params.epochs):
         encoder.train()
         monitor = Monitor()
-        iterator = ParallelGenerator(
+        iterator = ThreadedGenerator(
             create_lejepa_iterator(params),
             maxsize=2,
             monitor=monitor,
-            num_workers=2,
         )
 
         with monitor:
