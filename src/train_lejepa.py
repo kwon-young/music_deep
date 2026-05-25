@@ -88,7 +88,7 @@ def create_lejepa_iterator(
 
 def train(params: TrainParams):
     # Model Setup
-    # Note: image channels=1 since `create_lejepa_iterator` uses "L" (Grayscale)
+    # Note: image channels=3 since `create_lejepa_iterator` uses "RGB"
     backbone = ViT(
         image_size=params.image_size,
         patch_size=params.patch_size,
@@ -154,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_translate", type=float, default=0.05)
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--num_classes", type=int, default=0)
-    parser.add_argument("--channels", type=int, default=1)
+    parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_keep_patches", type=int, default=128)
     parser.add_argument("--patch_size", type=int, default=16)
     parser.add_argument("--dim", type=int, default=192)

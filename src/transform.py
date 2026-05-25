@@ -28,7 +28,7 @@ from dataset.imslp import (
     VCHW,
     BCHW,
     BVCHW,
-    Gray,
+    RGB,
 )
 
 
@@ -56,11 +56,11 @@ def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
 
 @image_transform
 def to_numpy[R: Range](
-    image: PILImage[HW, Gray, R],
-) -> ArrayImage[CHW, Gray, R]:
+    image: PILImage[HWC, RGB, R],
+) -> ArrayImage[CHW, RGB, R]:
     arr = np.array(image)
-    arr = np.expand_dims(arr, axis=0)
-    return cast(ArrayImage[CHW, Gray, R], arr)
+    arr = np.transpose(arr, (2, 0, 1))
+    return cast(ArrayImage[CHW, RGB, R], arr)
 
 
 @image_transform

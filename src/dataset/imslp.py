@@ -79,6 +79,6 @@ def load_imslp(manifest: Path) -> Generator[Metadata]:
 def load_image(
     metadata: Metadata,
     image_dir: Path,
-) -> Data[PILImage[HW, Gray, Int255]]:
-    pil_img = Image_.open(image_dir / metadata.name).convert("L")
-    return Data(metadata, cast(PILImage[HW, Gray, Int255], pil_img))
+) -> Data[PILImage[HWC, RGB, Int255]]:
+    pil_img = Image_.open(image_dir / metadata.name).convert("RGB")
+    return Data(metadata, cast(PILImage[HWC, RGB, Int255], pil_img))
