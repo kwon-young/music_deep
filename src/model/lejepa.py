@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class SIGReg(nn.Module):
     def __init__(self, knots=17):
         super().__init__()
@@ -17,9 +18,12 @@ class SIGReg(nn.Module):
         A = torch.randn(proj.size(-1), 256, device=proj.device)
         A = A.div_(A.norm(p=2, dim=0))
         x_t = (proj @ A).unsqueeze(-1) * self.t
-        err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
+        err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(
+            -3
+        ).square()
         statistic = (err @ self.weights) * proj.size(-2)
         return statistic.mean()
+
 
 class ProjectorMLP(nn.Module):
     def __init__(self, in_features, hidden_features, out_features):
@@ -32,11 +36,12 @@ class ProjectorMLP(nn.Module):
             nn.BatchNorm1d(hidden_features),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_features, out_features),
-            nn.BatchNorm1d(out_features)
+            nn.BatchNorm1d(out_features),
         )
 
     def forward(self, x):
         return self.net(x)
+
 
 class LeJEPAEncoder(nn.Module):
     def __init__(self, vit_model, embed_dim, proj_dim=16):
