@@ -121,11 +121,11 @@ class ViT(Module):
         dim_head=64,
         dropout=0.0,
         emb_dropout=0.0,
-        num_keep_patches=None,
+        drop_rate=0.0,
     ):
         super().__init__()
         image_height, image_width = pair(image_size)
-        self.num_keep_patches = num_keep_patches
+        self.drop_rate = drop_rate
         self.patch_size = patch_height, patch_width = pair(patch_size)
 
         assert (
@@ -167,19 +167,20 @@ class ViT(Module):
         batch = img.shape[0]
         x = self.patch_rearrange(img)
         num_patches = x.shape[1]
+        num_keep_patches = int(num_patches * (1.0 - self.drop_rate))
 
         if (
-            self.num_keep_patches is not None
-            and self.num_keep_patches < num_patches
+            self.drop_rate > 0.0
+            and num_keep_patches < num_patches
         ):
             if random_drop:
                 rand_indices = torch.rand(
                     batch, num_patches, device=x.device
-                ).argsort(dim=-1)[:, : self.num_keep_patches]
+                ).argsort(dim=-1)[:, : num_keep_patches]
                 indices, _ = rand_indices.sort(dim=-1)
             else:
                 variances = x.var(dim=-1)
-                _, indices = variances.topk(self.num_keep_patches, dim=-1)
+                _, indices = variances.topk(num_keep_patches, dim=-1)
                 indices, _ = indices.sort(dim=-1)
             x = torch.gather(
                 x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])

@@ -45,7 +45,7 @@ class TrainParams:
     image_size: int
     num_classes: int
     channels: int
-    num_keep_patches: int
+    drop_rate: float
     patch_size: int
     dim: int
     depth: int
@@ -118,7 +118,7 @@ def train(params: TrainParams):
         heads=params.heads,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-        num_keep_patches=params.num_keep_patches,
+        drop_rate=params.drop_rate,
     )
     encoder = LeJEPAEncoder(
         backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim
@@ -217,7 +217,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--num_classes", type=int, default=0)
     parser.add_argument("--channels", type=int, default=3)
-    parser.add_argument("--num_keep_patches", type=int, default=128)
+    parser.add_argument("--drop_rate", type=float, default=0.5)
     parser.add_argument("--patch_size", type=int, default=16)
     parser.add_argument("--dim", type=int, default=192)
     parser.add_argument("--depth", type=int, default=12)
@@ -249,7 +249,7 @@ if __name__ == "__main__":
         image_size=args.image_size,
         num_classes=args.num_classes,
         channels=args.channels,
-        num_keep_patches=args.num_keep_patches,
+        drop_rate=args.drop_rate,
         patch_size=args.patch_size,
         dim=args.dim,
         depth=args.depth,
