@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
-from threaded_generator import ThreadedGenerator, Monitor, partial_generator
+from threaded_generator import ThreadedGenerator, ParallelGenerator, Monitor, partial_generator
 from transform import (
     random_affine,
     shuffle,
@@ -76,6 +76,7 @@ def transform_image(
 @partial_generator
 def create_lejepa_iterator(
     params: TrainParams,
+    monitor: Monitor,
 ) -> Generator[BatchedData]:
 
     gen = shuffle(load_imslp(params.manifest_path))
@@ -86,7 +87,14 @@ def create_lejepa_iterator(
         ),
         gen,
     )
-    batched_data = collate(data, batch_size=params.batch_size)
+    data_gen = ParallelGenerator(
+        data,
+        num_workers=4,
+        maxsize=params.batch_size * 2,
+        monitor=monitor,
+        name="transform",
+    )
+    batched_data = collate(data_gen, batch_size=params.batch_size)
     yield from batched_data
 
 
@@ -123,7 +131,7 @@ def train(params: TrainParams):
         encoder.train()
         monitor = Monitor()
         iterator = ThreadedGenerator(
-            create_lejepa_iterator(params),
+            create_lejepa_iterator(params, monitor=monitor),
             maxsize=2,
             monitor=monitor,
         )
