@@ -107,7 +107,7 @@ def train():
         mlp_dim=768,
         embed_dim=384,
         proj_dim=16,
-        batch_size=128,
+        batch_size=32,
         lamb=0.05,
         epochs=100,
         lr=5e-4,
@@ -127,12 +127,16 @@ def train():
         heads=params.heads,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-        num_keep_patches=params.num_keep_patches
+        num_keep_patches=params.num_keep_patches,
     )
-    encoder = LeJEPAEncoder(backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim).to(params.device)
+    encoder = LeJEPAEncoder(
+        backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim
+    ).to(params.device)
     sigreg = SIGReg().to(params.device)
 
-    optimizer = optim.AdamW(encoder.parameters(), lr=params.lr, weight_decay=params.weight_decay)
+    optimizer = optim.AdamW(
+        encoder.parameters(), lr=params.lr, weight_decay=params.weight_decay
+    )
 
     for epoch in range(params.epochs):
         encoder.train()
