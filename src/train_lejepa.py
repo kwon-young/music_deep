@@ -1,3 +1,4 @@
+import argparse
 from typing import Generator
 import torch
 import torch.optim as optim
@@ -85,35 +86,7 @@ def create_lejepa_iterator(
     yield from batched_data
 
 
-def train():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    params = TrainParams(
-        manifest_path=Path("data/imslp/imslp.jsonl"),
-        image_dir=Path("data/imslp/images"),
-        n_views=4,
-        max_angle_deg=3.0,
-        max_translate=0.05,
-        image_size=224,
-        num_classes=0,
-        channels=1,
-        num_keep_patches=128,
-        patch_size=16,
-        dim=192,
-        depth=12,
-        heads=3,
-        mlp_dim=768,
-        embed_dim=192,
-        proj_dim=16,
-        batch_size=16,
-        lamb=0.05,
-        epochs=100,
-        lr=5e-4,
-        weight_decay=0.05,
-        log_interval=10,
-        device=device,
-    )
-
+def train(params: TrainParams):
     # Model Setup
     # Note: image channels=1 since `create_lejepa_iterator` uses "L" (Grayscale)
     backbone = ViT(
@@ -173,4 +146,58 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="Train LeJEPA ViT")
+    parser.add_argument("--manifest_path", type=Path, default=Path("data/imslp/imslp.jsonl"))
+    parser.add_argument("--image_dir", type=Path, default=Path("data/imslp/images"))
+    parser.add_argument("--n_views", type=int, default=4)
+    parser.add_argument("--max_angle_deg", type=float, default=3.0)
+    parser.add_argument("--max_translate", type=float, default=0.05)
+    parser.add_argument("--image_size", type=int, default=224)
+    parser.add_argument("--num_classes", type=int, default=0)
+    parser.add_argument("--channels", type=int, default=1)
+    parser.add_argument("--num_keep_patches", type=int, default=128)
+    parser.add_argument("--patch_size", type=int, default=16)
+    parser.add_argument("--dim", type=int, default=192)
+    parser.add_argument("--depth", type=int, default=12)
+    parser.add_argument("--heads", type=int, default=3)
+    parser.add_argument("--mlp_dim", type=int, default=768)
+    parser.add_argument("--embed_dim", type=int, default=192)
+    parser.add_argument("--proj_dim", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--lamb", type=float, default=0.05)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.05)
+    parser.add_argument("--log_interval", type=int, default=10)
+
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    params = TrainParams(
+        manifest_path=args.manifest_path,
+        image_dir=args.image_dir,
+        n_views=args.n_views,
+        max_angle_deg=args.max_angle_deg,
+        max_translate=args.max_translate,
+        image_size=args.image_size,
+        num_classes=args.num_classes,
+        channels=args.channels,
+        num_keep_patches=args.num_keep_patches,
+        patch_size=args.patch_size,
+        dim=args.dim,
+        depth=args.depth,
+        heads=args.heads,
+        mlp_dim=args.mlp_dim,
+        embed_dim=args.embed_dim,
+        proj_dim=args.proj_dim,
+        batch_size=args.batch_size,
+        lamb=args.lamb,
+        epochs=args.epochs,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        log_interval=args.log_interval,
+        device=device,
+    )
+
+    train(params)
