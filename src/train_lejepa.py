@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
+from threaded_generator import ThreadedGenerator
 from transform import (
     random_affine,
     shuffle,
@@ -115,7 +116,7 @@ def train(params: TrainParams):
 
     for epoch in range(params.epochs):
         encoder.train()
-        iterator = create_lejepa_iterator(params)
+        iterator = ThreadedGenerator(create_lejepa_iterator(params), maxsize=2)
 
         epoch_loss = 0.0
         steps = 0
