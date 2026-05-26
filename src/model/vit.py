@@ -12,32 +12,42 @@ def pair(t):
 def apply_pope(q, k, freqs):
     q_mag = F.softplus(q)
     k_mag = F.softplus(k)
-    
+
     q_phase = freqs.unsqueeze(1)
     k_phase = freqs.unsqueeze(1)
-    
-    q_rotated = torch.stack([q_mag * q_phase.cos(), q_mag * q_phase.sin()], dim=-1).flatten(start_dim=-2)
-    k_rotated = torch.stack([k_mag * k_phase.cos(), k_mag * k_phase.sin()], dim=-1).flatten(start_dim=-2)
-    
+
+    q_rotated = torch.stack(
+        [q_mag * q_phase.cos(), q_mag * q_phase.sin()], dim=-1
+    ).flatten(start_dim=-2)
+    k_rotated = torch.stack(
+        [k_mag * k_phase.cos(), k_mag * k_phase.sin()], dim=-1
+    ).flatten(start_dim=-2)
+
     return q_rotated, k_rotated
 
 
-def get_2d_pope_frequencies(grid_h, grid_w, dim_head, base=10000.0, device='cpu'):
+def get_2d_pope_frequencies(
+    grid_h, grid_w, dim_head, base=10000.0, device="cpu"
+):
     dim_y = dim_head // 2
     dim_x = dim_head - dim_y
-    
-    inv_freq_y = 1.0 / (base ** (torch.arange(dim_y, device=device).float() / dim_y))
-    inv_freq_x = 1.0 / (base ** (torch.arange(dim_x, device=device).float() / dim_x))
-    
+
+    inv_freq_y = 1.0 / (
+        base ** (torch.arange(dim_y, device=device).float() / dim_y)
+    )
+    inv_freq_x = 1.0 / (
+        base ** (torch.arange(dim_x, device=device).float() / dim_x)
+    )
+
     pos_y = torch.arange(grid_h, device=device).float()
     pos_x = torch.arange(grid_w, device=device).float()
-    
-    freqs_y = torch.einsum('i, j -> ij', pos_y, inv_freq_y)
-    freqs_x = torch.einsum('i, j -> ij', pos_x, inv_freq_x)
-    
+
+    freqs_y = torch.einsum("i, j -> ij", pos_y, inv_freq_y)
+    freqs_x = torch.einsum("i, j -> ij", pos_x, inv_freq_x)
+
     freqs_y = freqs_y.unsqueeze(1).expand(-1, grid_w, -1)
     freqs_x = freqs_x.unsqueeze(0).expand(grid_h, -1, -1)
-    
+
     freqs = torch.cat((freqs_y, freqs_x), dim=-1).reshape(-1, dim_head)
     return freqs
 
@@ -209,18 +219,17 @@ class ViT(Module):
         b, c, h, w = img.shape
         grid_h = h // self.patch_size[0]
         grid_w = w // self.patch_size[1]
-        
-        freqs = get_2d_pope_frequencies(grid_h, grid_w, self.dim_head, device=img.device)
+
+        freqs = get_2d_pope_frequencies(
+            grid_h, grid_w, self.dim_head, device=img.device
+        )
         freqs = freqs.unsqueeze(0).expand(batch, -1, -1)
 
-        if (
-            self.drop_rate > 0.0
-            and num_keep_patches < num_patches
-        ):
+        if self.drop_rate > 0.0 and num_keep_patches < num_patches:
             if random_drop:
                 rand_indices = torch.rand(
                     batch, num_patches, device=x.device
-                ).argsort(dim=-1)[:, : num_keep_patches]
+                ).argsort(dim=-1)[:, :num_keep_patches]
                 indices, _ = rand_indices.sort(dim=-1)
             else:
                 variances = x.var(dim=-1)
@@ -241,7 +250,9 @@ class ViT(Module):
         x = torch.cat((cls_tokens, x), dim=1)
 
         if self.num_cls_tokens > 0:
-            cls_freqs = torch.zeros(batch, self.num_cls_tokens, self.dim_head, device=img.device)
+            cls_freqs = torch.zeros(
+                batch, self.num_cls_tokens, self.dim_head, device=img.device
+            )
             freqs = torch.cat((cls_freqs, freqs), dim=1)
 
         x = self.dropout(x)
