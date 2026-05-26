@@ -52,7 +52,7 @@ class LeJEPAEncoder(nn.Module):
         self.backbone = vit_model
         self.proj = ProjectorMLP(embed_dim, 2048, proj_dim)
 
-    def forward(self, x, random_drop=True):
-        emb = self.backbone(x, random_drop=random_drop)
+    def forward(self, patches, freqs):
+        emb = self.backbone(patches, freqs)
         proj = self.proj(emb)
         return emb, proj

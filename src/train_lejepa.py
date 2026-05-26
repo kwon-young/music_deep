@@ -25,11 +25,13 @@ from transform import (
     make_views,
     to_float1,
     collate,
+    extract_patches,
+    random_patch_drop,
+    BatchedPatchData,
 )
 from dataset.imslp import (
     load_imslp,
     load_image,
-    BatchedData,
     Metadata,
     Data,
 )
@@ -83,7 +85,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedData]:
+) -> Generator[BatchedPatchData]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)
@@ -103,14 +105,26 @@ def create_lejepa_iterator(
         name="transform",
     )
     batched_data = collate(data_gen, batch_size=params.batch_size)
-    yield from batched_data
+    
+    for batch in batched_data:
+        image = batch.image
+        N, V, C, H, W = image.shape
+        x_aug = image.view(N * V, C, H, W)
+
+        patch_seq = extract_patches(
+            x_aug, 
+            patch_size=(params.patch_size, params.patch_size), 
+            dim_head=64  # Assuming the default dim_head from ViT
+        )
+        patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
+
+        yield BatchedPatchData(metadata=batch.metadata, sequence=patch_seq)
 
 
 def train(params: TrainParams):
     # Model Setup
     # Note: image channels=3 since `create_lejepa_iterator` uses "RGB"
     backbone = ViT(
-        image_size=params.image_size,
         patch_size=params.patch_size,
         num_classes=params.num_classes,
         dim=params.dim,
@@ -118,7 +132,6 @@ def train(params: TrainParams):
         heads=params.heads,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-        drop_rate=params.drop_rate,
     )
     encoder = LeJEPAEncoder(
         backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim
@@ -147,14 +160,11 @@ def train(params: TrainParams):
         )
 
         for step, batch in enumerate(iterator):
-            image = batch.image
-            N, V, C, H, W = image.shape
+            N = len(batch.metadata)
+            V = params.n_views
 
-            # Flatten batch and views for the model
-            x_aug = image.view(N * V, C, H, W)
-
-            # Forward pass
-            emb, proj = encoder(x_aug, random_drop=True)
+            # Forward pass using preprocessed patches and freqs
+            emb, proj = encoder(batch.sequence.patches, batch.sequence.freqs)
 
             # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
             proj = proj.view(N, V, -1).transpose(0, 1)

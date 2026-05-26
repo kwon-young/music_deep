@@ -137,26 +137,10 @@ class Transformer(Module):
         return self.norm(x)
 
 
-class PatchRearrange(Module):
-    def __init__(self, patch_height, patch_width):
-        super().__init__()
-        self.ph = patch_height
-        self.pw = patch_width
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-        x = x.unflatten(2, (h // self.ph, self.ph)).unflatten(
-            4, (w // self.pw, self.pw)
-        )
-        x = x.permute(0, 2, 4, 3, 5, 1)
-        return x.reshape(b, -1, self.ph * self.pw * c)
-
-
 class ViT(Module):
     def __init__(
         self,
         *,
-        image_size,
         patch_size,
         num_classes,
         dim,
@@ -168,29 +152,18 @@ class ViT(Module):
         dim_head=64,
         dropout=0.0,
         emb_dropout=0.0,
-        drop_rate=0.0,
     ):
         super().__init__()
-        image_height, image_width = pair(image_size)
-        self.drop_rate = drop_rate
         self.patch_size = patch_height, patch_width = pair(patch_size)
         self.dim_head = dim_head
-
-        assert (
-            image_height % patch_height == 0 and image_width % patch_width == 0
-        ), "Image dimensions must be divisible by the patch size."
-
-        num_patches = (image_height // patch_height) * (
-            image_width // patch_width
-        )
-        patch_dim = channels * patch_height * patch_width
 
         assert pool in {"cls", "mean"}, (
             "pool type must be either cls (cls token) or mean (mean pooling)"
         )
         self.num_cls_tokens = 1 if pool == "cls" else 0
 
-        self.patch_rearrange = PatchRearrange(patch_height, patch_width)
+        patch_dim = channels * patch_height * patch_width
+
         self.patch_embed = nn.Sequential(
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
@@ -210,48 +183,17 @@ class ViT(Module):
 
         self.mlp_head = nn.Linear(dim, num_classes) if num_classes > 0 else None
 
-    def forward(self, img, random_drop=False):
-        batch = img.shape[0]
-        x = self.patch_rearrange(img)
-        num_patches = x.shape[1]
-        num_keep_patches = int(num_patches * (1.0 - self.drop_rate))
+    def forward(self, patches: torch.Tensor, freqs: torch.Tensor):
+        batch = patches.shape[0]
 
-        b, c, h, w = img.shape
-        grid_h = h // self.patch_size[0]
-        grid_w = w // self.patch_size[1]
-
-        freqs = get_2d_pope_frequencies(
-            grid_h, grid_w, self.dim_head, device=img.device
-        )
-        freqs = freqs.unsqueeze(0).expand(batch, -1, -1)
-
-        if self.drop_rate > 0.0 and num_keep_patches < num_patches:
-            if random_drop:
-                rand_indices = torch.rand(
-                    batch, num_patches, device=x.device
-                ).argsort(dim=-1)[:, :num_keep_patches]
-                indices, _ = rand_indices.sort(dim=-1)
-            else:
-                variances = x.var(dim=-1)
-                _, indices = variances.topk(num_keep_patches, dim=-1)
-                indices, _ = indices.sort(dim=-1)
-            x = torch.gather(
-                x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])
-            )
-            freqs = torch.gather(
-                freqs, 1, indices.unsqueeze(-1).expand(-1, -1, freqs.shape[-1])
-            )
-        else:
-            indices = None
-
-        x = self.patch_embed(x)
+        x = self.patch_embed(patches)
 
         cls_tokens = self.cls_token.expand(batch, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
 
         if self.num_cls_tokens > 0:
             cls_freqs = torch.zeros(
-                batch, self.num_cls_tokens, self.dim_head, device=img.device
+                batch, self.num_cls_tokens, self.dim_head, device=patches.device
             )
             freqs = torch.cat((cls_freqs, freqs), dim=1)
 
@@ -269,13 +211,11 @@ class ViT(Module):
 
 
 def vit_nano(
-    image_size: int | tuple[int, int],
     num_classes: int,
     patch_size: int | tuple[int, int] = 16,
     **kwargs: Any,
 ) -> ViT:
     return ViT(
-        image_size=image_size,
         patch_size=patch_size,
         num_classes=num_classes,
         dim=192,
@@ -287,13 +227,11 @@ def vit_nano(
 
 
 def vit_small(
-    image_size: int | tuple[int, int],
     num_classes: int,
     patch_size: int | tuple[int, int] = 16,
     **kwargs: Any,
 ) -> ViT:
     return ViT(
-        image_size=image_size,
         patch_size=patch_size,
         num_classes=num_classes,
         dim=384,
@@ -305,13 +243,11 @@ def vit_small(
 
 
 def vit_base(
-    image_size: int | tuple[int, int],
     num_classes: int,
     patch_size: int | tuple[int, int] = 16,
     **kwargs: Any,
 ) -> ViT:
     return ViT(
-        image_size=image_size,
         patch_size=patch_size,
         num_classes=num_classes,
         dim=768,
