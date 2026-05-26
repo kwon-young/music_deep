@@ -105,16 +105,16 @@ def create_lejepa_iterator(
         name="transform",
     )
     batched_data = collate(data_gen, batch_size=params.batch_size)
-    
+
     for batch in batched_data:
         image = batch.image
         N, V, C, H, W = image.shape
         x_aug = image.view(N * V, C, H, W)
 
         patch_seq = extract_patches(
-            x_aug, 
-            patch_size=(params.patch_size, params.patch_size), 
-            dim_head=64  # Assuming the default dim_head from ViT
+            x_aug,
+            patch_size=(params.patch_size, params.patch_size),
+            dim_head=64,  # Assuming the default dim_head from ViT
         )
         patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
 
