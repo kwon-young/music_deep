@@ -52,6 +52,7 @@ class TrainParams:
     dim: int
     depth: int
     heads: int
+    dim_head: int
     mlp_dim: int
     embed_dim: int
     proj_dim: int
@@ -114,7 +115,7 @@ def create_lejepa_iterator(
         patch_seq = extract_patches(
             x_aug,
             patch_size=(params.patch_size, params.patch_size),
-            dim_head=64,  # Assuming the default dim_head from ViT
+            dim_head=params.dim_head,
         )
         patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
 
@@ -130,6 +131,7 @@ def train(params: TrainParams):
         dim=params.dim,
         depth=params.depth,
         heads=params.heads,
+        dim_head=params.dim_head,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
     )
@@ -232,6 +234,7 @@ if __name__ == "__main__":
     parser.add_argument("--dim", type=int, default=192)
     parser.add_argument("--depth", type=int, default=12)
     parser.add_argument("--heads", type=int, default=3)
+    parser.add_argument("--dim_head", type=int, default=64)
     parser.add_argument("--mlp_dim", type=int, default=768)
     parser.add_argument("--embed_dim", type=int, default=192)
     parser.add_argument("--proj_dim", type=int, default=16)
@@ -264,6 +267,7 @@ if __name__ == "__main__":
         dim=args.dim,
         depth=args.depth,
         heads=args.heads,
+        dim_head=args.dim_head,
         mlp_dim=args.mlp_dim,
         embed_dim=args.embed_dim,
         proj_dim=args.proj_dim,
