@@ -135,25 +135,40 @@ class OMRDetector(nn.Module):
         patches: torch.Tensor,
         freqs: torch.Tensor,
         patch_centers: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> dict:
         """
         patch_centers: (Batch, Num_Patches, 2) containing the normalized (x, y) center of each patch.
+        Returns a dictionary ready for DFINECriterion.
         """
         features = self.backbone(patches, freqs)
         patch_tokens = features[:, 1:, :]
 
         classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
 
+        B, P, K, _ = boxes.shape
+
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
-        patch_centers = patch_centers.unsqueeze(2)
+        patch_centers_expanded = patch_centers.unsqueeze(2)
 
         # Add absolute patch centers to the predicted center offsets
-        absolute_centers = patch_centers + center_offsets
+        absolute_centers = patch_centers_expanded + center_offsets
 
         # Shift the boxes to absolute coordinates
-        boxes[..., 0] += patch_centers[..., 0]  # x1
-        boxes[..., 1] += patch_centers[..., 1]  # y1
-        boxes[..., 2] += patch_centers[..., 0]  # x2
-        boxes[..., 3] += patch_centers[..., 1]  # y2
+        boxes[..., 0] += patch_centers_expanded[..., 0]  # x1
+        boxes[..., 1] += patch_centers_expanded[..., 1]  # y1
+        boxes[..., 2] += patch_centers_expanded[..., 0]  # x2
+        boxes[..., 3] += patch_centers_expanded[..., 1]  # y2
 
-        return classes, absolute_centers, boxes, edge_logits
+        # Expand learnable shapes to match (B, P, K, 2)
+        raw_shapes = self.head.learnable_shapes
+        expanded_shapes = raw_shapes.view(1, 1, K, 2).expand(B, P, K, 2)
+
+        # Flatten P and K dimensions into a single "num_queries" dimension
+        # and return the exact dictionary expected by the criterion
+        return {
+            "pred_logits": classes.view(B, P * K, -1),
+            "pred_boxes": boxes.view(B, P * K, 4),
+            "pred_edge_logits": edge_logits.view(B, P * K, 4, -1),
+            "absolute_centers": absolute_centers.view(B, P * K, 2),
+            "learnable_shapes": expanded_shapes.reshape(B, P * K, 2)
+        }
