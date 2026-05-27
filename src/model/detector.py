@@ -87,7 +87,8 @@ class DFINEDenseHead(nn.Module):
         # Shape: (B, P, K, 4) - Residuals in range [-a, a]
         relative_edge_offsets = self.weighting_fn(edge_probs)
 
-        shapes = self.learnable_shapes.view(1, 1, self.num_shapes, 2)
+        # Constrain shapes to be strictly positive
+        shapes = F.softplus(self.learnable_shapes).view(1, 1, self.num_shapes, 2)
         w_k, h_k = shapes[..., 0], shapes[..., 1]
 
         # 1. Scale residuals by anchor dimensions
@@ -161,7 +162,8 @@ class OMRDetector(nn.Module):
         boxes[..., 3] += patch_centers_expanded[..., 1]  # y2
 
         # Expand learnable shapes to match (B, P, K, 2)
-        raw_shapes = self.head.learnable_shapes
+        # Apply softplus here as well to ensure consistency with the head
+        raw_shapes = F.softplus(self.head.learnable_shapes)
         expanded_shapes = raw_shapes.view(1, 1, K, 2).expand(B, P, K, 2)
 
         # Flatten P and K dimensions into a single "num_queries" dimension
