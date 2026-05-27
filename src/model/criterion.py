@@ -74,7 +74,7 @@ class DFINECriterion(nn.Module):
         src_logits = outputs[
             "pred_logits"
         ]  # Shape: (Batch, Num_Predictions, Num_Classes)
-        idx = indices
+        idx = self._get_src_permutation_idx(indices)
 
         # Get the target classes for the matched predictions
         target_classes_o = torch.cat(
@@ -100,8 +100,10 @@ class DFINECriterion(nn.Module):
 
     def loss_boxes(self, outputs, targets, indices, num_boxes):
         """L1 and GIoU loss applied ONLY to matched predictions."""
+        idx = self._get_src_permutation_idx(indices)
+        
         # Extract only the matched predictions
-        src_boxes = outputs["pred_boxes"][indices[0], indices[1]]
+        src_boxes = outputs["pred_boxes"][idx[0], idx[1]]
         target_boxes = torch.cat(
             [t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0
         )
@@ -120,14 +122,16 @@ class DFINECriterion(nn.Module):
 
     def loss_fgl(self, outputs, targets, indices, num_boxes):
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
+        idx = self._get_src_permutation_idx(indices)
+        
         src_edge_logits = outputs["pred_edge_logits"][
-            indices[0], indices[1]
+            idx[0], idx[1]
         ]  # (N_matched, 4, reg_max+1)
         src_centers = outputs["absolute_centers"][
-            indices[0], indices[1]
+            idx[0], idx[1]
         ]  # (N_matched, 2)
         src_shapes = outputs["learnable_shapes"][
-            indices[0], indices[1]
+            idx[0], idx[1]
         ]  # (N_matched, 2)
 
         target_boxes = torch.cat(
@@ -196,23 +200,20 @@ class DFINECriterion(nn.Module):
         # 1. Run Hungarian Matcher
         indices = self.matcher(outputs, targets)
 
-        # 2. Extract matched indices
-        idx = self._get_src_permutation_idx(indices)
-
-        # 3. Compute normalization factor (number of ground truth boxes)
+        # 2. Compute normalization factor (number of ground truth boxes)
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor(
             [num_boxes], dtype=torch.float, device=outputs["pred_logits"].device
         )
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
-        # 4. Compute all losses
+        # 3. Compute all losses
         losses = {}
-        losses.update(self.loss_labels(outputs, targets, idx, num_boxes))
-        losses.update(self.loss_boxes(outputs, targets, idx, num_boxes))
-        losses.update(self.loss_fgl(outputs, targets, idx, num_boxes))
+        losses.update(self.loss_labels(outputs, targets, indices, num_boxes))
+        losses.update(self.loss_boxes(outputs, targets, indices, num_boxes))
+        losses.update(self.loss_fgl(outputs, targets, indices, num_boxes))
 
-        # 5. Apply weights
+        # 4. Apply weights
         return {
             k: v * self.weight_dict[k]
             for k, v in losses.items()
