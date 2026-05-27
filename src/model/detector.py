@@ -124,7 +124,7 @@ class OMRDetector(nn.Module):
 
         in_dim = self.backbone.patch_embed[1].out_features
         self.backbone.pool = "none"
-        self.backbone.mlp_head = nn.Identity()
+        self.backbone.mlp_head = None
 
         self.head = DFINEDenseHead(
             in_dim=in_dim, num_classes=num_classes, num_shapes=num_shapes
