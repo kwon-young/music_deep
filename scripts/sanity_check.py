@@ -45,10 +45,13 @@ def load_yolo_label(txt_path: Path, img_w: int, img_h: int):
     }
 
 
-def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_thresh=0.5):
+def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_thresh=0.5, indices=None):
     """Clears and redraws the plot with GT and Predictions."""
     ax.clear()
-    ax.set_title(f"Training Epoch: {epoch:03d}")
+    if isinstance(epoch, int):
+        ax.set_title(f"Training Epoch: {epoch:03d}")
+    else:
+        ax.set_title(f"{epoch}")
 
     # Convert image tensor to numpy HWC
     img = image_tensor[0].cpu().permute(1, 2, 0).numpy()
@@ -75,11 +78,18 @@ def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_th
     probs = torch.sigmoid(pred_logits)
     max_probs, pred_labels = probs.max(dim=-1)
 
-    # Filter by confidence
-    keep = (max_probs > conf_thresh).numpy()
-    pred_boxes_kept = pred_boxes[keep]
-    pred_probs_kept = max_probs[keep].numpy()
-    pred_labels_kept = pred_labels[keep].numpy()
+    if indices is not None:
+        # Use Hungarian matched indices (batch size is 1, so we take indices[0])
+        src_idx = indices[0][0].cpu().numpy()
+        pred_boxes_kept = pred_boxes[src_idx]
+        pred_probs_kept = max_probs[src_idx].numpy()
+        pred_labels_kept = pred_labels[src_idx].numpy()
+    else:
+        # Filter by confidence threshold
+        keep = (max_probs > conf_thresh).numpy()
+        pred_boxes_kept = pred_boxes[keep]
+        pred_probs_kept = max_probs[keep].numpy()
+        pred_labels_kept = pred_labels[keep].numpy()
 
     for box, prob, label in zip(pred_boxes_kept, pred_probs_kept, pred_labels_kept):
         x1, y1, x2, y2 = box
@@ -196,8 +206,12 @@ def main():
                 f"FGL: {loss_dict.get('loss_fgl', torch.tensor(0)).item():.4f}"
             )
             
-            # Update the plot dynamically
-            update_plot(ax, image, targets, outputs, img_w, img_h, epoch, conf_thresh=0.5)
+            # Get matcher indices for visualization
+            with torch.no_grad():
+                indices = matcher(outputs, targets)
+            
+            # Update the plot dynamically using matched indices
+            update_plot(ax, image, targets, outputs, img_w, img_h, epoch, indices=indices)
             fig.canvas.draw()
             fig.canvas.flush_events()
             plt.pause(0.001) # Brief pause to allow GUI to update
@@ -206,8 +220,13 @@ def main():
         "Sanity check complete. If the total loss dropped significantly (near 0), the architecture is learning!"
     )
     
-    # Turn off interactive mode, save the final result, and keep the window open
+    # Turn off interactive mode, save the final result with thresholding
     plt.ioff()
+    model.eval()
+    with torch.no_grad():
+        outputs = model(patches, freqs, patch_centers)
+        update_plot(ax, image, targets, outputs, img_w, img_h, epoch="Final (Threshold > 0.5)", conf_thresh=0.5, indices=None)
+        
     plt.savefig("sanity_check_output.png", dpi=150)
     print("Final visualization saved to sanity_check_output.png")
     plt.show()
