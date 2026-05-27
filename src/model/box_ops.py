@@ -1,5 +1,11 @@
 import torch
-from torchvision.ops.boxes import box_area
+
+
+def box_area(boxes: torch.Tensor) -> torch.Tensor:
+    """
+    Computes the area of a set of bounding boxes, which are specified as [x1, y1, x2, y2].
+    """
+    return (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
 
 
 def box_cxcywh_to_xyxy(x: torch.Tensor) -> torch.Tensor:
