@@ -49,8 +49,8 @@ class DFINEDenseHead(nn.Module):
         self.reg_max = reg_max
         self.num_bins = reg_max + 1
         
-        # 1 (conf) + C (classes) + 2 (center offsets) + 4*N (edge bins)
-        self.preds_per_shape = 1 + num_classes + 2 + (4 * self.num_bins)
+        # C (classes) + 2 (center offsets) + 4*N (edge bins)
+        self.preds_per_shape = num_classes + 2 + (4 * self.num_bins)
         self.out_dim = num_shapes * self.preds_per_shape
         
         # Shared Learnable Shapes (Dynamic Anchors): [K, 2] for (width, height)
@@ -72,8 +72,8 @@ class DFINEDenseHead(nn.Module):
         raw_preds = self.mlp(patch_tokens)
         preds = raw_preds.view(B, P, self.num_shapes, self.preds_per_shape)
         
-        conf_and_classes = preds[..., :1 + self.num_classes]
-        center_offsets = preds[..., 1 + self.num_classes : 1 + self.num_classes + 2]
+        classes = preds[..., :self.num_classes]
+        center_offsets = preds[..., self.num_classes : self.num_classes + 2]
         edge_logits = preds[..., -4 * self.num_bins:]
         
         edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
@@ -108,7 +108,7 @@ class DFINEDenseHead(nn.Module):
         
         boxes = torch.stack([x1, y1, x2, y2], dim=-1)
         
-        return conf_and_classes, center_offsets, boxes, edge_logits
+        return classes, center_offsets, boxes, edge_logits
 
 
 class OMRDetector(nn.Module):
@@ -133,7 +133,7 @@ class OMRDetector(nn.Module):
         features = self.backbone(patches, freqs)
         patch_tokens = features[:, 1:, :]
         
-        conf_and_classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
+        classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
         
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
         patch_centers = patch_centers.unsqueeze(2)
@@ -147,4 +147,4 @@ class OMRDetector(nn.Module):
         boxes[..., 2] += patch_centers[..., 0] # x2
         boxes[..., 3] += patch_centers[..., 1] # y2
         
-        return conf_and_classes, absolute_centers, boxes, edge_logits
+        return classes, absolute_centers, boxes, edge_logits
