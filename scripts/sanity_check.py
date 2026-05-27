@@ -27,10 +27,7 @@ def load_yolo_label(txt_path: Path, img_w: int, img_h: int):
                 class_id = int(parts[0])
                 cx, cy, w, h = map(float, parts[1:5])
                 
-                # Convert to absolute pixels
-                cx, cy = cx * img_w, cy * img_h
-                w, h = w * img_w, h * img_h
-                
+                # Keep normalized coordinates
                 x1 = cx - w / 2
                 y1 = cy - h / 2
                 x2 = cx + w / 2
@@ -58,7 +55,7 @@ def main():
     weight_dict = {"loss_ce": 2.0, "loss_bbox": 5.0, "loss_giou": 2.0, "loss_fgl": 0.15}
     criterion = DFINECriterion(matcher, num_classes=num_classes, weight_dict=weight_dict).to(device)
     
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
     
     # 3. Load a single image from COCO128
     img_dir = Path("data/coco128/images/train2017")
@@ -95,10 +92,10 @@ def main():
     patches = patch_seq.patches.to(device)
     freqs = patch_seq.freqs.to(device)
     
-    # Generate absolute patch centers for the detector
+    # Generate normalized patch centers for the detector
     grid_h, grid_w = img_h // 16, img_w // 16
-    y_centers = (torch.arange(grid_h, device=device) + 0.5) * 16 # Multiply by 16 to get absolute pixels
-    x_centers = (torch.arange(grid_w, device=device) + 0.5) * 16
+    y_centers = (torch.arange(grid_h, device=device) + 0.5) / grid_h
+    x_centers = (torch.arange(grid_w, device=device) + 0.5) / grid_w
     y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing='ij')
     patch_centers = torch.stack([x_grid.flatten(), y_grid.flatten()], dim=-1).unsqueeze(0) # (1, P, 2)
     
