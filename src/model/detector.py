@@ -171,5 +171,5 @@ class OMRDetector(nn.Module):
             "pred_boxes": boxes.view(B, P * K, 4),
             "pred_edge_logits": edge_logits.view(B, P * K, 4, -1),
             "absolute_centers": absolute_centers.view(B, P * K, 2),
-            "learnable_shapes": expanded_shapes.reshape(B, P * K, 2)
+            "learnable_shapes": expanded_shapes.reshape(B, P * K, 2),
         }
