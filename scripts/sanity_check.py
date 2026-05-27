@@ -4,6 +4,8 @@ import torch.optim as optim
 from pathlib import Path
 from PIL import Image
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 # Add src to python path so we can import our modules
 sys.path.append(str(Path(__file__).parent.parent / "src"))
@@ -43,6 +45,53 @@ def load_yolo_label(txt_path: Path, img_w: int, img_h: int):
     }
 
 
+def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_thresh=0.5):
+    """Clears and redraws the plot with GT and Predictions."""
+    ax.clear()
+    ax.set_title(f"Training Epoch: {epoch:03d}")
+
+    # Convert image tensor to numpy HWC
+    img = image_tensor[0].cpu().permute(1, 2, 0).numpy()
+    img = np.clip(img, 0, 1)
+    ax.imshow(img)
+
+    # Plot Ground Truth boxes (Green)
+    gt_boxes = targets[0]["boxes"].cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    gt_labels = targets[0]["labels"].cpu().numpy()
+    
+    for box, label in zip(gt_boxes, gt_labels):
+        x1, y1, x2, y2 = box
+        rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2, edgecolor='g', facecolor='none')
+        ax.add_patch(rect)
+        # Add GT label text
+        ax.text(x1, y1 - 2, f"GT:{label}", color='g', fontsize=8, 
+                bbox=dict(facecolor='white', alpha=0.7, pad=0, edgecolor='none'))
+
+    # Plot Predicted boxes (Red)
+    pred_logits = outputs["pred_logits"][0].detach().cpu() # (P*K, C)
+    pred_boxes = outputs["pred_boxes"][0].detach().cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+
+    # Apply sigmoid to get probabilities and find max class prob
+    probs = torch.sigmoid(pred_logits)
+    max_probs, pred_labels = probs.max(dim=-1)
+
+    # Filter by confidence
+    keep = (max_probs > conf_thresh).numpy()
+    pred_boxes_kept = pred_boxes[keep]
+    pred_probs_kept = max_probs[keep].numpy()
+    pred_labels_kept = pred_labels[keep].numpy()
+
+    for box, prob, label in zip(pred_boxes_kept, pred_probs_kept, pred_labels_kept):
+        x1, y1, x2, y2 = box
+        rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2, edgecolor='r', facecolor='none', linestyle='--')
+        ax.add_patch(rect)
+        # Add Pred label and confidence text
+        ax.text(x1, y2 + 2, f"P:{label} {prob:.2f}", color='r', fontsize=8, verticalalignment='top',
+                bbox=dict(facecolor='white', alpha=0.7, pad=0, edgecolor='none'))
+
+    ax.axis('off')
+
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -66,7 +115,7 @@ def main():
         matcher, num_classes=num_classes, weight_dict=weight_dict
     ).to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
 
     # 3. Load a single image from COCO128
     img_dir = Path("data/coco128/images/train2017")
@@ -116,7 +165,12 @@ def main():
         [x_grid.flatten(), y_grid.flatten()], dim=-1
     ).unsqueeze(0)  # (1, P, 2)
 
-    # 5. Overfit Loop
+    # 5. Setup Interactive Plotting
+    plt.ion()  # Turn on interactive mode
+    fig, ax = plt.subplots(1, figsize=(8, 8))
+    fig.canvas.manager.set_window_title('OMR Detector Sanity Check')
+
+    # 6. Overfit Loop
     print("Starting sanity check (overfitting a single batch)...")
     model.train()
     for epoch in range(3001):
@@ -141,10 +195,22 @@ def main():
                 f"GIoU: {loss_dict.get('loss_giou', torch.tensor(0)).item():.4f} | "
                 f"FGL: {loss_dict.get('loss_fgl', torch.tensor(0)).item():.4f}"
             )
+            
+            # Update the plot dynamically
+            update_plot(ax, image, targets, outputs, img_w, img_h, epoch, conf_thresh=0.5)
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            plt.pause(0.001) # Brief pause to allow GUI to update
 
     print(
         "Sanity check complete. If the total loss dropped significantly (near 0), the architecture is learning!"
     )
+    
+    # Turn off interactive mode, save the final result, and keep the window open
+    plt.ioff()
+    plt.savefig("sanity_check_output.png", dpi=150)
+    print("Final visualization saved to sanity_check_output.png")
+    plt.show()
 
 
 if __name__ == "__main__":
