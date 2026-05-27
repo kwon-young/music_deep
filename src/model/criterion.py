@@ -138,41 +138,43 @@ class DFINECriterion(nn.Module):
             [t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0
         )
 
-        cx, cy = src_centers[:, 0], src_centers[:, 1]
-        w, h = src_shapes[:, 0], src_shapes[:, 1]
-        x1, y1, x2, y2 = (
-            target_boxes[:, 0],
-            target_boxes[:, 1],
-            target_boxes[:, 2],
-            target_boxes[:, 3],
-        )
+        # Detach the targets so the network doesn't cheat by shrinking the anchors
+        with torch.no_grad():
+            cx, cy = src_centers[:, 0], src_centers[:, 1]
+            w, h = src_shapes[:, 0], src_shapes[:, 1]
+            x1, y1, x2, y2 = (
+                target_boxes[:, 0],
+                target_boxes[:, 1],
+                target_boxes[:, 2],
+                target_boxes[:, 3],
+            )
 
-        # Reverse the decoding math to get the target residuals
-        L_res = (cx - x1) / w - 0.5
-        T_res = (cy - y1) / h - 0.5
-        R_res = (x2 - cx) / w - 0.5
-        B_res = (y2 - cy) / h - 0.5
+            # Reverse the decoding math to get the target residuals
+            L_res = (cx - x1) / w - 0.5
+            T_res = (cy - y1) / h - 0.5
+            R_res = (x2 - cx) / w - 0.5
+            B_res = (y2 - cy) / h - 0.5
 
-        target_res = torch.stack(
-            [L_res, T_res, R_res, B_res], dim=-1
-        )  # (N_matched, 4)
+            target_res = torch.stack(
+                [L_res, T_res, R_res, B_res], dim=-1
+            )  # (N_matched, 4)
 
-        # Map the continuous target residuals to the discrete bins
-        W = self.weighting_fn.w.to(target_res.device)
-        target_res = target_res.clamp(W[0].item(), W[-1].item())
+            # Map the continuous target residuals to the discrete bins
+            W = self.weighting_fn.w.to(target_res.device)
+            target_res = target_res.clamp(W[0].item(), W[-1].item())
 
-        # Find the two closest bins (left and right)
-        idx_right = torch.searchsorted(W, target_res).clamp(1, self.reg_max)
-        idx_left = idx_right - 1
+            # Find the two closest bins (left and right)
+            idx_right = torch.searchsorted(W, target_res).clamp(1, self.reg_max)
+            idx_left = idx_right - 1
 
-        W_left = W[idx_left]
-        W_right = W[idx_right]
+            W_left = W[idx_left]
+            W_right = W[idx_right]
 
-        # Calculate interpolation weights (soft targets)
-        w_left = (W_right - target_res) / (W_right - W_left + 1e-6)
-        w_right = (target_res - W_left) / (W_right - W_left + 1e-6)
+            # Calculate interpolation weights (soft targets)
+            w_left = (W_right - target_res) / (W_right - W_left + 1e-6)
+            w_right = (target_res - W_left) / (W_right - W_left + 1e-6)
 
-        # Compute Soft Cross-Entropy
+        # Compute Soft Cross-Entropy (outside no_grad so logits get gradients)
         log_probs = F.log_softmax(src_edge_logits, dim=-1)
         loss_left = (
             -torch.gather(log_probs, -1, idx_left.unsqueeze(-1)).squeeze(-1)

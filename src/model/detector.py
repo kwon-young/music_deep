@@ -56,7 +56,8 @@ class DFINEDenseHead(nn.Module):
         self.out_dim = num_shapes * self.preds_per_shape
 
         # Shared Learnable Shapes (Dynamic Anchors): [K, 2] for (width, height)
-        self.learnable_shapes = nn.Parameter(torch.full((num_shapes, 2), 0.1))
+        # Initialize to a reasonable base scale (e.g., 32.0 pixels)
+        self.learnable_shapes = nn.Parameter(torch.full((num_shapes, 2), 32.0))
 
         # The Dense MLP applied to each patch token
         self.mlp = nn.Sequential(
