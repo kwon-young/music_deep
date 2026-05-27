@@ -66,7 +66,7 @@ class DFINEDenseHead(nn.Module):
         
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
-    def forward(self, patch_tokens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, patch_tokens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, P, _ = patch_tokens.shape
         
         raw_preds = self.mlp(patch_tokens)
@@ -108,7 +108,7 @@ class DFINEDenseHead(nn.Module):
         
         boxes = torch.stack([x1, y1, x2, y2], dim=-1)
         
-        return conf_and_classes, center_offsets, boxes
+        return conf_and_classes, center_offsets, boxes, edge_logits
 
 
 class OMRDetector(nn.Module):
@@ -126,14 +126,14 @@ class OMRDetector(nn.Module):
             num_shapes=num_shapes
         )
 
-    def forward(self, patches: torch.Tensor, freqs: torch.Tensor, patch_centers: torch.Tensor):
+    def forward(self, patches: torch.Tensor, freqs: torch.Tensor, patch_centers: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         patch_centers: (Batch, Num_Patches, 2) containing the normalized (x, y) center of each patch.
         """
         features = self.backbone(patches, freqs)
         patch_tokens = features[:, 1:, :]
         
-        conf_and_classes, center_offsets, boxes = self.head(patch_tokens)
+        conf_and_classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
         
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
         patch_centers = patch_centers.unsqueeze(2)
@@ -147,4 +147,4 @@ class OMRDetector(nn.Module):
         boxes[..., 2] += patch_centers[..., 0] # x2
         boxes[..., 3] += patch_centers[..., 1] # y2
         
-        return conf_and_classes, absolute_centers, boxes
+        return conf_and_classes, absolute_centers, boxes, edge_logits
