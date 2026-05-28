@@ -7,7 +7,7 @@ from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 
-from model.vit import ViT
+from model.vit import ViT, get_2d_pope_frequencies
 from model.lejepa import LeJEPAEncoder, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -27,7 +27,6 @@ from transform import (
     collate,
     extract_patches,
     random_patch_drop,
-    BatchedPatchData,
 )
 from dataset.imslp import (
     load_imslp,
@@ -40,6 +39,8 @@ from music_types import (
     VCHW,
     RGB,
     Float1,
+    BatchedPatchData,
+    PatchLayout,
 )
 
 
@@ -93,7 +94,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[Metadata]]:
+) -> Generator[BatchedPatchData[Metadata, PatchLayout]]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)
@@ -119,14 +120,13 @@ def create_lejepa_iterator(
         N, V, C, H, W = image.shape
         x_aug = image.view(N * V, C, H, W)
 
-        patch_seq = extract_patches(
+        patches = extract_patches(
             x_aug,
             patch_size=(params.patch_size, params.patch_size),
-            dim_head=params.dim_head,
         )
-        patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
+        patches = random_patch_drop(patches, drop_rate=params.drop_rate)
 
-        yield BatchedPatchData(metadata=batch.metadata, sequence=patch_seq)
+        yield BatchedPatchData(metadata=batch.metadata, patches=patches)
 
 
 def train(params: TrainParams):
@@ -172,8 +172,24 @@ def train(params: TrainParams):
             N = len(batch.metadata)
             V = params.n_views
 
+            # Compute frequencies on the fly using the original image shape and kept indices
+            c, h, w = batch.patches.image_shape
+            ph, pw = batch.patches.patch_size
+            grid_h, grid_w = h // ph, w // pw
+            
+            freqs = get_2d_pope_frequencies(
+                grid_h, grid_w, params.dim_head, device=params.device
+            )
+            freqs = freqs.unsqueeze(0).expand(N * V, -1, -1)
+            
+            kept_freqs = torch.gather(
+                freqs,
+                1,
+                batch.patches.indices.unsqueeze(-1).expand(-1, -1, params.dim_head)
+            )
+
             # Forward pass using preprocessed patches and freqs
-            emb, proj = encoder(batch.sequence.patches, batch.sequence.freqs)
+            emb, proj = encoder(batch.patches.data, kept_freqs)
 
             # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
             proj = proj.view(N, V, -1).transpose(0, 1)

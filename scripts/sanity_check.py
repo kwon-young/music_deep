@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-from model.vit import vit_nano
+from model.vit import vit_nano, get_2d_pope_frequencies
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
@@ -159,12 +159,19 @@ def main():
     print(f"Found {len(target_dict['labels'])} objects in the image.")
 
     # 4. Prepare Patches and Centers
-    patch_seq = extract_patches(image, patch_size=(16, 16), dim_head=64)
-    patches = patch_seq.patches.to(device)
-    freqs = patch_seq.freqs.to(device)
+    patches_obj = extract_patches(image, patch_size=(16, 16))
+    patches = patches_obj.data.to(device)
+    indices = patches_obj.indices.to(device)
+    
+    c, h, w = patches_obj.image_shape
+    ph, pw = patches_obj.patch_size
+    grid_h, grid_w = h // ph, w // pw
+    
+    freqs = get_2d_pope_frequencies(grid_h, grid_w, 64, device=device)
+    freqs = freqs.unsqueeze(0).expand(1, -1, -1)
+    freqs = torch.gather(freqs, 1, indices.unsqueeze(-1).expand(-1, -1, 64))
 
     # Generate normalized patch centers for the detector
-    grid_h, grid_w = img_h // 16, img_w // 16
     y_centers = (torch.arange(grid_h, device=device) + 0.5) / grid_h
     x_centers = (torch.arange(grid_w, device=device) + 0.5) / grid_w
     y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
@@ -205,10 +212,10 @@ def main():
             
             # Get matcher indices for visualization
             with torch.no_grad():
-                indices = matcher(outputs, targets)
+                indices_match = matcher(outputs, targets)
             
             # Update the plot dynamically using matched indices
-            update_plot(ax, image, targets, outputs, img_w, img_h, epoch, indices=indices)
+            update_plot(ax, image, targets, outputs, img_w, img_h, epoch, indices=indices_match)
             fig.canvas.draw()
             fig.canvas.flush_events()
             plt.pause(0.001) # Brief pause to allow GUI to update

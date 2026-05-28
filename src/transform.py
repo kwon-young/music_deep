@@ -1,8 +1,6 @@
 from typing import Iterable, Generator, Callable, Concatenate
 from functools import wraps
 from itertools import batched
-from dataclasses import dataclass
-from model.vit import get_2d_pope_frequencies
 import random
 import math
 import numpy as np
@@ -29,6 +27,9 @@ from music_types import (
     BCHW,
     BVCHW,
     RGB,
+    Patches,
+    PatchLayout,
+    BatchedPatchData,
 )
 
 
@@ -181,23 +182,10 @@ def collate[Meta, M: Mode, R: Range](
         yield BatchedData(m, TensorImage(torch.stack(i)))
 
 
-@dataclass
-class PatchSequence:
-    patches: torch.Tensor
-    freqs: torch.Tensor
-
-
-@dataclass
-class BatchedPatchData[Meta]:
-    metadata: list[Meta]
-    sequence: PatchSequence
-
-
 def extract_patches(
     image: TensorImage[AnyLayouts, Mode, Range],
     patch_size: tuple[int, int],
-    dim_head: int,
-) -> PatchSequence:
+) -> Patches[PatchLayout]:
     x_data = image.data
     b, c, h, w = x_data.shape
     ph, pw = patch_size
@@ -206,70 +194,81 @@ def extract_patches(
     x = x.permute(0, 2, 4, 3, 5, 1)
     patches = x.reshape(b, -1, ph * pw * c)
 
-    grid_h = h // ph
-    grid_w = w // pw
-    freqs = get_2d_pope_frequencies(
-        grid_h, grid_w, dim_head, device=x_data.device
-    )
-    freqs = freqs.unsqueeze(0).expand(b, -1, -1)
+    num_patches = patches.shape[1]
+    indices = torch.arange(num_patches, device=x_data.device).unsqueeze(0).expand(b, -1)
 
-    return PatchSequence(patches=patches, freqs=freqs)
+    return Patches(
+        data=patches,
+        indices=indices,
+        image_shape=(c, h, w),
+        patch_size=(ph, pw),
+    )
 
 
 def random_patch_drop(
-    patch_seq: PatchSequence, drop_rate: float
-) -> PatchSequence:
+    patches: Patches[PatchLayout], drop_rate: float
+) -> Patches[PatchLayout]:
     if drop_rate <= 0.0:
-        return patch_seq
+        return patches
 
-    b, num_patches, _ = patch_seq.patches.shape
+    b, num_patches, _ = patches.data.shape
     num_keep = int(num_patches * (1.0 - drop_rate))
 
     if num_keep >= num_patches:
-        return patch_seq
+        return patches
 
-    rand_indices = torch.rand(b, num_patches, device=patch_seq.patches.device)
-    indices, _ = rand_indices.argsort(dim=-1)[:, :num_keep].sort(dim=-1)
+    rand_indices = torch.rand(b, num_patches, device=patches.data.device)
+    indices_sort, _ = rand_indices.argsort(dim=-1)[:, :num_keep].sort(dim=-1)
 
-    kept_patches = torch.gather(
-        patch_seq.patches,
+    kept_data = torch.gather(
+        patches.data,
         1,
-        indices.unsqueeze(-1).expand(-1, -1, patch_seq.patches.shape[-1]),
+        indices_sort.unsqueeze(-1).expand(-1, -1, patches.data.shape[-1]),
     )
-    kept_freqs = torch.gather(
-        patch_seq.freqs,
+    kept_indices = torch.gather(
+        patches.indices,
         1,
-        indices.unsqueeze(-1).expand(-1, -1, patch_seq.freqs.shape[-1]),
+        indices_sort,
     )
 
-    return PatchSequence(patches=kept_patches, freqs=kept_freqs)
+    return Patches(
+        data=kept_data,
+        indices=kept_indices,
+        image_shape=patches.image_shape,
+        patch_size=patches.patch_size,
+    )
 
 
 def variance_patch_drop(
-    patch_seq: PatchSequence, drop_rate: float
-) -> PatchSequence:
+    patches: Patches[PatchLayout], drop_rate: float
+) -> Patches[PatchLayout]:
     if drop_rate <= 0.0:
-        return patch_seq
+        return patches
 
-    b, num_patches, _ = patch_seq.patches.shape
+    b, num_patches, _ = patches.data.shape
     num_keep = int(num_patches * (1.0 - drop_rate))
 
     if num_keep >= num_patches:
-        return patch_seq
+        return patches
 
-    variances = patch_seq.patches.var(dim=-1)
+    variances = patches.data.var(dim=-1)
     _, top_indices = variances.topk(num_keep, dim=-1)
-    indices, _ = top_indices.sort(dim=-1)
+    indices_sort, _ = top_indices.sort(dim=-1)
 
-    kept_patches = torch.gather(
-        patch_seq.patches,
+    kept_data = torch.gather(
+        patches.data,
         1,
-        indices.unsqueeze(-1).expand(-1, -1, patch_seq.patches.shape[-1]),
+        indices_sort.unsqueeze(-1).expand(-1, -1, patches.data.shape[-1]),
     )
-    kept_freqs = torch.gather(
-        patch_seq.freqs,
+    kept_indices = torch.gather(
+        patches.indices,
         1,
-        indices.unsqueeze(-1).expand(-1, -1, patch_seq.freqs.shape[-1]),
+        indices_sort,
     )
 
-    return PatchSequence(patches=kept_patches, freqs=kept_freqs)
+    return Patches(
+        data=kept_data,
+        indices=kept_indices,
+        image_shape=patches.image_shape,
+        patch_size=patches.patch_size,
+    )

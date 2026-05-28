@@ -67,3 +67,22 @@ class Data[Meta, I: Image]:
 class BatchedData[Meta, I: BatchedImage]:
     metadata: list[Meta]
     image: I
+
+
+type NumPatches = int
+type PatchDim = int
+type PatchLayout = tuple[Batch, NumPatches, PatchDim]
+
+
+@dataclass
+class Patches[PL: PatchLayout]:
+    data: torch.Tensor
+    indices: torch.Tensor
+    image_shape: CHW
+    patch_size: HW
+
+
+@dataclass
+class BatchedPatchData[Meta, PL: PatchLayout]:
+    metadata: list[Meta]
+    patches: Patches[PL]
