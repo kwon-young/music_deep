@@ -24,6 +24,7 @@ from dataset.imslp import (
     Image,
     BatchedImage,
     Batch,
+    HWC,
     CHW,
     VCHW,
     BCHW,
@@ -56,25 +57,25 @@ def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
 
 @image_transform
 def to_numpy[R: Range](
-    image: PILImage[CHW, RGB, R],
+    image: PILImage[HWC, RGB, R],
 ) -> ArrayImage[CHW, RGB, R]:
-    arr = np.array(image)
+    arr = np.array(image.data)
     arr = np.transpose(arr, (2, 0, 1))
-    return arr
+    return ArrayImage(arr)
 
 
 @image_transform
 def to_tensor[L: Layout, M: Mode, R: Range](
     image: ArrayImage[L, M, R],
 ) -> TensorImage[L, M, R]:
-    return torch.as_tensor(image)
+    return TensorImage(torch.as_tensor(image.data))
 
 
 @image_transform
 def to_float1[L: AnyLayouts, M: Mode](
     image: TensorImage[L, M, Int255],
 ) -> TensorImage[L, M, Float1]:
-    return image.float() / 255.0
+    return TensorImage(image.data.float() / 255.0)
 
 
 def shuffle[T](it: Iterable[T]) -> Generator[T]:
@@ -85,15 +86,16 @@ def shuffle[T](it: Iterable[T]) -> Generator[T]:
 
 @image_transform
 def to[I: TensorImage](image: I, device: torch.device) -> I:
-    return image.to(device)
+    return type(image)(image.data.to(device))
 
 
 @image_transform
 def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
-    x: TensorImage[L, M, Float1],
+    image: TensorImage[L, M, Float1],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
 ) -> TensorImage[L, M, Float1]:
+    x = image.data
     original_shape = x.shape
     x_flat = x.view(-1, *original_shape[-3:])
     N = x_flat.size(0)
@@ -125,12 +127,13 @@ def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
     x_out = x_transformed + 1.0
-    return x_out.view(original_shape)
+    return TensorImage(x_out.view(original_shape))
 
 
 def random_crops[M: Mode, R: Range](
-    x: TensorImage[CHW, M, R], crop_size: int
+    image: TensorImage[CHW, M, R], crop_size: int
 ) -> TensorImage[tuple[Batch, *CHW], M, R]:
+    x = image.data
     # random crop n time where n*crop_size**2 will in average == h*w
     (c, h, w) = x.shape
     num_crop_frac = (h / crop_size) * (w / crop_size)
@@ -146,27 +149,28 @@ def random_crops[M: Mode, R: Range](
         x[:, y:y + crop_size, x_val:x_val + crop_size]
         for y, x_val in zip(ys, xs)
     ]
-    return torch.stack(crops)
+    return TensorImage(torch.stack(crops))
 
 
 @image_transform
 def random_crop[M: Mode, R: Range](
     image: TensorImage[CHW, M, R], crop_size: int
 ) -> TensorImage[CHW, M, R]:
-    (c, h, w) = image.shape
+    x_data = image.data
+    (c, h, w) = x_data.shape
     x_max = w - crop_size + 1
     y_max = h - crop_size + 1
-    x = torch.randint(0, x_max, size=(1,), device=image.device)[0]
-    y = torch.randint(0, y_max, size=(1,), device=image.device)[0]
-    image = image[:, y : y + crop_size, x : x + crop_size]
-    return image
+    x = torch.randint(0, x_max, size=(1,), device=x_data.device)[0]
+    y = torch.randint(0, y_max, size=(1,), device=x_data.device)[0]
+    cropped = x_data[:, y : y + crop_size, x : x + crop_size]
+    return TensorImage(cropped)
 
 
 @image_transform
 def make_views[M: Mode, R: Range](
     image: TensorImage[CHW, M, R], n: int
 ) -> TensorImage[VCHW, M, R]:
-    return torch.stack([image] * n)
+    return TensorImage(torch.stack([image.data] * n))
 
 
 def collate[M: Mode, R: Range](
@@ -174,8 +178,8 @@ def collate[M: Mode, R: Range](
 ) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M, R]]]:
     for batch in batched(it, n=batch_size):
         m = [b.metadata for b in batch]
-        i = [b.image for b in batch]
-        yield BatchedData(m, torch.stack(i))
+        i = [b.image.data for b in batch]
+        yield BatchedData(m, TensorImage(torch.stack(i)))
 
 
 @dataclass
@@ -195,17 +199,18 @@ def extract_patches(
     patch_size: tuple[int, int],
     dim_head: int,
 ) -> PatchSequence:
-    b, c, h, w = image.shape
+    x_data = image.data
+    b, c, h, w = x_data.shape
     ph, pw = patch_size
 
-    x = image.unflatten(2, (h // ph, ph)).unflatten(4, (w // pw, pw))
+    x = x_data.unflatten(2, (h // ph, ph)).unflatten(4, (w // pw, pw))
     x = x.permute(0, 2, 4, 3, 5, 1)
     patches = x.reshape(b, -1, ph * pw * c)
 
     grid_h = h // ph
     grid_w = w // pw
     freqs = get_2d_pope_frequencies(
-        grid_h, grid_w, dim_head, device=image.device
+        grid_h, grid_w, dim_head, device=x_data.device
     )
     freqs = freqs.unsqueeze(0).expand(b, -1, -1)
 

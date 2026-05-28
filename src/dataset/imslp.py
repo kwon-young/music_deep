@@ -45,9 +45,19 @@ type Float1 = Literal["Float1"]
 type Range = Int255 | Float1
 
 
-type PILImage[L: HWC, M: Mode, R: Range] = Image_.Image
-type ArrayImage[L: AnyLayouts, M: Mode, R: Range] = np.ndarray
-type TensorImage[L: AnyLayouts, M: Mode, R: Range] = torch.Tensor
+@dataclass
+class PILImage[L: HWC, M: Mode, R: Range]:
+    data: Image_.Image
+
+
+@dataclass
+class ArrayImage[L: AnyLayouts, M: Mode, R: Range]:
+    data: np.ndarray
+
+
+@dataclass
+class TensorImage[L: AnyLayouts, M: Mode, R: Range]:
+    data: torch.Tensor
 
 
 type Image[L: Layouts, M, R] = (
@@ -81,4 +91,4 @@ def load_image(
     image_dir: Path,
 ) -> Data[PILImage[HWC, RGB, Int255]]:
     pil_img = Image_.open(image_dir / metadata.name).convert("RGB")
-    return Data(metadata, cast(PILImage[HWC, RGB, Int255], pil_img))
+    return Data(metadata, PILImage(cast(Image_.Image, pil_img)))
