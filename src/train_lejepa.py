@@ -34,7 +34,7 @@ from dataset.imslp import (
     load_image,
     Metadata,
 )
-from types import (
+from music_types import (
     Data,
     TensorImage,
     VCHW,

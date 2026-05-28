@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Generator
 from PIL import Image as Image_
 
-from types import Data, PILImage, HWC, RGB, Int255
+from music_types import Data, PILImage, HWC, RGB, Int255
 
 
 @dataclass

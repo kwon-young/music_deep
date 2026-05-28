@@ -8,7 +8,7 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-from types import (
+from music_types import (
     Data,
     BatchedData,
     Layout,
