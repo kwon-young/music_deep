@@ -82,7 +82,7 @@ class Patches[B: Batch, N: NumPatches, P: PatchDim]:
 
     @property
     def batch_size(self) -> B:
-        return self.data.shape[0]  # type: ignore
+        return self.data.shape[0]
 
 
 @dataclass

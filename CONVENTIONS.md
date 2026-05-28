@@ -8,9 +8,11 @@
     - python 3.14 or later
     - pytorch 2.10 or later
     - numpy
+    - scipy
     - latest pillow for image loading
 - no other dependencies are allowed
 - everything should be thoroughly type checked using the latest type hint expressions
+- commands should be run using mamba in the pytorch environment: `mamba run -n pytorch python ...`
 - no multiprocessing allowed, everything should be done through threads
 - no pytorch Dataset or DataLoader allowed, everything should be done through standard python iterator/generator + Thread + Queue
 - test should be written only with the builtin unittest module

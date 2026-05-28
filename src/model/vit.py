@@ -55,7 +55,7 @@ def get_2d_pope_frequencies(
     return freqs
 
 
-def compute_freqs[B: int, N: int, P: int](patches: Patches[B, N, P], dim_head: int) -> torch.Tensor:
+def compute_freqs(patches: Patches, dim_head: int) -> torch.Tensor:
     """Computes and gathers frequencies for the given patches."""
     c, h, w = patches.image_shape
     ph, pw = patches.patch_size

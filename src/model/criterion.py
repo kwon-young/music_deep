@@ -16,7 +16,9 @@ def sigmoid_focal_loss(
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
     """
     p = torch.sigmoid(inputs)
-    ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+    ce_loss = F.binary_cross_entropy_with_logits(
+        inputs, targets, reduction="none"
+    )
     p_t = p * targets + (1 - p) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
 
@@ -101,7 +103,7 @@ class DFINECriterion(nn.Module):
     def loss_boxes(self, outputs, targets, indices, num_boxes):
         """L1 and GIoU loss applied ONLY to matched predictions."""
         idx = self._get_src_permutation_idx(indices)
-        
+
         # Extract only the matched predictions
         src_boxes = outputs["pred_boxes"][idx[0], idx[1]]
         target_boxes = torch.cat(
@@ -123,7 +125,7 @@ class DFINECriterion(nn.Module):
     def loss_fgl(self, outputs, targets, indices, num_boxes):
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
         idx = self._get_src_permutation_idx(indices)
-        
+
         src_edge_logits = outputs["pred_edge_logits"][
             idx[0], idx[1]
         ]  # (N_matched, 4, reg_max+1)

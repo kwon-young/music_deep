@@ -1,3 +1,12 @@
+# +-----------------------------------------------------------------------------------------+
+# | NVIDIA-SMI 580.159.03             Driver Version: 580.159.03     CUDA Version: 13.0     |
+# +-----------------------------------------+------------------------+----------------------+
+# | GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+# | Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+# |                                         |                        |               MIG M. |
+# |=========================================+========================+======================|
+# |   0  Quadro M1200                   Off |   00000000:01:00.0 Off |                  N/A |
+# | N/A   54C    P8            N/A  /  200W |       0MiB /   4096MiB |      0%      Default |
 # Model        | Patch | Batch  | Mode     | Max Tokens
 # -------------------------------------------------------
 # vit_nano     | 16    | 1      | Infer    | 12769

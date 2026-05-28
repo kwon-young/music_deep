@@ -40,9 +40,6 @@ from music_types import (
     RGB,
     Float1,
     BatchedPatchData,
-    Batch,
-    NumPatches,
-    PatchDim,
     Patches,
 )
 
@@ -97,7 +94,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[Metadata, Patches[Batch, NumPatches, PatchDim]]]:
+) -> Generator[BatchedPatchData[Metadata, Patches]]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)
@@ -133,8 +130,6 @@ def create_lejepa_iterator(
 
 
 def train(params: TrainParams):
-    # Model Setup
-    # Note: image channels=3 since `create_lejepa_iterator` uses "RGB"
     backbone = ViT(
         patch_size=params.patch_size,
         num_classes=params.num_classes,
@@ -175,16 +170,12 @@ def train(params: TrainParams):
             N = len(batch.metadata)
             V = params.n_views
 
-            # Compute frequencies cleanly
             kept_freqs = compute_freqs(batch.patches, params.dim_head)
 
-            # Forward pass using preprocessed patches and freqs
             emb, proj = encoder(batch.patches.data, kept_freqs)
 
-            # Reshape projector output to (V, N, D) for the invariance and SIGReg loss
             proj = proj.view(N, V, -1).transpose(0, 1)
 
-            # Compute losses
             inv_loss = (proj.mean(0) - proj).square().mean()
             sigreg_loss = sigreg(proj)
 
@@ -197,7 +188,6 @@ def train(params: TrainParams):
 
             samples += N
 
-            # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
