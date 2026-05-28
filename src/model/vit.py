@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
-from typing import Any
+from typing import Any, Literal
 from functools import lru_cache
 from music_types import Patches
 
@@ -165,18 +165,18 @@ class ViT(Module):
     def __init__(
         self,
         *,
-        patch_size,
-        num_classes,
-        dim,
-        depth,
-        heads,
-        mlp_dim,
-        pool="cls",
-        channels=3,
-        dim_head=64,
-        dropout=0.0,
-        emb_dropout=0.0,
-    ):
+        patch_size: int | tuple[int, int],
+        num_classes: int,
+        dim: int,
+        depth: int,
+        heads: int,
+        mlp_dim: int,
+        pool: Literal["cls", "mean"] = "cls",
+        channels: int = 3,
+        dim_head: int = 64,
+        dropout: float = 0.0,
+        emb_dropout: float = 0.0,
+    ) -> None:
         super().__init__()
         self.patch_size = patch_height, patch_width = pair(patch_size)
         self.dim_head = dim_head
