@@ -7,7 +7,7 @@ from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 
-from model.vit import ViT, compute_freqs
+from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -171,9 +171,7 @@ def train(params: TrainParams):
             N = len(batch.metadata)
             V = params.n_views
 
-            kept_freqs = compute_freqs(batch.patches, params.dim_head)
-
-            emb, proj = encoder(batch.patches.data, kept_freqs)
+            emb, proj = encoder(batch.patches)
 
             proj = proj.view(N, V, -1).transpose(0, 1)
 

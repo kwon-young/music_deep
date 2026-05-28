@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
+from music_types import Patches
 
 
 class DFINEWeightingFunction(nn.Module):
@@ -136,15 +137,14 @@ class OMRDetector(nn.Module):
 
     def forward(
         self,
-        patches: torch.Tensor,
-        freqs: torch.Tensor,
+        patches: Patches,
         patch_centers: torch.Tensor,
     ) -> dict:
         """
         patch_centers: (Batch, Num_Patches, 2) containing the normalized (x, y) center of each patch.
         Returns a dictionary ready for DFINECriterion.
         """
-        features = self.backbone(patches, freqs)
+        features = self.backbone(patches)
         patch_tokens = features[:, 1:, :]
 
         classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)

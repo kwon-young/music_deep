@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-from model.vit import vit_nano, compute_freqs
+from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
@@ -204,9 +204,6 @@ def main():
 
     # 4. Prepare Patches and Centers
     patches_obj = extract_patches(image, patch_size=(16, 16))
-    patches = patches_obj.data
-
-    freqs = compute_freqs(patches_obj, dim_head=64)
 
     # Generate normalized patch centers for the detector
     c, h, w = patches_obj.image_shape
@@ -232,7 +229,7 @@ def main():
         optimizer.zero_grad()
 
         # Forward pass
-        outputs = model(patches, freqs, patch_centers)
+        outputs = model(patches_obj, patch_centers)
 
         # Compute loss
         loss_dict = criterion(outputs, targets)
@@ -278,7 +275,7 @@ def main():
     plt.ioff()
     model.eval()
     with torch.no_grad():
-        outputs = model(patches, freqs, patch_centers)
+        outputs = model(patches_obj, patch_centers)
         update_plot(
             ax,
             image,

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from music_types import Patches
 
 
 class SIGReg(nn.Module):
@@ -52,7 +53,7 @@ class LeJEPAEncoder(nn.Module):
         self.backbone = vit_model
         self.proj = ProjectorMLP(embed_dim, 2048, proj_dim)
 
-    def forward(self, patches, freqs):
-        emb = self.backbone(patches, freqs)
+    def forward(self, patches: Patches):
+        emb = self.backbone(patches)
         proj = self.proj(emb)
         return emb, proj

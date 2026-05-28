@@ -207,17 +207,19 @@ class ViT(Module):
 
         self.mlp_head = nn.Linear(dim, num_classes) if num_classes > 0 else None
 
-    def forward(self, patches: torch.Tensor, freqs: torch.Tensor):
-        batch = patches.shape[0]
+    def forward(self, patches: Patches):
+        freqs = compute_freqs(patches, self.dim_head)
+        x_data = patches.data
+        batch = x_data.shape[0]
 
-        x = self.patch_embed(patches)
+        x = self.patch_embed(x_data)
 
         cls_tokens = self.cls_token.expand(batch, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
 
         if self.num_cls_tokens > 0:
             cls_freqs = torch.zeros(
-                batch, self.num_cls_tokens, self.dim_head, device=patches.device
+                batch, self.num_cls_tokens, self.dim_head, device=x_data.device
             )
             freqs = torch.cat((cls_freqs, freqs), dim=1)
 

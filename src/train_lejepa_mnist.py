@@ -8,7 +8,7 @@ from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 
-from model.vit import ViT, compute_freqs
+from model.vit import ViT
 from model.lejepa import LeJEPAEncoder, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -70,8 +70,8 @@ def transform_image(
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
     data_t = to(data_t, device=params.device)
-    data_tf = to_float1(data_t)
-    data_tfv = make_views(data_tf, n=params.n_views)
+    data_t = to_float1(data_t)
+    data_tfv = make_views(data_t, n=params.n_views)
     data_tfv = random_affine(
         data_tfv, params.max_angle_deg, params.max_translate
     )
@@ -168,8 +168,7 @@ def train(params: TrainParams):
             )
             labels_v = labels.repeat_interleave(V)
 
-            kept_freqs = compute_freqs(batch.patches, params.dim_head)
-            emb, proj = encoder(batch.patches.data, kept_freqs)
+            emb, proj = encoder(batch.patches)
 
             global_emb = emb.mean(dim=1)
 
