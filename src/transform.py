@@ -29,7 +29,8 @@ from music_types import (
     RGB,
     Patches,
     PatchLayout,
-    BatchedPatchData,
+    NumPatches,
+    PatchDim,
 )
 
 
@@ -182,10 +183,10 @@ def collate[Meta, M: Mode, R: Range](
         yield BatchedData(m, TensorImage(torch.stack(i)))
 
 
-def extract_patches(
-    image: TensorImage[AnyLayouts, Mode, Range],
+def extract_patches[B: Batch](
+    image: TensorImage[tuple[B, *CHW], Mode, Range],
     patch_size: tuple[int, int],
-) -> Patches[PatchLayout]:
+) -> Patches[tuple[B, NumPatches, PatchDim]]:
     x_data = image.data
     b, c, h, w = x_data.shape
     ph, pw = patch_size
