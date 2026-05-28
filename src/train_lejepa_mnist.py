@@ -31,6 +31,7 @@ from transform import (
 )
 from dataset.mnist import load_mnist, load_image, MNISTMetadata
 from dataset.imslp import Data
+from dataset.imslp import TensorImage, VCHW, RGB, Float1
 
 
 @dataclass
@@ -63,7 +64,7 @@ class TrainParams:
 def transform_image(
     metadata: MNISTMetadata,
     params: TrainParams,
-) -> Data:
+) -> Data[MNISTMetadata, TensorImage[VCHW, RGB, Float1]]:
     data_pil = load_image(metadata)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
@@ -78,7 +79,7 @@ def transform_image(
 def create_lejepa_mnist_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData, None, None]:
+) -> Generator[BatchedPatchData[MNISTMetadata], None, None]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_mnist)(params.mnist_dir, split="train")
@@ -137,9 +138,9 @@ def train(params: TrainParams):
         probe.parameters(), lr=params.lr, weight_decay=params.weight_decay
     )
 
-    running_loss_ssl = None
-    running_loss_probe = None
-    running_acc = None
+    running_loss_ssl: float | None = None
+    running_loss_probe: float | None = None
+    running_acc: float | None = None
     samples = 0
     start_time = time.time()
 
@@ -177,7 +178,7 @@ def train(params: TrainParams):
 
             ssl_loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
-            if running_loss_ssl is None:
+            if running_loss_ssl is None or running_loss_probe is None or running_acc is None:
                 running_loss_ssl = ssl_loss.item()
                 running_loss_probe = probe_loss.item()
                 running_acc = acc

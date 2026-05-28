@@ -34,6 +34,10 @@ from dataset.imslp import (
     load_image,
     Metadata,
     Data,
+    TensorImage,
+    VCHW,
+    RGB,
+    Float1,
 )
 
 
@@ -70,7 +74,7 @@ class TrainParams:
 def transform_image(
     metadata: Metadata,
     params: TrainParams,
-) -> Data:
+) -> Data[Metadata, TensorImage[VCHW, RGB, Float1]]:
     data_pil = load_image(metadata, image_dir=params.image_dir)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
@@ -80,14 +84,14 @@ def transform_image(
     data_tfv = make_views(data_tf, n=params.n_views)
     data_tfv = random_affine(data_tfv, params.max_angle_deg,
                              params.max_translate)
-    return data_t
+    return data_tfv
 
 
 @partial_generator
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData]:
+) -> Generator[BatchedPatchData[Metadata], None, None]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)

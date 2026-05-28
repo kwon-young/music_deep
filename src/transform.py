@@ -33,23 +33,23 @@ from dataset.imslp import (
 )
 
 
-def image_transform[T: Image, U: Image, **P](
+def image_transform[Meta, T: Image, U: Image, **P](
     func: Callable[Concatenate[T, P], U],
-) -> Callable[Concatenate[Data[T], P], Data[U]]:
+) -> Callable[Concatenate[Data[Meta, T], P], Data[Meta, U]]:
     @wraps(func)
-    def wrapper(img: Data[T], *args: P.args, **kwargs: P.kwargs) -> Data[U]:
+    def wrapper(img: Data[Meta, T], *args: P.args, **kwargs: P.kwargs) -> Data[Meta, U]:
         return Data(img.metadata, func(img.image, *args, **kwargs))
 
     return wrapper
 
 
-def batched_image_transform[T: BatchedImage, U: BatchedImage, **P](
+def batched_image_transform[Meta, T: BatchedImage, U: BatchedImage, **P](
     func: Callable[Concatenate[T, P], U],
-) -> Callable[Concatenate[BatchedData[T], P], BatchedData[U]]:
+) -> Callable[Concatenate[BatchedData[Meta, T], P], BatchedData[Meta, U]]:
     @wraps(func)
     def wrapper(
-        img: BatchedData[T], *args: P.args, **kwargs: P.kwargs
-    ) -> BatchedData[U]:
+        img: BatchedData[Meta, T], *args: P.args, **kwargs: P.kwargs
+    ) -> BatchedData[Meta, U]:
         return BatchedData(img.metadata, func(img.image, *args, **kwargs))
 
     return wrapper
@@ -78,7 +78,7 @@ def to_float1[L: AnyLayouts, M: Mode](
     return TensorImage(image.data.float() / 255.0)
 
 
-def shuffle[T](it: Iterable[T]) -> Generator[T]:
+def shuffle[T](it: Iterable[T]) -> Generator[T, None, None]:
     l = list(it)
     random.shuffle(l)
     yield from l
@@ -173,9 +173,9 @@ def make_views[M: Mode, R: Range](
     return TensorImage(torch.stack([image.data] * n))
 
 
-def collate[M: Mode, R: Range](
-    it: Iterable[Data[TensorImage[VCHW, M, R]]], batch_size: int
-) -> Iterable[BatchedData[TensorImage[tuple[Batch, *VCHW], M, R]]]:
+def collate[Meta, M: Mode, R: Range](
+    it: Iterable[Data[Meta, TensorImage[VCHW, M, R]]], batch_size: int
+) -> Iterable[BatchedData[Meta, TensorImage[tuple[Batch, *VCHW], M, R]]]:
     for batch in batched(it, n=batch_size):
         m = [b.metadata for b in batch]
         i = [b.image.data for b in batch]
@@ -189,8 +189,8 @@ class PatchSequence:
 
 
 @dataclass
-class BatchedPatchData:
-    metadata: list[Metadata]
+class BatchedPatchData[Meta]:
+    metadata: list[Meta]
     sequence: PatchSequence
 
 

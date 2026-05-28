@@ -69,18 +69,18 @@ type BatchedImage[L: BatchedLayouts, M, R] = (
 
 
 @dataclass
-class Data[I: Image]:
-    metadata: Metadata
+class Data[Meta, I: Image]:
+    metadata: Meta
     image: I
 
 
 @dataclass
-class BatchedData[I: BatchedImage]:
-    metadata: list[Metadata]
+class BatchedData[Meta, I: BatchedImage]:
+    metadata: list[Meta]
     image: I
 
 
-def load_imslp(manifest: Path) -> Generator[Metadata]:
+def load_imslp(manifest: Path) -> Generator[Metadata, None, None]:
     with manifest.open("r") as f:
         for line in f:
             yield Metadata(**json.loads(line))
@@ -89,6 +89,6 @@ def load_imslp(manifest: Path) -> Generator[Metadata]:
 def load_image(
     metadata: Metadata,
     image_dir: Path,
-) -> Data[PILImage[HWC, RGB, Int255]]:
+) -> Data[Metadata, PILImage[HWC, RGB, Int255]]:
     pil_img = Image_.open(image_dir / metadata.name).convert("RGB")
     return Data(metadata, PILImage(pil_img))
