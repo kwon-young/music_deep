@@ -8,7 +8,7 @@ from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 
-from model.vit import ViT
+from model.vit import ViT, compute_freqs
 from model.lejepa import LeJEPAEncoder, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -104,11 +104,10 @@ def create_lejepa_mnist_iterator(
         patch_seq = extract_patches(
             x_aug,
             patch_size=(params.patch_size, params.patch_size),
-            dim_head=params.dim_head,
         )
         patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
 
-        yield BatchedPatchData(metadata=batch.metadata, sequence=patch_seq)
+        yield BatchedPatchData(metadata=batch.metadata, patches=patch_seq)
 
 
 def train(params: TrainParams):
@@ -162,7 +161,8 @@ def train(params: TrainParams):
             )
             labels_v = labels.repeat_interleave(V)
 
-            emb, proj = encoder(batch.sequence.patches, batch.sequence.freqs)
+            kept_freqs = compute_freqs(batch.patches, params.dim_head)
+            emb, proj = encoder(batch.patches.data, kept_freqs)
 
             global_emb = emb.mean(dim=1)
 

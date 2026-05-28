@@ -7,7 +7,7 @@ from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 
-from model.vit import ViT, get_2d_pope_frequencies
+from model.vit import ViT, compute_freqs
 from model.lejepa import LeJEPAEncoder, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -172,21 +172,8 @@ def train(params: TrainParams):
             N = len(batch.metadata)
             V = params.n_views
 
-            # Compute frequencies on the fly using the original image shape and kept indices
-            c, h, w = batch.patches.image_shape
-            ph, pw = batch.patches.patch_size
-            grid_h, grid_w = h // ph, w // pw
-            
-            freqs = get_2d_pope_frequencies(
-                grid_h, grid_w, params.dim_head, device=params.device
-            )
-            freqs = freqs.unsqueeze(0).expand(N * V, -1, -1)
-            
-            kept_freqs = torch.gather(
-                freqs,
-                1,
-                batch.patches.indices.unsqueeze(-1).expand(-1, -1, params.dim_head)
-            )
+            # Compute frequencies cleanly
+            kept_freqs = compute_freqs(batch.patches, params.dim_head)
 
             # Forward pass using preprocessed patches and freqs
             emb, proj = encoder(batch.patches.data, kept_freqs)

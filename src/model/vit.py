@@ -3,6 +3,8 @@ from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 from typing import Any
+from functools import lru_cache
+from music_types import Patches, PatchLayout
 
 
 def pair[T](t: T | tuple[T, T]) -> tuple[T, T]:
@@ -26,6 +28,7 @@ def apply_pope(q, k, freqs):
     return q_rotated, k_rotated
 
 
+@lru_cache(maxsize=32)
 def get_2d_pope_frequencies(
     grid_h, grid_w, dim_head, base=10000.0, device="cpu"
 ):
@@ -50,6 +53,31 @@ def get_2d_pope_frequencies(
 
     freqs = torch.cat((freqs_y, freqs_x), dim=-1).reshape(-1, dim_head)
     return freqs
+
+
+def compute_freqs[PL: PatchLayout](patches: Patches[PL], dim_head: int) -> torch.Tensor:
+    """Computes and gathers frequencies for the given patches."""
+    c, h, w = patches.image_shape
+    ph, pw = patches.patch_size
+    grid_h, grid_w = h // ph, w // pw
+    
+    # Get the cached base frequencies (using string for device to ensure hashability)
+    base_freqs = get_2d_pope_frequencies(
+        grid_h, grid_w, dim_head, device=str(patches.data.device)
+    )
+    
+    # Expand to match batch size
+    b = patches.data.shape[0]
+    freqs = base_freqs.unsqueeze(0).expand(b, -1, -1)
+    
+    # Gather only the frequencies for the kept patches
+    kept_freqs = torch.gather(
+        freqs,
+        1,
+        patches.indices.unsqueeze(-1).expand(-1, -1, dim_head)
+    )
+    
+    return kept_freqs
 
 
 class FeedForward(Module):
