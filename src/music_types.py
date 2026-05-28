@@ -75,11 +75,15 @@ type PatchLayout = tuple[Batch, NumPatches, PatchDim]
 
 
 @dataclass
-class Patches[PL: PatchLayout]:
+class Patches[B: Batch, N: NumPatches, P: PatchDim]:
     data: torch.Tensor
     indices: torch.Tensor
     image_shape: CHW
     patch_size: HW
+
+    @property
+    def batch_size(self) -> B:
+        return self.data.shape[0]
 
 
 @dataclass

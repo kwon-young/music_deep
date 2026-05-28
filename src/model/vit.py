@@ -55,20 +55,18 @@ def get_2d_pope_frequencies(
     return freqs
 
 
-def compute_freqs[PL: PatchLayout](patches: Patches[PL], dim_head: int) -> torch.Tensor:
+def compute_freqs(patches: Patches[PatchLayout], dim_head: int) -> torch.Tensor:
     """Computes and gathers frequencies for the given patches."""
     c, h, w = patches.image_shape
     ph, pw = patches.patch_size
     grid_h, grid_w = h // ph, w // pw
     
-    # Get the cached base frequencies (using string for device to ensure hashability)
+    # using string for device to ensure hashability
     base_freqs = get_2d_pope_frequencies(
         grid_h, grid_w, dim_head, device=str(patches.data.device)
     )
     
-    # Expand to match batch size
-    b = patches.data.shape[0]
-    freqs = base_freqs.unsqueeze(0).expand(b, -1, -1)
+    freqs = base_freqs.unsqueeze(0).expand(patches.batch_size, -1, -1)
     
     # Gather only the frequencies for the kept patches
     kept_freqs = torch.gather(
