@@ -46,7 +46,6 @@ def visualize(
     model = vit_nano(
         image_size=image_size,
         patch_size=patch_size,
-        num_classes=0,
         drop_rate=drop_rate,
     )
 

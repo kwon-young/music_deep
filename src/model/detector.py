@@ -128,8 +128,6 @@ class OMRDetector(nn.Module):
         self.backbone = vit_backbone
 
         in_dim = self.backbone.patch_embed[1].out_features
-        self.backbone.pool = "none"
-        self.backbone.mlp_head = None
 
         self.head = DFINEDenseHead(
             in_dim=in_dim, num_classes=num_classes, num_shapes=num_shapes
@@ -145,7 +143,7 @@ class OMRDetector(nn.Module):
         Returns a dictionary ready for DFINECriterion.
         """
         features = self.backbone(patches)
-        patch_tokens = features[:, 1:, :]
+        patch_tokens = features
 
         classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
 

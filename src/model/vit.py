@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
-from typing import Any, Literal
+from typing import Any
 from functools import lru_cache
 from music_types import Patches
 
@@ -166,12 +166,10 @@ class ViT(Module):
         self,
         *,
         patch_size: int | tuple[int, int],
-        num_classes: int,
         dim: int,
         depth: int,
         heads: int,
         mlp_dim: int,
-        pool: Literal["cls", "mean"] = "cls",
         channels: int = 3,
         dim_head: int = 64,
         dropout: float = 0.0,
@@ -181,11 +179,6 @@ class ViT(Module):
         self.patch_size = patch_height, patch_width = pair(patch_size)
         self.dim_head = dim_head
 
-        assert pool in {"cls", "mean"}, (
-            "pool type must be either cls (cls token) or mean (mean pooling)"
-        )
-        self.num_cls_tokens = 1 if pool == "cls" else 0
-
         patch_dim = channels * patch_height * patch_width
 
         self.patch_embed = nn.Sequential(
@@ -194,56 +187,29 @@ class ViT(Module):
             nn.LayerNorm(dim),
         )
 
-        self.cls_token = nn.Parameter(torch.randn(self.num_cls_tokens, dim))
-
         self.dropout = nn.Dropout(emb_dropout)
 
         self.transformer = Transformer(
             dim, depth, heads, dim_head, mlp_dim, dropout
         )
 
-        self.pool = pool
-        self.to_latent = nn.Identity()
-
-        self.mlp_head = nn.Linear(dim, num_classes) if num_classes > 0 else None
-
     def forward(self, patches: Patches):
         freqs = compute_freqs(patches, self.dim_head)
         x_data = patches.data
-        batch = x_data.shape[0]
 
         x = self.patch_embed(x_data)
-
-        cls_tokens = self.cls_token.expand(batch, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-
-        if self.num_cls_tokens > 0:
-            cls_freqs = torch.zeros(
-                batch, self.num_cls_tokens, self.dim_head, device=x_data.device
-            )
-            freqs = torch.cat((cls_freqs, freqs), dim=1)
-
         x = self.dropout(x)
-
         x = self.transformer(x, freqs=freqs)
 
-        if self.mlp_head is None:
-            return x
-
-        x = x.mean(dim=1) if self.pool == "mean" else x[:, 0]
-
-        x = self.to_latent(x)
-        return self.mlp_head(x)
+        return x
 
 
 def vit_nano(
-    num_classes: int,
     patch_size: int | tuple[int, int] = 16,
     **kwargs: Any,
 ) -> ViT:
     return ViT(
         patch_size=patch_size,
-        num_classes=num_classes,
         dim=192,
         depth=12,
         heads=3,
@@ -253,13 +219,11 @@ def vit_nano(
 
 
 def vit_small(
-    num_classes: int,
     patch_size: int | tuple[int, int] = 16,
     **kwargs: Any,
 ) -> ViT:
     return ViT(
         patch_size=patch_size,
-        num_classes=num_classes,
         dim=384,
         depth=12,
         heads=6,
@@ -269,13 +233,11 @@ def vit_small(
 
 
 def vit_base(
-    num_classes: int,
     patch_size: int | tuple[int, int] = 16,
     **kwargs: Any,
 ) -> ViT:
     return ViT(
         patch_size=patch_size,
-        num_classes=num_classes,
         dim=768,
         depth=12,
         heads=12,

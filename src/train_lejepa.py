@@ -133,7 +133,6 @@ def create_lejepa_iterator(
 def train(params: TrainParams):
     backbone = ViT(
         patch_size=params.patch_size,
-        num_classes=params.num_classes,
         dim=params.dim,
         depth=params.depth,
         heads=params.heads,

@@ -70,7 +70,6 @@ def check_memory(model_fn, batch_size, img_size, is_train, patch_size):
         model = model_fn(
             image_size=img_size,
             patch_size=patch_size,
-            num_classes=0,
             channels=1,
         ).to(device)
         x = torch.randn(batch_size, 1, img_size, img_size, device=device)

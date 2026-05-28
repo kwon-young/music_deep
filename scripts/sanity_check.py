@@ -149,7 +149,7 @@ def main():
 
     # 1. Setup Model (using vit_nano for speed)
     num_classes = 80  # COCO has 80 classes
-    backbone = vit_nano(num_classes=0, patch_size=16, channels=3)
+    backbone = vit_nano(patch_size=16, channels=3)
     model = OMRDetector(backbone, num_classes=num_classes, num_shapes=5).to(
         device
     )
