@@ -7,9 +7,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-# Add src to python path so we can import our modules
-sys.path.append(str(Path(__file__).parent.parent / "src"))
-
 from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
