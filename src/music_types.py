@@ -71,7 +71,6 @@ class BatchedData[Meta, I: BatchedImage]:
 
 type NumPatches = int
 type PatchDim = int
-type PatchLayout = tuple[Batch, NumPatches, PatchDim]
 
 
 @dataclass
@@ -83,10 +82,10 @@ class Patches[B: Batch, N: NumPatches, P: PatchDim]:
 
     @property
     def batch_size(self) -> B:
-        return self.data.shape[0]
+        return self.data.shape[0]  # type: ignore
 
 
 @dataclass
-class BatchedPatchData[Meta, PL: PatchLayout]:
+class BatchedPatchData[Meta, PT: Patches]:
     metadata: list[Meta]
-    patches: Patches[PL]
+    patches: PT

@@ -4,7 +4,7 @@ from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 from typing import Any
 from functools import lru_cache
-from music_types import Patches, PatchLayout
+from music_types import Patches
 
 
 def pair[T](t: T | tuple[T, T]) -> tuple[T, T]:
@@ -55,7 +55,7 @@ def get_2d_pope_frequencies(
     return freqs
 
 
-def compute_freqs(patches: Patches[PatchLayout], dim_head: int) -> torch.Tensor:
+def compute_freqs[B: int, N: int, P: int](patches: Patches[B, N, P], dim_head: int) -> torch.Tensor:
     """Computes and gathers frequencies for the given patches."""
     c, h, w = patches.image_shape
     ph, pw = patches.patch_size

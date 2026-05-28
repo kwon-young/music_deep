@@ -32,6 +32,7 @@ from transform import (
 from dataset.mnist import load_mnist, load_image, MNISTMetadata
 from dataset.imslp import Data
 from dataset.imslp import TensorImage, VCHW, RGB, Float1
+from music_types import Batch, NumPatches, PatchDim, Patches
 
 
 @dataclass
@@ -79,7 +80,7 @@ def transform_image(
 def create_lejepa_mnist_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[MNISTMetadata], None, None]:
+) -> Generator[BatchedPatchData[MNISTMetadata, Patches[Batch, NumPatches, PatchDim]], None, None]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_mnist)(params.mnist_dir, split="train")

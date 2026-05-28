@@ -40,7 +40,10 @@ from music_types import (
     RGB,
     Float1,
     BatchedPatchData,
-    PatchLayout,
+    Batch,
+    NumPatches,
+    PatchDim,
+    Patches,
 )
 
 
@@ -94,7 +97,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[Metadata, PatchLayout]]:
+) -> Generator[BatchedPatchData[Metadata, Patches[Batch, NumPatches, PatchDim]]]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)

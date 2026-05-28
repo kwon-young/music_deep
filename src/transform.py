@@ -32,7 +32,6 @@ from music_types import (
     BVCHW,
     RGB,
     Patches,
-    PatchLayout,
     NumPatches,
     PatchDim,
 )
@@ -190,7 +189,7 @@ def collate[Meta, M: Mode, R: Range](
 def extract_patches[B: Batch](
     image: TensorImage[tuple[B, *CHW], Mode, Range],
     patch_size: tuple[int, int],
-) -> Patches[tuple[B, NumPatches, PatchDim]]:
+) -> Patches[B, NumPatches, PatchDim]:
     x_data = image.data
     b, c, h, w = x_data.shape
     ph, pw = patch_size
@@ -211,8 +210,8 @@ def extract_patches[B: Batch](
 
 
 def random_patch_drop[B: Batch, P: PatchDim](
-    patches: Patches[tuple[B, NumPatches, P]], drop_rate: float
-) -> Patches[tuple[B, NumPatches, P]]:
+    patches: Patches[B, NumPatches, P], drop_rate: float
+) -> Patches[B, NumPatches, P]:
     if drop_rate <= 0.0:
         return patches
 
@@ -245,8 +244,8 @@ def random_patch_drop[B: Batch, P: PatchDim](
 
 
 def variance_patch_drop[B: Batch, P: PatchDim](
-    patches: Patches[tuple[B, NumPatches, P]], drop_rate: float
-) -> Patches[tuple[B, NumPatches, P]]:
+    patches: Patches[B, NumPatches, P], drop_rate: float
+) -> Patches[B, NumPatches, P]:
     if drop_rate <= 0.0:
         return patches
 
