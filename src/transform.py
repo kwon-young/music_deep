@@ -11,7 +11,6 @@ import torch.nn.functional as F
 from dataset.imslp import (
     Data,
     BatchedData,
-    Metadata,
     Layout,
     AnyLayouts,
     Mode,
