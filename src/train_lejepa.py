@@ -85,8 +85,9 @@ def transform_image(
     data_t = random_crop(data_t, crop_size=params.image_size)
     data_tf = to_float1(data_t)
     data_tfv = make_views(data_tf, n=params.n_views)
-    data_tfv = random_affine(data_tfv, params.max_angle_deg,
-                             params.max_translate)
+    data_tfv = random_affine(
+        data_tfv, params.max_angle_deg, params.max_translate
+    )
     return data_tfv
 
 

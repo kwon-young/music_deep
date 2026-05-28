@@ -88,7 +88,9 @@ class DFINEDenseHead(nn.Module):
         relative_edge_offsets = self.weighting_fn(edge_probs)
 
         # Constrain shapes to be strictly positive
-        shapes = F.softplus(self.learnable_shapes).view(1, 1, self.num_shapes, 2)
+        shapes = F.softplus(self.learnable_shapes).view(
+            1, 1, self.num_shapes, 2
+        )
         w_k, h_k = shapes[..., 0], shapes[..., 1]
 
         # 1. Scale residuals by anchor dimensions

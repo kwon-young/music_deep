@@ -72,7 +72,9 @@ def transform_image(
     data_t = to(data_t, device=params.device)
     data_tf = to_float1(data_t)
     data_tfv = make_views(data_tf, n=params.n_views)
-    data_tfv = random_affine(data_tfv, params.max_angle_deg, params.max_translate)
+    data_tfv = random_affine(
+        data_tfv, params.max_angle_deg, params.max_translate
+    )
     return data_tfv
 
 
@@ -80,7 +82,11 @@ def transform_image(
 def create_lejepa_mnist_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[MNISTMetadata, Patches[Batch, NumPatches, PatchDim]], None, None]:
+) -> Generator[
+    BatchedPatchData[MNISTMetadata, Patches[Batch, NumPatches, PatchDim]],
+    None,
+    None,
+]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_mnist)(params.mnist_dir, split="train")
@@ -179,7 +185,11 @@ def train(params: TrainParams):
 
             ssl_loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
 
-            if running_loss_ssl is None or running_loss_probe is None or running_acc is None:
+            if (
+                running_loss_ssl is None
+                or running_loss_probe is None
+                or running_acc is None
+            ):
                 running_loss_ssl = ssl_loss.item()
                 running_loss_probe = probe_loss.item()
                 running_acc = acc

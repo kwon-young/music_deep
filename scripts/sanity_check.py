@@ -42,7 +42,17 @@ def load_yolo_label(txt_path: Path, img_w: int, img_h: int):
     }
 
 
-def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_thresh=0.5, indices=None):
+def update_plot(
+    ax,
+    image_tensor,
+    targets,
+    outputs,
+    img_w,
+    img_h,
+    epoch,
+    conf_thresh=0.5,
+    indices=None,
+):
     """Clears and redraws the plot with GT and Predictions."""
     ax.clear()
     if isinstance(epoch, int):
@@ -56,20 +66,37 @@ def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_th
     ax.imshow(img)
 
     # Plot Ground Truth boxes (Green)
-    gt_boxes = targets[0]["boxes"].cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    gt_boxes = targets[0]["boxes"].cpu().numpy() * np.array(
+        [img_w, img_h, img_w, img_h]
+    )
     gt_labels = targets[0]["labels"].cpu().numpy()
-    
+
     for box, label in zip(gt_boxes, gt_labels):
         x1, y1, x2, y2 = box
-        rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2, edgecolor='g', facecolor='none')
+        rect = patches.Rectangle(
+            (x1, y1),
+            x2 - x1,
+            y2 - y1,
+            linewidth=2,
+            edgecolor="g",
+            facecolor="none",
+        )
         ax.add_patch(rect)
         # Add GT label text
-        ax.text(x1, y1 - 2, f"GT:{label}", color='g', fontsize=8, 
-                bbox=dict(facecolor='white', alpha=0.7, pad=0, edgecolor='none'))
+        ax.text(
+            x1,
+            y1 - 2,
+            f"GT:{label}",
+            color="g",
+            fontsize=8,
+            bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
+        )
 
     # Plot Predicted boxes (Red)
-    pred_logits = outputs["pred_logits"][0].detach().cpu() # (P*K, C)
-    pred_boxes = outputs["pred_boxes"][0].detach().cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    pred_logits = outputs["pred_logits"][0].detach().cpu()  # (P*K, C)
+    pred_boxes = outputs["pred_boxes"][0].detach().cpu().numpy() * np.array(
+        [img_w, img_h, img_w, img_h]
+    )
 
     # Apply sigmoid to get probabilities and find max class prob
     probs = torch.sigmoid(pred_logits)
@@ -88,15 +115,32 @@ def update_plot(ax, image_tensor, targets, outputs, img_w, img_h, epoch, conf_th
         pred_probs_kept = max_probs[keep].numpy()
         pred_labels_kept = pred_labels[keep].numpy()
 
-    for box, prob, label in zip(pred_boxes_kept, pred_probs_kept, pred_labels_kept):
+    for box, prob, label in zip(
+        pred_boxes_kept, pred_probs_kept, pred_labels_kept
+    ):
         x1, y1, x2, y2 = box
-        rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2, edgecolor='r', facecolor='none', linestyle='--')
+        rect = patches.Rectangle(
+            (x1, y1),
+            x2 - x1,
+            y2 - y1,
+            linewidth=2,
+            edgecolor="r",
+            facecolor="none",
+            linestyle="--",
+        )
         ax.add_patch(rect)
         # Add Pred label and confidence text
-        ax.text(x1, y2 + 2, f"P:{label} {prob:.2f}", color='r', fontsize=8, verticalalignment='top',
-                bbox=dict(facecolor='white', alpha=0.7, pad=0, edgecolor='none'))
+        ax.text(
+            x1,
+            y2 + 2,
+            f"P:{label} {prob:.2f}",
+            color="r",
+            fontsize=8,
+            verticalalignment="top",
+            bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
+        )
 
-    ax.axis('off')
+    ax.axis("off")
 
 
 def main():
@@ -161,14 +205,14 @@ def main():
     # 4. Prepare Patches and Centers
     patches_obj = extract_patches(image, patch_size=(16, 16))
     patches = patches_obj.data
-    
+
     freqs = compute_freqs(patches_obj, dim_head=64)
 
     # Generate normalized patch centers for the detector
     c, h, w = patches_obj.image_shape
     ph, pw = patches_obj.patch_size
     grid_h, grid_w = h // ph, w // pw
-    
+
     y_centers = (torch.arange(grid_h, device=device) + 0.5) / grid_h
     x_centers = (torch.arange(grid_w, device=device) + 0.5) / grid_w
     y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
@@ -179,7 +223,7 @@ def main():
     # 5. Setup Interactive Plotting
     plt.ion()  # Turn on interactive mode
     fig, ax = plt.subplots(1, figsize=(8, 8))
-    fig.canvas.manager.set_window_title('OMR Detector Sanity Check')
+    fig.canvas.manager.set_window_title("OMR Detector Sanity Check")
 
     # 6. Overfit Loop
     print("Starting sanity check (overfitting a single batch)...")
@@ -206,28 +250,47 @@ def main():
                 f"GIoU: {loss_dict.get('loss_giou', torch.tensor(0)).item():.4f} | "
                 f"FGL: {loss_dict.get('loss_fgl', torch.tensor(0)).item():.4f}"
             )
-            
+
             # Get matcher indices for visualization
             with torch.no_grad():
                 indices_match = matcher(outputs, targets)
-            
+
             # Update the plot dynamically using matched indices
-            update_plot(ax, image, targets, outputs, img_w, img_h, epoch, indices=indices_match)
+            update_plot(
+                ax,
+                image,
+                targets,
+                outputs,
+                img_w,
+                img_h,
+                epoch,
+                indices=indices_match,
+            )
             fig.canvas.draw()
             fig.canvas.flush_events()
-            plt.pause(0.001) # Brief pause to allow GUI to update
+            plt.pause(0.001)  # Brief pause to allow GUI to update
 
     print(
         "Sanity check complete. If the total loss dropped significantly (near 0), the architecture is learning!"
     )
-    
+
     # Turn off interactive mode, save the final result with thresholding
     plt.ioff()
     model.eval()
     with torch.no_grad():
         outputs = model(patches, freqs, patch_centers)
-        update_plot(ax, image, targets, outputs, img_w, img_h, epoch="Final (Threshold > 0.5)", conf_thresh=0.5, indices=None)
-        
+        update_plot(
+            ax,
+            image,
+            targets,
+            outputs,
+            img_w,
+            img_h,
+            epoch="Final (Threshold > 0.5)",
+            conf_thresh=0.5,
+            indices=None,
+        )
+
     plt.savefig("sanity_check_output.png", dpi=150)
     print("Final visualization saved to sanity_check_output.png")
     plt.show()
