@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Any
 
 
-def pair(t):
+def pair[T](t: T | tuple[T, T]) -> tuple[T, T]:
     return t if isinstance(t, tuple) else (t, t)
 
 
