@@ -21,6 +21,10 @@ from music_types import (
     Image,
     BatchedImage,
     Batch,
+    Height,
+    Width,
+    Channel,
+    View,
     HWC,
     CHW,
     VCHW,
@@ -57,9 +61,9 @@ def batched_image_transform[Meta, T: BatchedImage, U: BatchedImage, **P](
 
 
 @image_transform
-def to_numpy[R: Range](
-    image: PILImage[HWC, RGB, R],
-) -> ArrayImage[CHW, RGB, R]:
+def to_numpy[H: Height, W: Width, C: Channel, R: Range](
+    image: PILImage[tuple[H, W, C], RGB, R],
+) -> ArrayImage[tuple[C, H, W], RGB, R]:
     arr = np.array(image.data)
     arr = np.transpose(arr, (2, 0, 1))
     return ArrayImage(arr)
@@ -131,9 +135,9 @@ def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
     return TensorImage(x_out.view(original_shape))
 
 
-def random_crops[M: Mode, R: Range](
-    image: TensorImage[CHW, M, R], crop_size: int
-) -> TensorImage[tuple[Batch, *CHW], M, R]:
+def random_crops[C: Channel, M: Mode, R: Range](
+    image: TensorImage[tuple[C, Height, Width], M, R], crop_size: int
+) -> TensorImage[tuple[Batch, C, Height, Width], M, R]:
     x = image.data
     # random crop n time where n*crop_size**2 will in average == h*w
     (c, h, w) = x.shape
@@ -154,9 +158,9 @@ def random_crops[M: Mode, R: Range](
 
 
 @image_transform
-def random_crop[M: Mode, R: Range](
-    image: TensorImage[CHW, M, R], crop_size: int
-) -> TensorImage[CHW, M, R]:
+def random_crop[C: Channel, M: Mode, R: Range](
+    image: TensorImage[tuple[C, Height, Width], M, R], crop_size: int
+) -> TensorImage[tuple[C, Height, Width], M, R]:
     x_data = image.data
     (c, h, w) = x_data.shape
     x_max = w - crop_size + 1
@@ -168,9 +172,9 @@ def random_crop[M: Mode, R: Range](
 
 
 @image_transform
-def make_views[M: Mode, R: Range](
-    image: TensorImage[CHW, M, R], n: int
-) -> TensorImage[VCHW, M, R]:
+def make_views[C: Channel, H: Height, W: Width, M: Mode, R: Range](
+    image: TensorImage[tuple[C, H, W], M, R], n: int
+) -> TensorImage[tuple[View, C, H, W], M, R]:
     return TensorImage(torch.stack([image.data] * n))
 
 
@@ -206,9 +210,9 @@ def extract_patches[B: Batch](
     )
 
 
-def random_patch_drop(
-    patches: Patches[PatchLayout], drop_rate: float
-) -> Patches[PatchLayout]:
+def random_patch_drop[B: Batch, P: PatchDim](
+    patches: Patches[tuple[B, NumPatches, P]], drop_rate: float
+) -> Patches[tuple[B, NumPatches, P]]:
     if drop_rate <= 0.0:
         return patches
 
@@ -240,9 +244,9 @@ def random_patch_drop(
     )
 
 
-def variance_patch_drop(
-    patches: Patches[PatchLayout], drop_rate: float
-) -> Patches[PatchLayout]:
+def variance_patch_drop[B: Batch, P: PatchDim](
+    patches: Patches[tuple[B, NumPatches, P]], drop_rate: float
+) -> Patches[tuple[B, NumPatches, P]]:
     if drop_rate <= 0.0:
         return patches
 
