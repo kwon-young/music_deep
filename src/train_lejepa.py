@@ -76,9 +76,10 @@ def transform_image(
     data_t = to_tensor(data_np)
     data_t = to(data_t, device=params.device)
     data_t = random_crop(data_t, crop_size=params.image_size)
-    data_t = to_float1(data_t)
-    data_t = make_views(data_t, n=params.n_views)
-    data_t = random_affine(data_t, params.max_angle_deg, params.max_translate)
+    data_tf = to_float1(data_t)
+    data_tfv = make_views(data_tf, n=params.n_views)
+    data_tfv = random_affine(data_tfv, params.max_angle_deg,
+                             params.max_translate)
     return data_t
 
 
@@ -108,7 +109,7 @@ def create_lejepa_iterator(
     batched_data = collate(data_gen, batch_size=params.batch_size)
 
     for batch in batched_data:
-        image = batch.image
+        image = batch.image.data
         N, V, C, H, W = image.shape
         x_aug = image.view(N * V, C, H, W)
 

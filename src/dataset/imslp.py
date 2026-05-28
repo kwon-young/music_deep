@@ -1,4 +1,4 @@
-from typing import Literal, cast, Concatenate
+from typing import Literal
 import json
 from pathlib import Path
 from dataclasses import dataclass
@@ -46,7 +46,7 @@ type Range = Int255 | Float1
 
 
 @dataclass
-class PILImage[L: HWC, M: Mode, R: Range]:
+class PILImage[L: HWC | HW, M: Mode, R: Range]:
     data: Image_.Image
 
 
@@ -91,4 +91,4 @@ def load_image(
     image_dir: Path,
 ) -> Data[PILImage[HWC, RGB, Int255]]:
     pil_img = Image_.open(image_dir / metadata.name).convert("RGB")
-    return Data(metadata, PILImage(cast(Image_.Image, pil_img)))
+    return Data(metadata, PILImage(pil_img))

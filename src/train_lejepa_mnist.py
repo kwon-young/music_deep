@@ -68,10 +68,10 @@ def transform_image(
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
     data_t = to(data_t, device=params.device)
-    data_t = to_float1(data_t)
-    data_t = make_views(data_t, n=params.n_views)
-    data_t = random_affine(data_t, params.max_angle_deg, params.max_translate)
-    return data_t
+    data_tf = to_float1(data_t)
+    data_tfv = make_views(data_tf, n=params.n_views)
+    data_tfv = random_affine(data_tfv, params.max_angle_deg, params.max_translate)
+    return data_tfv
 
 
 @partial_generator
@@ -96,7 +96,7 @@ def create_lejepa_mnist_iterator(
     batched_data = collate(data_gen, batch_size=params.batch_size)
 
     for batch in batched_data:
-        image = batch.image
+        image = batch.image.data
         N, V, C, H, W = image.shape
         x_aug = image.view(N * V, C, H, W)
 
@@ -120,13 +120,13 @@ def train(params: TrainParams):
         dim_head=params.dim_head,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-        pool="mean"
+        pool="mean",
     )
     encoder = LeJEPAEncoder(
         backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim
     ).to(params.device)
     sigreg = SIGReg().to(params.device)
-    
+
     probe = nn.Linear(params.dim, params.num_classes).to(params.device)
     criterion_probe = nn.CrossEntropyLoss()
 
@@ -155,14 +155,16 @@ def train(params: TrainParams):
         for step, batch in enumerate(iterator):
             N = len(batch.metadata)
             V = params.n_views
-            
-            labels = torch.tensor([m.label for m in batch.metadata], device=params.device)
+
+            labels = torch.tensor(
+                [m.label for m in batch.metadata], device=params.device
+            )
             labels_v = labels.repeat_interleave(V)
 
             emb, proj = encoder(batch.sequence.patches, batch.sequence.freqs)
-            
-            global_emb = emb.mean(dim=1) 
-            
+
+            global_emb = emb.mean(dim=1)
+
             logits = probe(global_emb.detach())
             probe_loss = criterion_probe(logits, labels_v)
 
@@ -180,8 +182,12 @@ def train(params: TrainParams):
                 running_loss_probe = probe_loss.item()
                 running_acc = acc
             else:
-                running_loss_ssl = 0.99 * running_loss_ssl + 0.01 * ssl_loss.item()
-                running_loss_probe = 0.99 * running_loss_probe + 0.01 * probe_loss.item()
+                running_loss_ssl = (
+                    0.99 * running_loss_ssl + 0.01 * ssl_loss.item()
+                )
+                running_loss_probe = (
+                    0.99 * running_loss_probe + 0.01 * probe_loss.item()
+                )
                 running_acc = 0.99 * running_acc + 0.01 * acc
 
             samples += N
@@ -189,7 +195,7 @@ def train(params: TrainParams):
             optimizer.zero_grad()
             ssl_loss.backward()
             optimizer.step()
-            
+
             optimizer_probe.zero_grad()
             probe_loss.backward()
             optimizer_probe.step()
@@ -201,13 +207,18 @@ def train(params: TrainParams):
                     f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
                     f"SSL Loss: {ssl_loss.item():.4f} (Run: {running_loss_ssl:.4f}) | "
                     f"Probe Loss: {probe_loss.item():.4f} (Run: {running_loss_probe:.4f}) | "
-                    f"Probe Acc: {acc*100:.1f}% (Run: {running_acc*100:.1f}%) | "
+                    f"Probe Acc: {acc * 100:.1f}% (Run: {running_acc * 100:.1f}%) | "
                     f"Speed: {speed:.1f} sample/s"
                 )
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train LeJEPA ViT on MNIST with online probe")
-    parser.add_argument("--mnist_dir", type=Path, default=Path("data/mnist-png"))
+    parser = argparse.ArgumentParser(
+        description="Train LeJEPA ViT on MNIST with online probe"
+    )
+    parser.add_argument(
+        "--mnist_dir", type=Path, default=Path("data/mnist-png")
+    )
     parser.add_argument("--n_views", type=int, default=2)
     parser.add_argument("--max_angle_deg", type=float, default=15.0)
     parser.add_argument("--max_translate", type=float, default=0.1)

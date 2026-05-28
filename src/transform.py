@@ -162,7 +162,7 @@ def random_crop[M: Mode, R: Range](
     y_max = h - crop_size + 1
     x = torch.randint(0, x_max, size=(1,), device=x_data.device)[0]
     y = torch.randint(0, y_max, size=(1,), device=x_data.device)[0]
-    cropped = x_data[:, y : y + crop_size, x : x + crop_size]
+    cropped = x_data[:, y:y + crop_size, x:x + crop_size]
     return TensorImage(cropped)
 
 
