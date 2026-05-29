@@ -197,11 +197,7 @@ class DFINECriterion(nn.Module):
         indices = self.matcher(outputs, targets)
 
         # 2. Compute normalization factor (number of ground truth boxes)
-        num_boxes = sum(len(t.labels) for t in targets)
-        num_boxes = torch.as_tensor(
-            [num_boxes], dtype=torch.float, device=outputs.pred_logits.device
-        )
-        num_boxes = torch.clamp(num_boxes, min=1).item()
+        num_boxes = max(1, sum(len(t.labels) for t in targets))
 
         # 3. Pre-extract matched targets and flatten indices ONCE
         flat_idx = self._flatten_indices(indices)
