@@ -244,8 +244,8 @@ def collate[Meta, V: View, C: Channel, H: Height, W: Width, M: Mode, R: Range](
     )
 
 
-def _extract_patches[B: Batch](
-    image: TensorImage[tuple[B, *CHW], Mode, Range],
+def _extract_patches[B: Batch, M: Mode, R: Range](
+    image: TensorImage[tuple[B, *CHW], M, R],
     patch_size: tuple[int, int],
 ) -> Patches[B, NumPatches, PatchDim]:
     x_data = image.data
@@ -272,16 +272,16 @@ def _extract_patches[B: Batch](
 
 
 @batched_transform
-def extract_patches[B: Batch](
-    image: TensorImage[tuple[B, *CHW], Mode, Range],
+def extract_patches[B: Batch, M: Mode, R: Range](
+    image: TensorImage[tuple[B, *CHW], M, R],
     patch_size: tuple[int, int],
 ) -> Patches[B, NumPatches, PatchDim]:
     return _extract_patches(image, patch_size)
 
 
 @batched_transform
-def extract_flatviewpatches[B: Batch, V: View, BV: BatchView](
-    image: FlatViewTensorImage[B, V, tuple[BV, *CHW], Mode, Range],
+def extract_flatviewpatches[B: Batch, V: View, BV: BatchView, M: Mode, R: Range](
+    image: FlatViewTensorImage[B, V, tuple[BV, *CHW], M, R],
     patch_size: tuple[int, int],
 ) -> FlatViewPatches[B, BV, V, NumPatches, PatchDim]:
     patches = _extract_patches(image, patch_size)
