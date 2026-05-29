@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .box_ops import generalized_box_iou
 from .detector import DFINEWeightingFunction
-from music_types import DetectionTarget, DetectionOutput, DetectionLosses, DetectionLossWeights
+from music_types import DetectionTarget, DetectionOutput, DetectionLosses, DetectionLossWeights, MatchIndices
 
 
 def sigmoid_focal_loss(
@@ -64,22 +64,22 @@ class DFINECriterion(nn.Module):
         # We need the weighting function to map target residuals back to discrete bins
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
-    def _get_src_permutation_idx(self, indices):
+    def _get_src_permutation_idx(self, indices: list[MatchIndices]):
         # Permute predictions following the Hungarian Matcher indices
         batch_idx = torch.cat(
-            [torch.full_like(src, i) for i, (src, _) in enumerate(indices)]
+            [torch.full_like(match.pred_indices, i) for i, match in enumerate(indices)]
         )
-        src_idx = torch.cat([src for (src, _) in indices])
+        src_idx = torch.cat([match.pred_indices for match in indices])
         return batch_idx, src_idx
 
-    def loss_labels(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes) -> torch.Tensor:
+    def loss_labels(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices: list[MatchIndices], num_boxes) -> torch.Tensor:
         """Classification loss (Focal Loss) applied to ALL predictions."""
         src_logits = outputs.pred_logits  # Shape: (Batch, Num_Predictions, Num_Classes)
         idx = self._get_src_permutation_idx(indices)
 
         # Get the target classes for the matched predictions
         target_classes_o = torch.cat(
-            [t.labels[J] for t, (_, J) in zip(targets, indices)]
+            [t.labels[match.target_indices] for t, match in zip(targets, indices)]
         )
 
         # Create a target tensor filled with 0s (Background)
@@ -99,14 +99,14 @@ class DFINECriterion(nn.Module):
         loss_ce = loss_ce.sum() / num_boxes
         return loss_ce
 
-    def loss_boxes(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes) -> tuple[torch.Tensor, torch.Tensor]:
+    def loss_boxes(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices: list[MatchIndices], num_boxes) -> tuple[torch.Tensor, torch.Tensor]:
         """L1 and GIoU loss applied ONLY to matched predictions."""
         idx = self._get_src_permutation_idx(indices)
 
         # Extract only the matched predictions
         src_boxes = outputs.pred_boxes[idx[0], idx[1]]
         target_boxes = torch.cat(
-            [t.boxes[i] for t, (_, i) in zip(targets, indices)], dim=0
+            [t.boxes[match.target_indices] for t, match in zip(targets, indices)], dim=0
         )
 
         # 1. L1 Loss
@@ -121,7 +121,7 @@ class DFINECriterion(nn.Module):
 
         return loss_bbox, loss_giou
 
-    def loss_fgl(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes) -> torch.Tensor:
+    def loss_fgl(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices: list[MatchIndices], num_boxes) -> torch.Tensor:
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
         idx = self._get_src_permutation_idx(indices)
 
@@ -130,7 +130,7 @@ class DFINECriterion(nn.Module):
         src_shapes = outputs.learnable_shapes[idx[0], idx[1]]       # (N_matched, 2)
 
         target_boxes = torch.cat(
-            [t.boxes[i] for t, (_, i) in zip(targets, indices)], dim=0
+            [t.boxes[match.target_indices] for t, match in zip(targets, indices)], dim=0
         )
 
         # Detach the targets so the network doesn't cheat by shrinking the anchors

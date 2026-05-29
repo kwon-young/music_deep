@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from .box_ops import box_xyxy_to_cxcywh, generalized_box_iou
-from music_types import DetectionTarget, DetectionOutput
+from music_types import DetectionTarget, DetectionOutput, MatchIndices
 
 
 class HungarianMatcher(nn.Module):
@@ -30,16 +30,16 @@ class HungarianMatcher(nn.Module):
         )
 
     @torch.no_grad()
-    def forward(self, outputs: DetectionOutput, targets: list[DetectionTarget]):
+    def forward(self, outputs: DetectionOutput, targets: list[DetectionTarget]) -> list[MatchIndices]:
         """
         Params:
             outputs: DetectionOutput containing predictions
             targets: This is a list of DetectionTarget (len(targets) = batch_size)
 
         Returns:
-            A list of size batch_size, containing tuples of (index_i, index_j) where:
-                - index_i is the indices of the selected predictions (in order)
-                - index_j is the indices of the corresponding selected targets (in order)
+            A list of size batch_size, containing MatchIndices where:
+                - pred_indices is the indices of the selected predictions (in order)
+                - target_indices is the indices of the corresponding selected targets (in order)
         """
         bs, num_queries = outputs.pred_logits.shape[:2]
 
@@ -99,9 +99,9 @@ class HungarianMatcher(nn.Module):
         ]
 
         return [
-            (
-                torch.as_tensor(i, dtype=torch.int64),
-                torch.as_tensor(j, dtype=torch.int64),
+            MatchIndices(
+                pred_indices=torch.as_tensor(i, dtype=torch.int64),
+                target_indices=torch.as_tensor(j, dtype=torch.int64),
             )
             for i, j in indices
         ]

@@ -132,3 +132,10 @@ class DetectionLosses:
     @property
     def total(self) -> torch.Tensor:
         return self.loss_ce + self.loss_bbox + self.loss_giou + self.loss_fgl
+
+
+@dataclass
+class MatchIndices:
+    """Holds the bipartite matching indices for a single image."""
+    pred_indices: torch.Tensor    # 1D tensor of matched prediction indices
+    target_indices: torch.Tensor  # 1D tensor of matched ground truth indices

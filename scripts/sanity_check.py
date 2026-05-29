@@ -12,7 +12,7 @@ from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from transform import extract_patches
-from music_types import DetectionTarget, DetectionOutput, DetectionLossWeights
+from music_types import DetectionTarget, DetectionOutput, DetectionLossWeights, MatchIndices
 
 
 def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
@@ -52,7 +52,7 @@ def update_plot(
     img_h,
     epoch,
     conf_thresh=0.5,
-    indices=None,
+    indices: list[MatchIndices] | None = None,
 ):
     """Clears and redraws the plot with GT and Predictions."""
     ax.clear()
@@ -105,7 +105,7 @@ def update_plot(
 
     if indices is not None:
         # Use Hungarian matched indices (batch size is 1, so we take indices[0])
-        src_idx = indices[0][0].cpu().numpy()
+        src_idx = indices[0].pred_indices.cpu().numpy()
         pred_boxes_kept = pred_boxes[src_idx]
         pred_probs_kept = max_probs[src_idx].numpy()
         pred_labels_kept = pred_labels[src_idx].numpy()
