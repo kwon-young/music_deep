@@ -137,7 +137,9 @@ def create_lejepa_iterator(
             num_views=params.n_views,
         )
 
-        yield BatchedPatchData(metadata=batch.metadata, patches=flat_view_patches)
+        yield BatchedPatchData(
+            metadata=batch.metadata, patches=flat_view_patches
+        )
 
 
 def train(params: TrainParams):

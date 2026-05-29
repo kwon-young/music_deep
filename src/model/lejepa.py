@@ -1,6 +1,12 @@
 import torch
 import torch.nn as nn
-from music_types import FlatViewEmbeddings, BatchView, View, NumPatches, EmbedDim
+from music_types import (
+    FlatViewEmbeddings,
+    BatchView,
+    View,
+    NumPatches,
+    EmbedDim,
+)
 
 type ProjDim = int
 

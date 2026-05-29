@@ -288,13 +288,16 @@ def variance_patch_drop[B: Batch, P: PatchDim](
     )
 
 
-def unflatten_views[BV: BatchView, V: View, N: NumPatches, D: EmbedDim | PatchDim](
-    emb: FlatViewEmbeddings[BV, V, N, D]
-) -> ViewEmbeddings[int, V, N, D]:
+def unflatten_views[
+    BV: BatchView,
+    V: View,
+    N: NumPatches,
+    D: EmbedDim | PatchDim,
+](emb: FlatViewEmbeddings[BV, V, N, D]) -> ViewEmbeddings[int, V, N, D]:
     b = emb.batch_size
     v = emb.num_views
     _, n, d = emb.data.shape
-    
+
     return ViewEmbeddings(
         data=emb.data.view(b, v, n, d),
         indices=emb.indices.view(b, v, n),

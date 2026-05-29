@@ -124,7 +124,9 @@ def create_lejepa_mnist_iterator(
             num_views=params.n_views,
         )
 
-        yield BatchedPatchData(metadata=batch.metadata, patches=flat_view_patches)
+        yield BatchedPatchData(
+            metadata=batch.metadata, patches=flat_view_patches
+        )
 
 
 def train(params: TrainParams):
@@ -196,7 +198,7 @@ def train(params: TrainParams):
 
             proj_view = unflatten_views(proj_emb)
             proj_v = proj_view.data.flatten(start_dim=2).transpose(0, 1)
-            
+
             inv_loss = (proj_v.mean(0) - proj_v).square().mean()
             sigreg_loss = sigreg(proj_v)
 

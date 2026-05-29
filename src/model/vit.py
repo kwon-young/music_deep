@@ -227,7 +227,7 @@ class ViewViT(ViT):
         self, patches: FlatViewPatches[BV, V, N, PatchDim]
     ) -> FlatViewEmbeddings[BV, V, N, EmbedDim]:
         out = super().forward(patches)
-        
+
         return FlatViewEmbeddings(
             data=out.data,
             indices=out.indices,
