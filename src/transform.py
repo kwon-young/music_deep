@@ -146,7 +146,15 @@ def random_affine[B: Batch, C: Channel, H: Height, W: Width, M: Mode](
 
 
 @image_transform
-def random_flatview_affine[B: Batch, V: View, BV: BatchView, C: Channel, H: Height, W: Width, M: Mode](
+def random_flatview_affine[
+    B: Batch,
+    V: View,
+    BV: BatchView,
+    C: Channel,
+    H: Height,
+    W: Width,
+    M: Mode,
+](
     image: FlatViewTensorImage[B, V, tuple[BV, C, H, W], M, Float1],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
@@ -154,9 +162,9 @@ def random_flatview_affine[B: Batch, V: View, BV: BatchView, C: Channel, H: Heig
     x = image.data
     original_shape = x.shape
     x_flat = x.view(-1, *original_shape[-3:])
-    
+
     x_out = _apply_random_affine(x_flat, max_angle_deg, max_translate)
-    
+
     return FlatViewTensorImage(
         data=x_out.view(original_shape),
         num_views=image.num_views,
@@ -213,29 +221,27 @@ def make_views[C: Channel, H: Height, W: Width, M: Mode, R: Range](
 
 
 def collate[Meta, V: View, C: Channel, H: Height, W: Width, M: Mode, R: Range](
-    it: Iterable[
+    batch: tuple[
         Data[
             Meta, FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]
-        ]
+        ],
+        ...,
     ],
     batch_size: Batch,
-) -> Iterable[
-    BatchedData[
-        Meta, FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]
-    ]
+) -> BatchedData[
+    Meta, FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]
 ]:
-    for batch in batched(it, n=batch_size):
-        m = [b.metadata for b in batch]
-        i = [b.image.data for b in batch]
-        v = batch[0].image.num_views
-        yield BatchedData(
-            m,
-            FlatViewTensorImage(
-                data=torch.cat(i, dim=0),
-                num_views=v,
-                original_batch_size=len(batch),
-            ),
-        )
+    m = [b.metadata for b in batch]
+    i = [b.image.data for b in batch]
+    v = batch[0].image.num_views
+    return BatchedData(
+        m,
+        FlatViewTensorImage(
+            data=torch.cat(i, dim=0),
+            num_views=v,
+            original_batch_size=len(batch),
+        ),
+    )
 
 
 def extract_flatviewpatches[B: Batch, V: View, BV: BatchView](

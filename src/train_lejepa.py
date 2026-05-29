@@ -6,7 +6,7 @@ import torch.optim as optim
 from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
-from itertools import chain
+from itertools import chain, batched
 
 from model.vit import ViewViT
 from model.lejepa import ProjectorMLP, SIGReg
@@ -36,15 +36,26 @@ from dataset.imslp import (
     Metadata,
 )
 from music_types import (
+    Channel,
+    Height,
+    Width,
+    CHW,
+    Mode,
+    Range,
     Batch,
+    BatchedData,
     View,
+    BatchView,
     BVCHW,
     Data,
     FlatViewTensorImage,
     RGB,
     Float1,
+    PatchDim,
+    NumPatches,
     BatchedPatchData,
     FlatViewEmbeddings,
+    FlatViewPatches,
 )
 
 
@@ -118,16 +129,34 @@ def create_lejepa_iterator(
         # monitor=monitor,
         name="transform",
     )
-    batched_data = collate(data_gen, batch_size=params.batch_size)
+    batch_gen = batched(data_gen, n=params.batch_size)
+    yield from map(transform_batch, batch_gen)
 
-    for batch in batched_data:
-        patches = extract_flatviewpatches(
-            batch.image,
-            patch_size=(params.patch_size, params.patch_size),
-        )
-        patches = random_flatview_patch_drop(patches, drop_rate=params.drop_rate)
 
-        yield BatchedPatchData(metadata=batch.metadata, patches=patches)
+def transform_batch[Meta, V: View](
+    batch: tuple[
+        Data[
+            Meta,
+            FlatViewTensorImage[Batch, V, tuple[BatchView, *CHW], RGB, Float1],
+        ],
+        ...,
+    ],
+) -> BatchedPatchData[
+    Meta, FlatViewPatches[Batch, BatchView, V, NumPatches, PatchDim]
+]:
+    batched_data = collate(batch, batch_size=params.batch_size)
+
+    patches = extract_flatviewpatches(
+        batched_data.image,
+        patch_size=(params.patch_size, params.patch_size),
+    )
+    drop_patches = random_flatview_patch_drop(
+        patches, drop_rate=params.drop_rate
+    )
+
+    return BatchedPatchData(
+        metadata=batched_data.metadata, patches=drop_patches
+    )
 
 
 def train(params: TrainParams):

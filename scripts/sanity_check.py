@@ -200,7 +200,7 @@ def main():
     image_tensor = (
         torch.from_numpy(img_np).float().unsqueeze(0).to(device) / 255.0
     )  # (1, 3, H, W)
-    
+
     image = FlatViewTensorImage(
         data=image_tensor,
         num_views=1,

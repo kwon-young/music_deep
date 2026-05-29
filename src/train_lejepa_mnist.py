@@ -110,11 +110,11 @@ def create_lejepa_mnist_iterator(
             batch.image,
             patch_size=(params.patch_size, params.patch_size),
         )
-        patch_seq = random_flatview_patch_drop(patch_seq, drop_rate=params.drop_rate)
-
-        yield BatchedPatchData(
-            metadata=batch.metadata, patches=patch_seq
+        patch_seq = random_flatview_patch_drop(
+            patch_seq, drop_rate=params.drop_rate
         )
+
+        yield BatchedPatchData(metadata=batch.metadata, patches=patch_seq)
 
 
 def train(params: TrainParams):

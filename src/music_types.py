@@ -17,13 +17,12 @@ CHW = tuple[Channel, Height, Width]
 type Layout = HW | HWC | CHW
 
 type BCHW = tuple[Batch, *CHW]
+type BHWC = tuple[Batch, *HWC]
 type BatchView = int
 type BVCHW = tuple[BatchView, *CHW]
 
-type BatchedLayout = tuple[Batch, *HWC] | BCHW | BVCHW
-type Layouts = Layout
-type BatchedLayouts = BatchedLayout
-type AnyLayouts = Layouts | BatchedLayouts
+type BatchedLayout = BHWC | BCHW | BVCHW
+type AnyLayouts = Layout | BatchedLayout
 
 type Binary = Literal["1"]
 type Gray = Literal["L"]
@@ -62,16 +61,16 @@ class FlatViewTensorImage[
     original_batch_size: B
 
 
-type Image[L: Layouts, M, R] = (
+type Image[L: Layout, M, R] = (
     PILImage[L, M, R] | ArrayImage[L, M, R] | TensorImage[L, M, R]
 )
-type BatchedImage[L: BatchedLayouts, M, R] = (
+type BatchedImage[L: BatchedLayout, M, R] = (
     ArrayImage[L, M, R] | TensorImage[L, M, R]
 )
 
 
 @dataclass
-class Data[Meta, I: Image | FlatViewTensorImage]:
+class Data[Meta, I: Image]:
     metadata: Meta
     image: I
 
