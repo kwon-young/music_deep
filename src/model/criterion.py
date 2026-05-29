@@ -84,14 +84,12 @@ class DFINECriterion(nn.Module):
 
     def loss_labels(
         self,
-        outputs: DetectionOutput,
+        src_logits: torch.Tensor,
         flat_idx: FlattenedIndices,
         matched_classes: torch.Tensor,
-        num_boxes,
+        num_boxes: float,
     ) -> torch.Tensor:
         """Classification loss (Focal Loss) applied to ALL predictions."""
-        src_logits = outputs.pred_logits
-
         # Create a target tensor filled with 0s (Background)
         target_classes = torch.zeros_like(src_logits)
 
@@ -111,15 +109,11 @@ class DFINECriterion(nn.Module):
 
     def loss_boxes(
         self,
-        outputs: DetectionOutput,
-        flat_idx: FlattenedIndices,
+        src_boxes: torch.Tensor,
         matched_boxes: torch.Tensor,
-        num_boxes,
+        num_boxes: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """L1 and GIoU loss applied ONLY to matched predictions."""
-        # Extract only the matched predictions
-        src_boxes = outputs.pred_boxes[flat_idx.batch, flat_idx.src]
-
         # 1. L1 Loss
         loss_bbox = (
             F.l1_loss(src_boxes, matched_boxes, reduction="none").sum()
@@ -134,18 +128,13 @@ class DFINECriterion(nn.Module):
 
     def loss_fgl(
         self,
-        outputs: DetectionOutput,
-        flat_idx: FlattenedIndices,
+        src_edge_logits: torch.Tensor,
+        src_centers: torch.Tensor,
+        src_shapes: torch.Tensor,
         matched_boxes: torch.Tensor,
-        num_boxes,
+        num_boxes: float,
     ) -> torch.Tensor:
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
-        src_edge_logits = outputs.pred_edge_logits[
-            flat_idx.batch, flat_idx.src
-        ]  # (N_matched, 4, reg_max+1)
-        src_centers = outputs.absolute_centers[flat_idx.batch, flat_idx.src]  # (N_matched, 2)
-        src_shapes = outputs.learnable_shapes[flat_idx.batch, flat_idx.src]  # (N_matched, 2)
-
         # Detach the targets so the network doesn't cheat by shrinking the anchors
         with torch.no_grad():
             cx, cy = src_centers[:, 0], src_centers[:, 1]
@@ -224,14 +213,28 @@ class DFINECriterion(nn.Module):
             dim=0,
         )
 
-        # 4. Compute all raw losses
-        raw_loss_ce = self.loss_labels(outputs, flat_idx, matched_classes, num_boxes)
-        raw_loss_bbox, raw_loss_giou = self.loss_boxes(
-            outputs, flat_idx, matched_boxes, num_boxes
-        )
-        raw_loss_fgl = self.loss_fgl(outputs, flat_idx, matched_boxes, num_boxes)
+        # 4. Pre-extract matched predictions for box and fgl losses
+        matched_src_boxes = outputs.pred_boxes[flat_idx.batch, flat_idx.src]
+        matched_src_edge_logits = outputs.pred_edge_logits[flat_idx.batch, flat_idx.src]
+        matched_src_centers = outputs.absolute_centers[flat_idx.batch, flat_idx.src]
+        matched_src_shapes = outputs.learnable_shapes[flat_idx.batch, flat_idx.src]
 
-        # 5. Apply weights and return dataclass
+        # 5. Compute all raw losses
+        raw_loss_ce = self.loss_labels(
+            outputs.pred_logits, flat_idx, matched_classes, num_boxes
+        )
+        raw_loss_bbox, raw_loss_giou = self.loss_boxes(
+            matched_src_boxes, matched_boxes, num_boxes
+        )
+        raw_loss_fgl = self.loss_fgl(
+            matched_src_edge_logits,
+            matched_src_centers,
+            matched_src_shapes,
+            matched_boxes,
+            num_boxes,
+        )
+
+        # 6. Apply weights and return dataclass
         return DetectionLosses(
             loss_ce=raw_loss_ce * self.weights.loss_ce,
             loss_bbox=raw_loss_bbox * self.weights.loss_bbox,
