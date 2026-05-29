@@ -179,7 +179,7 @@ def train(params: TrainParams):
             V = params.n_views
 
             emb = backbone(batch.patches)
-            proj = projector(emb)
+            proj = projector(emb.data)
 
             proj = proj.view(N, V, -1).transpose(0, 1)
 
