@@ -149,7 +149,7 @@ class MatchIndices:
 @dataclass
 class FlattenedIndices:
     """Holds the flattened batch and prediction indices for advanced indexing."""
-    
+
     batch: torch.Tensor
     src: torch.Tensor
 
@@ -157,6 +157,7 @@ class FlattenedIndices:
 @dataclass
 class MatchedTargets:
     """Holds the ground truth data for matched predictions."""
+
     labels: torch.Tensor
     boxes: torch.Tensor
 
@@ -164,6 +165,7 @@ class MatchedTargets:
 @dataclass
 class MatchedOutputs:
     """Holds the model predictions for matched indices."""
+
     boxes: torch.Tensor
     edge_logits: torch.Tensor
     centers: torch.Tensor

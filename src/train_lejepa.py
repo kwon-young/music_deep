@@ -141,19 +141,19 @@ def train(params: TrainParams):
         mlp_dim=params.mlp_dim,
         channels=params.channels,
     ).to(params.device)
-    
+
     projector = ProjectorMLP(
-        in_features=params.embed_dim, 
-        hidden_features=2048, 
-        out_features=params.proj_dim
+        in_features=params.embed_dim,
+        hidden_features=2048,
+        out_features=params.proj_dim,
     ).to(params.device)
-    
+
     sigreg = SIGReg().to(params.device)
 
     optimizer = optim.AdamW(
-        chain(backbone.parameters(), projector.parameters()), 
-        lr=params.lr, 
-        weight_decay=params.weight_decay
+        chain(backbone.parameters(), projector.parameters()),
+        lr=params.lr,
+        weight_decay=params.weight_decay,
     )
 
     params.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -218,14 +218,14 @@ def train(params: TrainParams):
 
                 if running_loss < best_loss:
                     best_loss = running_loss
-                    
+
                     checkpoint = {
                         "backbone": backbone.state_dict(),
                         "projector": projector.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "best_loss": best_loss,
                     }
-                    
+
                     torch.save(
                         checkpoint,
                         params.checkpoint_dir / "best_model.pt",
