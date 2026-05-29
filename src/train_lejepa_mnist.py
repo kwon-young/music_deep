@@ -106,27 +106,14 @@ def create_lejepa_mnist_iterator(
     batched_data = collate(data_gen, batch_size=params.batch_size)
 
     for batch in batched_data:
-        image = batch.image.data
-        N, V, C, H, W = image.shape
-        x_aug = image.view(N * V, C, H, W)
-
         patch_seq = extract_patches(
-            x_aug,
+            batch.image,
             patch_size=(params.patch_size, params.patch_size),
         )
         patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
 
-        flat_view_patches = FlatViewEmbeddings(
-            data=patch_seq.data,
-            indices=patch_seq.indices,
-            image_shape=patch_seq.image_shape,
-            patch_size=patch_seq.patch_size,
-            num_views=params.n_views,
-            original_batch_size=N,
-        )
-
         yield BatchedPatchData(
-            metadata=batch.metadata, patches=flat_view_patches
+            metadata=batch.metadata, patches=patch_seq
         )
 
 

@@ -17,6 +17,7 @@ from music_types import (
     DetectionOutput,
     DetectionLossWeights,
     MatchIndices,
+    FlatViewTensorImage,
 )
 
 
@@ -196,9 +197,15 @@ def main():
 
     # Convert to tensor without torchvision
     img_np = np.array(img).transpose(2, 0, 1)  # HWC to CHW
-    image = (
+    image_tensor = (
         torch.from_numpy(img_np).float().unsqueeze(0).to(device) / 255.0
     )  # (1, 3, H, W)
+    
+    image = FlatViewTensorImage(
+        data=image_tensor,
+        num_views=1,
+        original_batch_size=1,
+    )
 
     # Load targets
     target = load_yolo_label(lbl_path, img_w, img_h)
@@ -261,7 +268,7 @@ def main():
             # Update the plot dynamically using matched indices
             update_plot(
                 ax,
-                image,
+                image_tensor,
                 targets,
                 outputs,
                 img_w,
@@ -284,7 +291,7 @@ def main():
         outputs = model(patches_obj, patch_centers)
         update_plot(
             ax,
-            image,
+            image_tensor,
             targets,
             outputs,
             img_w,
