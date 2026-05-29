@@ -36,9 +36,11 @@ from dataset.imslp import (
     Metadata,
 )
 from music_types import (
+    Batch,
+    View,
+    BVCHW,
     Data,
     FlatViewTensorImage,
-    BatchView,
     RGB,
     Float1,
     BatchedPatchData,
@@ -79,7 +81,7 @@ class TrainParams:
 def transform_image(
     metadata: Metadata,
     params: TrainParams,
-) -> Data[Metadata, FlatViewTensorImage[int, int, tuple[BatchView, int, int, int], RGB, Float1]]:
+) -> Data[Metadata, FlatViewTensorImage[Batch, View, BVCHW, RGB, Float1]]:
     data_pil = load_image(metadata, image_dir=params.image_dir)
     data_np = to_numpy(data_pil)
     data_t = to_tensor(data_np)
@@ -119,26 +121,13 @@ def create_lejepa_iterator(
     batched_data = collate(data_gen, batch_size=params.batch_size)
 
     for batch in batched_data:
-        x_aug = batch.image.data
-
         patches = extract_patches(
             batch.image,
             patch_size=(params.patch_size, params.patch_size),
         )
         patches = random_patch_drop(patches, drop_rate=params.drop_rate)
 
-        flat_view_patches = FlatViewEmbeddings(
-            data=patches.data,
-            indices=patches.indices,
-            image_shape=patches.image_shape,
-            patch_size=patches.patch_size,
-            num_views=batch.image.num_views,
-            original_batch_size=batch.image.original_batch_size,
-        )
-
-        yield BatchedPatchData(
-            metadata=batch.metadata, patches=flat_view_patches
-        )
+        yield BatchedPatchData(metadata=batch.metadata, patches=patches)
 
 
 def train(params: TrainParams):
