@@ -10,6 +10,8 @@ from music_types import (
     DetectionLossWeights,
     MatchIndices,
     FlattenedIndices,
+    MatchedTargets,
+    MatchedOutputs,
 )
 
 
@@ -202,32 +204,32 @@ class DFINECriterion(nn.Module):
 
         # 3. Pre-extract matched targets and flatten indices ONCE
         flat_idx = flatten_indices(indices)
-        matched_classes = torch.cat(
-            [t.labels[match.target_indices] for t, match in zip(targets, indices)]
-        )
-        matched_boxes = torch.cat(
-            [t.boxes[match.target_indices] for t, match in zip(targets, indices)],
-            dim=0,
+        
+        matched_targets = MatchedTargets(
+            labels=torch.cat([t.labels[match.target_indices] for t, match in zip(targets, indices)]),
+            boxes=torch.cat([t.boxes[match.target_indices] for t, match in zip(targets, indices)], dim=0),
         )
 
         # 4. Pre-extract matched predictions for box and fgl losses
-        matched_src_boxes = outputs.pred_boxes[flat_idx.batch, flat_idx.src]
-        matched_src_edge_logits = outputs.pred_edge_logits[flat_idx.batch, flat_idx.src]
-        matched_src_centers = outputs.absolute_centers[flat_idx.batch, flat_idx.src]
-        matched_src_shapes = outputs.learnable_shapes[flat_idx.batch, flat_idx.src]
+        matched_outputs = MatchedOutputs(
+            boxes=outputs.pred_boxes[flat_idx.batch, flat_idx.src],
+            edge_logits=outputs.pred_edge_logits[flat_idx.batch, flat_idx.src],
+            centers=outputs.absolute_centers[flat_idx.batch, flat_idx.src],
+            shapes=outputs.learnable_shapes[flat_idx.batch, flat_idx.src],
+        )
 
         # 5. Compute all raw losses
         raw_loss_ce = self.loss_labels(
-            outputs.pred_logits, flat_idx, matched_classes, num_boxes
+            outputs.pred_logits, flat_idx, matched_targets.labels, num_boxes
         )
         raw_loss_bbox, raw_loss_giou = self.loss_boxes(
-            matched_src_boxes, matched_boxes, num_boxes
+            matched_outputs.boxes, matched_targets.boxes, num_boxes
         )
         raw_loss_fgl = self.loss_fgl(
-            matched_src_edge_logits,
-            matched_src_centers,
-            matched_src_shapes,
-            matched_boxes,
+            matched_outputs.edge_logits,
+            matched_outputs.centers,
+            matched_outputs.shapes,
+            matched_targets.boxes,
             num_boxes,
         )
 
