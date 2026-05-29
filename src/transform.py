@@ -30,6 +30,7 @@ from music_types import (
     BCHW,
     BVCHW,
     RGB,
+    Embeddings,
     Patches,
     NumPatches,
     PatchDim,
@@ -206,7 +207,7 @@ def extract_patches[B: Batch](
         .expand(b, -1)
     )
 
-    return Patches(
+    return Embeddings(
         data=patches,
         indices=indices,
         image_shape=(c, h, w),
@@ -240,7 +241,7 @@ def random_patch_drop[B: Batch, P: PatchDim](
         indices_sort,
     )
 
-    return Patches(
+    return Embeddings(
         data=kept_data,
         indices=kept_indices,
         image_shape=patches.image_shape,
@@ -275,7 +276,7 @@ def variance_patch_drop[B: Batch, P: PatchDim](
         indices_sort,
     )
 
-    return Patches(
+    return Embeddings(
         data=kept_data,
         indices=kept_indices,
         image_shape=patches.image_shape,
