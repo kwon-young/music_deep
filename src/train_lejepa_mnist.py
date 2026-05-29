@@ -122,6 +122,7 @@ def create_lejepa_mnist_iterator(
             image_shape=patch_seq.image_shape,
             patch_size=patch_seq.patch_size,
             num_views=params.n_views,
+            original_batch_size=N,
         )
 
         yield BatchedPatchData(

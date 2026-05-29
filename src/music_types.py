@@ -181,20 +181,18 @@ type BatchView = int
 
 @dataclass
 class FlatViewEmbeddings[
+    B: Batch,
     BV: BatchView,
     V: View,
     N: NumPatches,
     D: EmbedDim | PatchDim,
 ](Embeddings[BV, N, D]):
     num_views: V
-
-    @property
-    def batch_size(self) -> int:
-        return self.data.shape[0] // self.num_views
+    original_batch_size: B
 
 
-type FlatViewPatches[BV: BatchView, V: View, N: NumPatches, P: PatchDim] = (
-    FlatViewEmbeddings[BV, V, N, P]
+type FlatViewPatches[B: Batch, BV: BatchView, V: View, N: NumPatches, P: PatchDim] = (
+    FlatViewEmbeddings[B, BV, V, N, P]
 )
 
 

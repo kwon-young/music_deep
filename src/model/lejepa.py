@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from music_types import (
     FlatViewEmbeddings,
+    Batch,
     BatchView,
     View,
     NumPatches,
@@ -53,9 +54,9 @@ class ProjectorMLP(nn.Module):
             nn.BatchNorm1d(out_features),
         )
 
-    def forward[BV: BatchView, V: View, N: NumPatches](
-        self, x: FlatViewEmbeddings[BV, V, N, EmbedDim]
-    ) -> FlatViewEmbeddings[BV, V, N, ProjDim]:
+    def forward[B: Batch, BV: BatchView, V: View, N: NumPatches](
+        self, x: FlatViewEmbeddings[B, BV, V, N, EmbedDim]
+    ) -> FlatViewEmbeddings[B, BV, V, N, ProjDim]:
         b, n, _ = x.data.shape
 
         flat_x = x.data.reshape(b * n, -1)
@@ -69,4 +70,5 @@ class ProjectorMLP(nn.Module):
             image_shape=x.image_shape,
             patch_size=x.patch_size,
             num_views=x.num_views,
+            original_batch_size=x.original_batch_size,
         )

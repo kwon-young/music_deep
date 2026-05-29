@@ -223,9 +223,9 @@ class ViT(Module):
 
 
 class ViewViT(ViT):
-    def forward[BV: BatchView, V: View, N: NumPatches](
-        self, patches: FlatViewPatches[BV, V, N, PatchDim]
-    ) -> FlatViewEmbeddings[BV, V, N, EmbedDim]:
+    def forward[B: Batch, BV: BatchView, V: View, N: NumPatches](
+        self, patches: FlatViewPatches[B, BV, V, N, PatchDim]
+    ) -> FlatViewEmbeddings[B, BV, V, N, EmbedDim]:
         out = super().forward(patches)
 
         return FlatViewEmbeddings(
@@ -234,6 +234,7 @@ class ViewViT(ViT):
             image_shape=out.image_shape,
             patch_size=out.patch_size,
             num_views=patches.num_views,
+            original_batch_size=patches.original_batch_size,
         )
 
 

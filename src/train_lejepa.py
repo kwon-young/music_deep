@@ -135,6 +135,7 @@ def create_lejepa_iterator(
             image_shape=patches.image_shape,
             patch_size=patches.patch_size,
             num_views=params.n_views,
+            original_batch_size=N,
         )
 
         yield BatchedPatchData(
