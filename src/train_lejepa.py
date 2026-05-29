@@ -179,9 +179,9 @@ def train(params: TrainParams):
             V = params.n_views
 
             emb = backbone(batch.patches)
-            proj = projector(emb.data)
+            proj_emb = projector(emb)
 
-            proj = proj.view(N, V, -1).transpose(0, 1)
+            proj = proj_emb.data.view(N, V, -1).transpose(0, 1)
 
             inv_loss = (proj.mean(0) - proj).square().mean()
             sigreg_loss = sigreg(proj)

@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
-from music_types import Patches
+from music_types import Patches, Embeddings, Batch, NumPatches, EmbedDim
+
+type ProjDim = int
 
 
 class SIGReg(nn.Module):
@@ -15,7 +17,7 @@ class SIGReg(nn.Module):
         self.register_buffer("phi", window)
         self.register_buffer("weights", weights * window)
 
-    def forward(self, proj):
+    def forward(self, proj: torch.Tensor) -> torch.Tensor:
         A = torch.randn(proj.size(-1), 256, device=proj.device)
         A = A.div_(A.norm(p=2, dim=0))
         x_t = (proj @ A).unsqueeze(-1) * self.t
@@ -27,7 +29,12 @@ class SIGReg(nn.Module):
 
 
 class ProjectorMLP(nn.Module):
-    def __init__(self, in_features, hidden_features, out_features):
+    def __init__(
+        self,
+        in_features: EmbedDim,
+        hidden_features: int,
+        out_features: ProjDim,
+    ):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_features, hidden_features),
@@ -40,8 +47,21 @@ class ProjectorMLP(nn.Module):
             nn.BatchNorm1d(out_features),
         )
 
-    def forward(self, x):
-        orig_shape = x.shape
-        x = x.reshape(-1, orig_shape[-1])
-        x = self.net(x)
-        return x.view(*orig_shape[:-1], -1)
+    def forward[B: Batch, N: NumPatches](
+        self, x: Embeddings[B, N, EmbedDim]
+    ) -> Embeddings[B, N, ProjDim]:
+        orig_shape = x.data.shape
+        
+        # Flatten the batch and patch dimensions to pass through the Linear/BatchNorm layers
+        flat_x = x.data.reshape(-1, orig_shape[-1])
+        out_data = self.net(flat_x)
+        
+        # Reshape back to (Batch, NumPatches, ProjDim)
+        out_data = out_data.view(*orig_shape[:-1], -1)
+        
+        return Embeddings(
+            data=out_data,
+            indices=x.indices,
+            image_shape=x.image_shape,
+            patch_size=x.patch_size,
+        )
