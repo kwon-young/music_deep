@@ -7,9 +7,10 @@ import torch.optim as optim
 from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
+from itertools import chain
 
 from model.vit import ViT
-from model.lejepa import LeJEPAEncoder, SIGReg
+from model.lejepa import ProjectorMLP, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
     ParallelGenerator,
@@ -120,25 +121,29 @@ def create_lejepa_mnist_iterator(
 def train(params: TrainParams):
     backbone = ViT(
         patch_size=params.patch_size,
-        num_classes=0,
         dim=params.dim,
         depth=params.depth,
         heads=params.heads,
         dim_head=params.dim_head,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-        pool="mean",
-    )
-    encoder = LeJEPAEncoder(
-        backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim
     ).to(params.device)
+    
+    projector = ProjectorMLP(
+        in_features=params.embed_dim,
+        hidden_features=2048,
+        out_features=params.proj_dim,
+    ).to(params.device)
+    
     sigreg = SIGReg().to(params.device)
 
     probe = nn.Linear(params.dim, params.num_classes).to(params.device)
     criterion_probe = nn.CrossEntropyLoss()
 
     optimizer = optim.AdamW(
-        encoder.parameters(), lr=params.lr, weight_decay=params.weight_decay
+        chain(backbone.parameters(), projector.parameters()), 
+        lr=params.lr, 
+        weight_decay=params.weight_decay
     )
     optimizer_probe = optim.AdamW(
         probe.parameters(), lr=params.lr, weight_decay=params.weight_decay
@@ -151,7 +156,8 @@ def train(params: TrainParams):
     start_time = time.time()
 
     for epoch in range(params.epochs):
-        encoder.train()
+        backbone.train()
+        projector.train()
         probe.train()
         monitor = Monitor()
         iterator = ThreadedGenerator(
@@ -168,9 +174,10 @@ def train(params: TrainParams):
             )
             labels_v = labels.repeat_interleave(V)
 
-            emb, proj = encoder(batch.patches)
+            emb = backbone(batch.patches)
+            proj_emb = projector(emb)
 
-            global_emb = emb.mean(dim=1)
+            global_emb = emb.data.mean(dim=1)
 
             logits = probe(global_emb.detach())
             probe_loss = criterion_probe(logits, labels_v)
@@ -178,7 +185,7 @@ def train(params: TrainParams):
             preds = logits.argmax(dim=-1)
             acc = (preds == labels_v).float().mean().item()
 
-            proj_v = proj.view(N, V, -1).transpose(0, 1)
+            proj_v = proj_emb.data.view(N, V, -1).transpose(0, 1)
             inv_loss = (proj_v.mean(0) - proj_v).square().mean()
             sigreg_loss = sigreg(proj_v)
 
