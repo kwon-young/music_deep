@@ -12,7 +12,12 @@ from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from transform import extract_patches
-from music_types import DetectionTarget, DetectionOutput, DetectionLossWeights, MatchIndices
+from music_types import (
+    DetectionTarget,
+    DetectionOutput,
+    DetectionLossWeights,
+    MatchIndices,
+)
 
 
 def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
