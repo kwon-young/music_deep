@@ -18,6 +18,7 @@ from music_types import (
     DetectionLossWeights,
     MatchIndices,
     FlatViewTensorImage,
+    BatchedData,
 )
 
 
@@ -216,7 +217,9 @@ def main():
     print(f"Found {len(target.labels)} objects in the image.")
 
     # 4. Prepare Patches and Centers
-    patches_obj = extract_patches(image, patch_size=(16, 16))
+    batched_image = BatchedData(metadata=[None], data=image)
+    patches_obj_batched = extract_patches(batched_image, patch_size=(16, 16))
+    patches_obj = patches_obj_batched.data
 
     # Generate normalized patch centers for the detector
     c, h, w = patches_obj.image_shape

@@ -28,13 +28,12 @@ from transform import (
     collate,
     extract_flatviewpatches,
     random_flatview_patch_drop,
-    BatchedPatchData,
     unflatten_views,
 )
 from dataset.mnist import load_mnist, load_image, MNISTMetadata
 from dataset.imslp import Data
 from dataset.imslp import TensorImage, VCHW, RGB, Float1
-from music_types import FlatViewEmbeddings
+from music_types import FlatViewEmbeddings, BatchedData
 
 
 @dataclass
@@ -85,7 +84,7 @@ def create_lejepa_mnist_iterator(
     params: TrainParams,
     monitor: Monitor,
 ) -> Generator[
-    BatchedPatchData[MNISTMetadata, FlatViewEmbeddings],
+    BatchedData[MNISTMetadata, FlatViewEmbeddings],
     None,
     None,
 ]:
@@ -107,14 +106,14 @@ def create_lejepa_mnist_iterator(
 
     for batch in batched_data:
         patch_seq = extract_flatviewpatches(
-            batch.image,
+            batch,
             patch_size=(params.patch_size, params.patch_size),
         )
         patch_seq = random_flatview_patch_drop(
             patch_seq, drop_rate=params.drop_rate
         )
 
-        yield BatchedPatchData(metadata=batch.metadata, patches=patch_seq)
+        yield patch_seq
 
 
 def train(params: TrainParams):
@@ -173,7 +172,7 @@ def train(params: TrainParams):
             )
             labels_v = labels.repeat_interleave(V)
 
-            emb = backbone(batch.patches)
+            emb = backbone(batch.data)
             proj_emb = projector(emb)
 
             global_emb = emb.data.mean(dim=1)

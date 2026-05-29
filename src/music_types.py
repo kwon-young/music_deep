@@ -70,15 +70,15 @@ type BatchedImage[L: BatchedLayout, M, R] = (
 
 
 @dataclass
-class Data[Meta, I: Image]:
+class Data[Meta, T]:
     metadata: Meta
-    image: I
+    data: T
 
 
 @dataclass
-class BatchedData[Meta, I: BatchedImage | FlatViewTensorImage]:
+class BatchedData[Meta, T]:
     metadata: list[Meta]
-    image: I
+    data: T
 
 
 type NumPatches = int
@@ -134,12 +134,6 @@ class ViewEmbeddings[B: Batch, V: View, N: NumPatches, D: EmbedDim | PatchDim](
 type ViewPatches[B: Batch, V: View, N: NumPatches, P: PatchDim] = (
     ViewEmbeddings[B, V, N, P]
 )
-
-
-@dataclass
-class BatchedPatchData[Meta, PT: Embeddings]:
-    metadata: list[Meta]
-    patches: PT
 
 
 @dataclass

@@ -53,7 +53,6 @@ from music_types import (
     Float1,
     PatchDim,
     NumPatches,
-    BatchedPatchData,
     FlatViewEmbeddings,
     FlatViewPatches,
 )
@@ -110,7 +109,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[Metadata, FlatViewEmbeddings]]:
+) -> Generator[BatchedData[Metadata, FlatViewEmbeddings]]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)
@@ -141,22 +140,20 @@ def transform_batch[Meta, V: View](
         ],
         ...,
     ],
-) -> BatchedPatchData[
+) -> BatchedData[
     Meta, FlatViewPatches[Batch, BatchView, V, NumPatches, PatchDim]
 ]:
     batched_data = collate(batch, batch_size=params.batch_size)
 
     patches = extract_flatviewpatches(
-        batched_data.image,
+        batched_data,
         patch_size=(params.patch_size, params.patch_size),
     )
     drop_patches = random_flatview_patch_drop(
         patches, drop_rate=params.drop_rate
     )
 
-    return BatchedPatchData(
-        metadata=batched_data.metadata, patches=drop_patches
-    )
+    return drop_patches
 
 
 def train(params: TrainParams):
@@ -205,7 +202,7 @@ def train(params: TrainParams):
         for step, batch in enumerate(iterator):
             N = len(batch.metadata)
 
-            emb = backbone(batch.patches)
+            emb = backbone(batch.data)
             proj_emb = projector(emb)
 
             proj_view = unflatten_views(proj_emb)
