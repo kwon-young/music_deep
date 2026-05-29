@@ -15,15 +15,16 @@ HW = tuple[Height, Width]
 HWC = tuple[Height, Width, Channel]
 CHW = tuple[Channel, Height, Width]
 type Layout = HW | HWC | CHW
-VCHW = tuple[View, *CHW]
-type ViewLayout = tuple[View, *HWC] | VCHW
-type Layouts = Layout | ViewLayout
+
 type BCHW = tuple[Batch, *CHW]
-type BatchedLayout = tuple[Batch, *HWC] | BCHW
-type BVCHW = tuple[Batch, *VCHW]
-type BatchedViewLayout = tuple[Batch, View, *HWC] | BVCHW
-type BatchedLayouts = BatchedLayout | BatchedViewLayout
+type BatchView = int
+type BVCHW = tuple[BatchView, *CHW]
+
+type BatchedLayout = tuple[Batch, *HWC] | BCHW | BVCHW
+type Layouts = Layout
+type BatchedLayouts = BatchedLayout
 type AnyLayouts = Layouts | BatchedLayouts
+
 type Binary = Literal["1"]
 type Gray = Literal["L"]
 type RGB = Literal["RGB"]
@@ -49,6 +50,18 @@ class TensorImage[L: AnyLayouts, M: Mode, R: Range]:
     data: torch.Tensor
 
 
+@dataclass
+class FlatViewTensorImage[
+    B: Batch,
+    V: View,
+    L: BVCHW,
+    M: Mode,
+    R: Range,
+](TensorImage[L, M, R]):
+    num_views: V
+    original_batch_size: B
+
+
 type Image[L: Layouts, M, R] = (
     PILImage[L, M, R] | ArrayImage[L, M, R] | TensorImage[L, M, R]
 )
@@ -58,13 +71,13 @@ type BatchedImage[L: BatchedLayouts, M, R] = (
 
 
 @dataclass
-class Data[Meta, I: Image]:
+class Data[Meta, I: Image | FlatViewTensorImage]:
     metadata: Meta
     image: I
 
 
 @dataclass
-class BatchedData[Meta, I: BatchedImage]:
+class BatchedData[Meta, I: BatchedImage | FlatViewTensorImage]:
     metadata: list[Meta]
     image: I
 
@@ -72,7 +85,6 @@ class BatchedData[Meta, I: BatchedImage]:
 type NumPatches = int
 type PatchDim = int
 type EmbedDim = int
-type BatchView = int
 
 
 @dataclass

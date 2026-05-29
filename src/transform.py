@@ -18,6 +18,7 @@ from music_types import (
     PILImage,
     ArrayImage,
     TensorImage,
+    FlatViewTensorImage,
     Image,
     BatchedImage,
     Batch,
@@ -26,7 +27,6 @@ from music_types import (
     Channel,
     View,
     CHW,
-    VCHW,
     BCHW,
     BVCHW,
     RGB,
@@ -41,7 +41,7 @@ from music_types import (
 )
 
 
-def image_transform[Meta, T: Image, U: Image, **P](
+def image_transform[Meta, T: Image | FlatViewTensorImage, U: Image | FlatViewTensorImage, **P](
     func: Callable[Concatenate[T, P], U],
 ) -> Callable[Concatenate[Data[Meta, T], P], Data[Meta, U]]:
     @wraps(func)
@@ -53,7 +53,7 @@ def image_transform[Meta, T: Image, U: Image, **P](
     return wrapper
 
 
-def batched_image_transform[Meta, T: BatchedImage, U: BatchedImage, **P](
+def batched_image_transform[Meta, T: BatchedImage | FlatViewTensorImage, U: BatchedImage | FlatViewTensorImage, **P](
     func: Callable[Concatenate[T, P], U],
 ) -> Callable[Concatenate[BatchedData[Meta, T], P], BatchedData[Meta, U]]:
     @wraps(func)
@@ -95,16 +95,22 @@ def shuffle[T](it: Iterable[T]) -> Generator[T, None, None]:
 
 
 @image_transform
-def to[I: TensorImage](image: I, device: torch.device) -> I:
+def to[I: TensorImage | FlatViewTensorImage](image: I, device: torch.device) -> I:
+    if isinstance(image, FlatViewTensorImage):
+        return FlatViewTensorImage(
+            data=image.data.to(device),
+            num_views=image.num_views,
+            original_batch_size=image.original_batch_size,
+        )
     return type(image)(image.data.to(device))
 
 
 @image_transform
-def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
-    image: TensorImage[L, M, Float1],
+def random_affine[B: Batch, V: View, L: BVCHW, M: Mode](
+    image: FlatViewTensorImage[B, V, L, M, Float1],
     max_angle_deg: float = 3.0,
     max_translate: float = 0.05,
-) -> TensorImage[L, M, Float1]:
+) -> FlatViewTensorImage[B, V, L, M, Float1]:
     x = image.data
     original_shape = x.shape
     x_flat = x.view(-1, *original_shape[-3:])
@@ -137,7 +143,11 @@ def random_affine[L: BCHW | BVCHW | VCHW, M: Mode](
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
     x_out = x_transformed + 1.0
-    return TensorImage(x_out.view(original_shape))
+    return FlatViewTensorImage(
+        data=x_out.view(original_shape),
+        num_views=image.num_views,
+        original_batch_size=image.original_batch_size,
+    )
 
 
 def random_crops[C: Channel, M: Mode, R: Range](
@@ -179,21 +189,34 @@ def random_crop[C: Channel, M: Mode, R: Range](
 @image_transform
 def make_views[C: Channel, H: Height, W: Width, M: Mode, R: Range](
     image: TensorImage[tuple[C, H, W], M, R], n: int
-) -> TensorImage[tuple[View, C, H, W], M, R]:
-    return TensorImage(torch.stack([image.data] * n))
+) -> FlatViewTensorImage[int, int, tuple[BatchView, C, H, W], M, R]:
+    stacked = torch.stack([image.data] * n)
+    return FlatViewTensorImage(
+        data=stacked,
+        num_views=n,
+        original_batch_size=1,
+    )
 
 
 def collate[Meta, M: Mode, R: Range](
-    it: Iterable[Data[Meta, TensorImage[VCHW, M, R]]], batch_size: int
-) -> Iterable[BatchedData[Meta, TensorImage[tuple[Batch, *VCHW], M, R]]]:
+    it: Iterable[Data[Meta, FlatViewTensorImage[int, int, tuple[BatchView, *CHW], M, R]]], batch_size: int
+) -> Iterable[BatchedData[Meta, FlatViewTensorImage[int, int, tuple[BatchView, *CHW], M, R]]]:
     for batch in batched(it, n=batch_size):
         m = [b.metadata for b in batch]
         i = [b.image.data for b in batch]
-        yield BatchedData(m, TensorImage(torch.stack(i)))
+        v = batch[0].image.num_views
+        yield BatchedData(
+            m,
+            FlatViewTensorImage(
+                data=torch.cat(i, dim=0),
+                num_views=v,
+                original_batch_size=len(batch),
+            )
+        )
 
 
 def extract_patches[B: Batch](
-    image: TensorImage[tuple[B, *CHW], Mode, Range],
+    image: TensorImage[tuple[B, *CHW], Mode, Range] | FlatViewTensorImage,
     patch_size: tuple[int, int],
 ) -> Patches[B, NumPatches, PatchDim]:
     x_data = image.data
