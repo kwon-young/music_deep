@@ -42,6 +42,18 @@ def sigmoid_focal_loss(
     return loss
 
 
+def flatten_indices(indices: list[MatchIndices]) -> FlattenedIndices:
+    # Permute predictions following the Hungarian Matcher indices
+    batch_idx = torch.cat(
+        [
+            torch.full_like(match.pred_indices, i)
+            for i, match in enumerate(indices)
+        ]
+    )
+    src_idx = torch.cat([match.pred_indices for match in indices])
+    return FlattenedIndices(batch=batch_idx, src=src_idx)
+
+
 class DFINECriterion(nn.Module):
     """
     This class computes the 4 losses for our Dense Patch-as-Predictor model:
@@ -70,17 +82,6 @@ class DFINECriterion(nn.Module):
 
         # We need the weighting function to map target residuals back to discrete bins
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
-
-    def _flatten_indices(self, indices: list[MatchIndices]) -> FlattenedIndices:
-        # Permute predictions following the Hungarian Matcher indices
-        batch_idx = torch.cat(
-            [
-                torch.full_like(match.pred_indices, i)
-                for i, match in enumerate(indices)
-            ]
-        )
-        src_idx = torch.cat([match.pred_indices for match in indices])
-        return FlattenedIndices(batch=batch_idx, src=src_idx)
 
     def loss_labels(
         self,
@@ -200,7 +201,7 @@ class DFINECriterion(nn.Module):
         num_boxes = max(1, sum(len(t.labels) for t in targets))
 
         # 3. Pre-extract matched targets and flatten indices ONCE
-        flat_idx = self._flatten_indices(indices)
+        flat_idx = flatten_indices(indices)
         matched_classes = torch.cat(
             [t.labels[match.target_indices] for t, match in zip(targets, indices)]
         )
