@@ -6,9 +6,10 @@ import torch.optim as optim
 from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
+from itertools import chain
 
 from model.vit import ViT
-from model.lejepa import LeJEPAEncoder, SIGReg
+from model.lejepa import ProjectorMLP, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
     ParallelGenerator,
@@ -139,14 +140,20 @@ def train(params: TrainParams):
         dim_head=params.dim_head,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-    )
-    encoder = LeJEPAEncoder(
-        backbone, embed_dim=params.embed_dim, proj_dim=params.proj_dim
     ).to(params.device)
+    
+    projector = ProjectorMLP(
+        in_features=params.embed_dim, 
+        hidden_features=2048, 
+        out_features=params.proj_dim
+    ).to(params.device)
+    
     sigreg = SIGReg().to(params.device)
 
     optimizer = optim.AdamW(
-        encoder.parameters(), lr=params.lr, weight_decay=params.weight_decay
+        chain(backbone.parameters(), projector.parameters()), 
+        lr=params.lr, 
+        weight_decay=params.weight_decay
     )
 
     params.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -158,7 +165,8 @@ def train(params: TrainParams):
     start_time = time.time()
 
     for epoch in range(params.epochs):
-        encoder.train()
+        backbone.train()
+        projector.train()
         monitor = Monitor()
         iterator = ThreadedGenerator(
             create_lejepa_iterator(params, monitor=monitor),
@@ -170,7 +178,8 @@ def train(params: TrainParams):
             N = len(batch.metadata)
             V = params.n_views
 
-            emb, proj = encoder(batch.patches)
+            emb = backbone(batch.patches)
+            proj = projector(emb)
 
             proj = proj.view(N, V, -1).transpose(0, 1)
 
@@ -209,8 +218,16 @@ def train(params: TrainParams):
 
                 if running_loss < best_loss:
                     best_loss = running_loss
+                    
+                    checkpoint = {
+                        "backbone": backbone.state_dict(),
+                        "projector": projector.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "best_loss": best_loss,
+                    }
+                    
                     torch.save(
-                        encoder.state_dict(),
+                        checkpoint,
                         params.checkpoint_dir / "best_model.pt",
                     )
                     print(f"Saved new best model with loss {best_loss:.4f}")

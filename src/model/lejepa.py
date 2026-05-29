@@ -45,15 +45,3 @@ class ProjectorMLP(nn.Module):
         x = x.reshape(-1, orig_shape[-1])
         x = self.net(x)
         return x.view(*orig_shape[:-1], -1)
-
-
-class LeJEPAEncoder(nn.Module):
-    def __init__(self, vit_model, embed_dim, proj_dim=16):
-        super().__init__()
-        self.backbone = vit_model
-        self.proj = ProjectorMLP(embed_dim, 2048, proj_dim)
-
-    def forward(self, patches: Patches):
-        emb = self.backbone(patches)
-        proj = self.proj(emb)
-        return emb, proj
