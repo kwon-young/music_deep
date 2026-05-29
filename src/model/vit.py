@@ -11,6 +11,10 @@ from music_types import (
     NumPatches,
     PatchDim,
     EmbedDim,
+    FlatViewPatches,
+    FlatViewEmbeddings,
+    BatchView,
+    View,
 )
 
 
@@ -215,6 +219,21 @@ class ViT(Module):
             indices=patches.indices,
             image_shape=patches.image_shape,
             patch_size=patches.patch_size,
+        )
+
+
+class ViewViT(ViT):
+    def forward[BV: BatchView, V: View, N: NumPatches](
+        self, patches: FlatViewPatches[BV, V, N, PatchDim]
+    ) -> FlatViewEmbeddings[BV, V, N, EmbedDim]:
+        out = super().forward(patches)
+        
+        return FlatViewEmbeddings(
+            data=out.data,
+            indices=out.indices,
+            image_shape=out.image_shape,
+            patch_size=out.patch_size,
+            num_views=patches.num_views,
         )
 
 

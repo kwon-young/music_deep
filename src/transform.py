@@ -34,6 +34,10 @@ from music_types import (
     Patches,
     NumPatches,
     PatchDim,
+    FlatViewEmbeddings,
+    ViewEmbeddings,
+    BatchView,
+    EmbedDim,
 )
 
 
@@ -281,4 +285,19 @@ def variance_patch_drop[B: Batch, P: PatchDim](
         indices=kept_indices,
         image_shape=patches.image_shape,
         patch_size=patches.patch_size,
+    )
+
+
+def unflatten_views[BV: BatchView, V: View, N: NumPatches, D: EmbedDim | PatchDim](
+    emb: FlatViewEmbeddings[BV, V, N, D]
+) -> ViewEmbeddings[int, V, N, D]:
+    b = emb.batch_size
+    v = emb.num_views
+    _, n, d = emb.data.shape
+    
+    return ViewEmbeddings(
+        data=emb.data.view(b, v, n, d),
+        indices=emb.indices.view(b, v, n),
+        image_shape=emb.image_shape,
+        patch_size=emb.patch_size,
     )

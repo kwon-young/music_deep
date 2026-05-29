@@ -8,7 +8,7 @@ from functools import partial
 from dataclasses import dataclass
 from itertools import chain
 
-from model.vit import ViT
+from model.vit import ViewViT
 from model.lejepa import ProjectorMLP, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -28,6 +28,7 @@ from transform import (
     collate,
     extract_patches,
     random_patch_drop,
+    unflatten_views,
 )
 from dataset.imslp import (
     load_imslp,
@@ -41,7 +42,7 @@ from music_types import (
     RGB,
     Float1,
     BatchedPatchData,
-    Patches,
+    FlatViewEmbeddings,
 )
 
 
@@ -96,7 +97,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedPatchData[Metadata, Patches]]:
+) -> Generator[BatchedPatchData[Metadata, FlatViewEmbeddings]]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)
@@ -128,11 +129,19 @@ def create_lejepa_iterator(
         )
         patches = random_patch_drop(patches, drop_rate=params.drop_rate)
 
-        yield BatchedPatchData(metadata=batch.metadata, patches=patches)
+        flat_view_patches = FlatViewEmbeddings(
+            data=patches.data,
+            indices=patches.indices,
+            image_shape=patches.image_shape,
+            patch_size=patches.patch_size,
+            num_views=params.n_views,
+        )
+
+        yield BatchedPatchData(metadata=batch.metadata, patches=flat_view_patches)
 
 
 def train(params: TrainParams):
-    backbone = ViT(
+    backbone = ViewViT(
         patch_size=params.patch_size,
         dim=params.dim,
         depth=params.depth,
@@ -176,12 +185,12 @@ def train(params: TrainParams):
 
         for step, batch in enumerate(iterator):
             N = len(batch.metadata)
-            V = params.n_views
 
             emb = backbone(batch.patches)
             proj_emb = projector(emb)
 
-            proj = proj_emb.data.view(N, V, -1).transpose(0, 1)
+            proj_view = unflatten_views(proj_emb)
+            proj = proj_view.data.flatten(start_dim=2).transpose(0, 1)
 
             inv_loss = (proj.mean(0) - proj).square().mean()
             sigreg_loss = sigreg(proj)

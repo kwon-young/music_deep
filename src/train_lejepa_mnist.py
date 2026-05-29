@@ -9,7 +9,7 @@ from functools import partial
 from dataclasses import dataclass
 from itertools import chain
 
-from model.vit import ViT
+from model.vit import ViewViT
 from model.lejepa import ProjectorMLP, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
@@ -29,11 +29,12 @@ from transform import (
     extract_patches,
     random_patch_drop,
     BatchedPatchData,
+    unflatten_views,
 )
 from dataset.mnist import load_mnist, load_image, MNISTMetadata
 from dataset.imslp import Data
 from dataset.imslp import TensorImage, VCHW, RGB, Float1
-from music_types import Batch, NumPatches, PatchDim, Patches
+from music_types import FlatViewEmbeddings
 
 
 @dataclass
@@ -84,7 +85,7 @@ def create_lejepa_mnist_iterator(
     params: TrainParams,
     monitor: Monitor,
 ) -> Generator[
-    BatchedPatchData[MNISTMetadata, Patches[Batch, NumPatches, PatchDim]],
+    BatchedPatchData[MNISTMetadata, FlatViewEmbeddings],
     None,
     None,
 ]:
@@ -115,11 +116,19 @@ def create_lejepa_mnist_iterator(
         )
         patch_seq = random_patch_drop(patch_seq, drop_rate=params.drop_rate)
 
-        yield BatchedPatchData(metadata=batch.metadata, patches=patch_seq)
+        flat_view_patches = FlatViewEmbeddings(
+            data=patch_seq.data,
+            indices=patch_seq.indices,
+            image_shape=patch_seq.image_shape,
+            patch_size=patch_seq.patch_size,
+            num_views=params.n_views,
+        )
+
+        yield BatchedPatchData(metadata=batch.metadata, patches=flat_view_patches)
 
 
 def train(params: TrainParams):
-    backbone = ViT(
+    backbone = ViewViT(
         patch_size=params.patch_size,
         dim=params.dim,
         depth=params.depth,
@@ -185,7 +194,9 @@ def train(params: TrainParams):
             preds = logits.argmax(dim=-1)
             acc = (preds == labels_v).float().mean().item()
 
-            proj_v = proj_emb.data.view(N, V, -1).transpose(0, 1)
+            proj_view = unflatten_views(proj_emb)
+            proj_v = proj_view.data.flatten(start_dim=2).transpose(0, 1)
+            
             inv_loss = (proj_v.mean(0) - proj_v).square().mean()
             sigreg_loss = sigreg(proj_v)
 
