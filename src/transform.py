@@ -25,7 +25,6 @@ from music_types import (
     Width,
     Channel,
     View,
-    HWC,
     CHW,
     VCHW,
     BCHW,
@@ -41,7 +40,9 @@ def image_transform[Meta, T: Image, U: Image, **P](
     func: Callable[Concatenate[T, P], U],
 ) -> Callable[Concatenate[Data[Meta, T], P], Data[Meta, U]]:
     @wraps(func)
-    def wrapper(img: Data[Meta, T], *args: P.args, **kwargs: P.kwargs) -> Data[Meta, U]:
+    def wrapper(
+        img: Data[Meta, T], *args: P.args, **kwargs: P.kwargs
+    ) -> Data[Meta, U]:
         return Data(img.metadata, func(img.image, *args, **kwargs))
 
     return wrapper
@@ -150,7 +151,7 @@ def random_crops[C: Channel, M: Mode, R: Range](
     xs = torch.randint(0, x_max, size=(num_crop,), device=x.device)
     ys = torch.randint(0, y_max, size=(num_crop,), device=x.device)
     crops = [
-        x[:, y:y + crop_size, x_val:x_val + crop_size]
+        x[:, y : y + crop_size, x_val : x_val + crop_size]
         for y, x_val in zip(ys, xs)
     ]
     return TensorImage(torch.stack(crops))
@@ -166,7 +167,7 @@ def random_crop[C: Channel, M: Mode, R: Range](
     y_max = h - crop_size + 1
     x = torch.randint(0, x_max, size=(1,), device=x_data.device)[0]
     y = torch.randint(0, y_max, size=(1,), device=x_data.device)[0]
-    cropped = x_data[:, y:y + crop_size, x:x + crop_size]
+    cropped = x_data[:, y : y + crop_size, x : x + crop_size]
     return TensorImage(cropped)
 
 
@@ -199,7 +200,11 @@ def extract_patches[B: Batch](
     patches = x.reshape(b, -1, ph * pw * c)
 
     num_patches = patches.shape[1]
-    indices = torch.arange(num_patches, device=x_data.device).unsqueeze(0).expand(b, -1)
+    indices = (
+        torch.arange(num_patches, device=x_data.device)
+        .unsqueeze(0)
+        .expand(b, -1)
+    )
 
     return Patches(
         data=patches,
