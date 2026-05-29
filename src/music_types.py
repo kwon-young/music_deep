@@ -72,10 +72,11 @@ class BatchedData[Meta, I: BatchedImage]:
 type NumPatches = int
 type PatchDim = int
 type EmbedDim = int
+type BatchView = int
 
 
 @dataclass
-class Embeddings[B: Batch, N: NumPatches, D: EmbedDim | PatchDim]:
+class Embeddings[B: Batch, N: NumPatches, D: EmbedDim]:
     data: torch.Tensor
     indices: torch.Tensor
     image_shape: CHW
@@ -87,6 +88,41 @@ class Embeddings[B: Batch, N: NumPatches, D: EmbedDim | PatchDim]:
 
 
 type Patches[B: Batch, N: NumPatches, P: PatchDim] = Embeddings[B, N, P]
+
+
+@dataclass
+class FlatViewEmbeddings[
+    B: Batch,
+    BV: BatchView,
+    V: View,
+    N: NumPatches,
+    D: EmbedDim,
+](Embeddings[BV, N, D]):
+    num_views: V
+    original_batch_size: B
+
+
+type FlatViewPatches[
+    B: Batch,
+    BV: BatchView,
+    V: View,
+    N: NumPatches,
+    P: PatchDim,
+] = FlatViewEmbeddings[B, BV, V, N, P]
+
+
+@dataclass
+class ViewEmbeddings[B: Batch, V: View, N: NumPatches, D: EmbedDim | PatchDim](
+    Embeddings[B, N, D]
+):
+    @property
+    def num_views(self) -> V:
+        return self.data.shape[1]
+
+
+type ViewPatches[B: Batch, V: View, N: NumPatches, P: PatchDim] = (
+    ViewEmbeddings[B, V, N, P]
+)
 
 
 @dataclass
@@ -174,37 +210,3 @@ class MatchedOutputs:
     edge_logits: torch.Tensor
     centers: torch.Tensor
     shapes: torch.Tensor
-
-
-type BatchView = int
-
-
-@dataclass
-class FlatViewEmbeddings[
-    B: Batch,
-    BV: BatchView,
-    V: View,
-    N: NumPatches,
-    D: EmbedDim | PatchDim,
-](Embeddings[BV, N, D]):
-    num_views: V
-    original_batch_size: B
-
-
-type FlatViewPatches[B: Batch, BV: BatchView, V: View, N: NumPatches, P: PatchDim] = (
-    FlatViewEmbeddings[B, BV, V, N, P]
-)
-
-
-@dataclass
-class ViewEmbeddings[B: Batch, V: View, N: NumPatches, D: EmbedDim | PatchDim](
-    Embeddings[B, N, D]
-):
-    @property
-    def num_views(self) -> V:
-        return self.data.shape[1]
-
-
-type ViewPatches[B: Batch, V: View, N: NumPatches, P: PatchDim] = (
-    ViewEmbeddings[B, V, N, P]
-)
