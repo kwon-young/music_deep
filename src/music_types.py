@@ -144,3 +144,11 @@ class MatchIndices:
 
     pred_indices: torch.Tensor  # 1D tensor of matched prediction indices
     target_indices: torch.Tensor  # 1D tensor of matched ground truth indices
+
+
+@dataclass
+class FlattenedIndices:
+    """Holds the flattened batch and prediction indices for advanced indexing."""
+    
+    batch: torch.Tensor
+    src: torch.Tensor
