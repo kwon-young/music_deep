@@ -50,15 +50,13 @@ class ProjectorMLP(nn.Module):
     def forward[B: Batch, N: NumPatches](
         self, x: Embeddings[B, N, EmbedDim]
     ) -> Embeddings[B, N, ProjDim]:
-        orig_shape = x.data.shape
-        
-        # Flatten the batch and patch dimensions to pass through the Linear/BatchNorm layers
-        flat_x = x.data.reshape(-1, orig_shape[-1])
+        b, n, _ = x.data.shape
+
+        flat_x = x.data.reshape(b * n, -1)
         out_data = self.net(flat_x)
-        
-        # Reshape back to (Batch, NumPatches, ProjDim)
-        out_data = out_data.view(*orig_shape[:-1], -1)
-        
+
+        out_data = out_data.view(b, n, -1)
+
         return Embeddings(
             data=out_data,
             indices=x.indices,

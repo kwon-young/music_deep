@@ -72,11 +72,10 @@ class BatchedData[Meta, I: BatchedImage]:
 type NumPatches = int
 type PatchDim = int
 type EmbedDim = int
-type TokenDim = int
 
 
 @dataclass
-class Embeddings[B: Batch, N: NumPatches, D: TokenDim]:
+class Embeddings[B: Batch, N: NumPatches, D: EmbedDim | PatchDim]:
     data: torch.Tensor
     indices: torch.Tensor
     image_shape: CHW

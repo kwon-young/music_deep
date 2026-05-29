@@ -4,7 +4,14 @@ from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 from typing import Any
 from functools import lru_cache
-from music_types import Patches, Embeddings, Batch, NumPatches, PatchDim, EmbedDim
+from music_types import (
+    Patches,
+    Embeddings,
+    Batch,
+    NumPatches,
+    PatchDim,
+    EmbedDim,
+)
 
 
 def pair[T](t: T | tuple[T, T]) -> tuple[T, T]:
@@ -193,8 +200,8 @@ class ViT(Module):
             dim, depth, heads, dim_head, mlp_dim, dropout
         )
 
-    def forward[B: Batch, N: NumPatches, P: PatchDim](
-        self, patches: Patches[B, N, P]
+    def forward[B: Batch, N: NumPatches](
+        self, patches: Patches[B, N, PatchDim]
     ) -> Embeddings[B, N, EmbedDim]:
         freqs = compute_freqs(patches, self.dim_head)
         x_data = patches.data

@@ -128,22 +128,22 @@ def train(params: TrainParams):
         mlp_dim=params.mlp_dim,
         channels=params.channels,
     ).to(params.device)
-    
+
     projector = ProjectorMLP(
         in_features=params.embed_dim,
         hidden_features=2048,
         out_features=params.proj_dim,
     ).to(params.device)
-    
+
     sigreg = SIGReg().to(params.device)
 
     probe = nn.Linear(params.dim, params.num_classes).to(params.device)
     criterion_probe = nn.CrossEntropyLoss()
 
     optimizer = optim.AdamW(
-        chain(backbone.parameters(), projector.parameters()), 
-        lr=params.lr, 
-        weight_decay=params.weight_decay
+        chain(backbone.parameters(), projector.parameters()),
+        lr=params.lr,
+        weight_decay=params.weight_decay,
     )
     optimizer_probe = optim.AdamW(
         probe.parameters(), lr=params.lr, weight_decay=params.weight_decay
