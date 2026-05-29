@@ -17,7 +17,7 @@ from threaded_generator import (
     partial_generator,
 )
 from transform import (
-    random_affine,
+    random_flatview_affine,
     shuffle,
     random_crop,
     to_numpy,
@@ -26,8 +26,8 @@ from transform import (
     make_views,
     to_float1,
     collate,
-    extract_patches,
-    random_patch_drop,
+    extract_flatviewpatches,
+    random_flatview_patch_drop,
     unflatten_views,
 )
 from dataset.imslp import (
@@ -89,7 +89,7 @@ def transform_image(
     data_t = random_crop(data_t, crop_size=params.image_size)
     data_tf = to_float1(data_t)
     data_tfv = make_views(data_tf, n=params.n_views)
-    data_tfv = random_affine(
+    data_tfv = random_flatview_affine(
         data_tfv, params.max_angle_deg, params.max_translate
     )
     return data_tfv
@@ -121,11 +121,11 @@ def create_lejepa_iterator(
     batched_data = collate(data_gen, batch_size=params.batch_size)
 
     for batch in batched_data:
-        patches = extract_patches(
+        patches = extract_flatviewpatches(
             batch.image,
             patch_size=(params.patch_size, params.patch_size),
         )
-        patches = random_patch_drop(patches, drop_rate=params.drop_rate)
+        patches = random_flatview_patch_drop(patches, drop_rate=params.drop_rate)
 
         yield BatchedPatchData(metadata=batch.metadata, patches=patches)
 

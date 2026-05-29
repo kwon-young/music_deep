@@ -101,16 +101,10 @@ def to[I: TensorImage](image: I, device: torch.device) -> I:
     return replace(image, data=image.data.to(device))
 
 
-@image_transform
-def random_affine[B: Batch, V: View, L: BVCHW, M: Mode](
-    image: FlatViewTensorImage[B, V, L, M, Float1],
-    max_angle_deg: float = 3.0,
-    max_translate: float = 0.05,
-) -> FlatViewTensorImage[B, V, L, M, Float1]:
-    x = image.data
-    original_shape = x.shape
-    x_flat = x.view(-1, *original_shape[-3:])
-    N = x_flat.size(0)
+def _apply_random_affine(
+    x: torch.Tensor, max_angle_deg: float, max_translate: float
+) -> torch.Tensor:
+    N = x.size(0)
     device = x.device
 
     max_angle_rad = max_angle_deg * math.pi / 180.0
@@ -130,15 +124,39 @@ def random_affine[B: Batch, V: View, L: BVCHW, M: Mode](
     matrix[:, 1, 1] = cos_a
     matrix[:, 1, 2] = ty
 
-    grid = F.affine_grid(matrix, x_flat.size(), align_corners=False)
+    grid = F.affine_grid(matrix, x.size(), align_corners=False)
 
     # Assuming normalized image where white is 1.0.
     # Shift so white is 0.0, apply grid_sample (pads with 0.0), then shift back to 1.0
-    x_shifted = x_flat - 1.0
+    x_shifted = x - 1.0
     x_transformed = F.grid_sample(
         x_shifted, grid, padding_mode="zeros", align_corners=False
     )
-    x_out = x_transformed + 1.0
+    return x_transformed + 1.0
+
+
+@image_transform
+def random_affine[B: Batch, C: Channel, H: Height, W: Width, M: Mode](
+    image: TensorImage[tuple[B, C, H, W], M, Float1],
+    max_angle_deg: float = 3.0,
+    max_translate: float = 0.05,
+) -> TensorImage[tuple[B, C, H, W], M, Float1]:
+    x_out = _apply_random_affine(image.data, max_angle_deg, max_translate)
+    return TensorImage(data=x_out)
+
+
+@image_transform
+def random_flatview_affine[B: Batch, V: View, BV: BatchView, C: Channel, H: Height, W: Width, M: Mode](
+    image: FlatViewTensorImage[B, V, tuple[BV, C, H, W], M, Float1],
+    max_angle_deg: float = 3.0,
+    max_translate: float = 0.05,
+) -> FlatViewTensorImage[B, V, tuple[BV, C, H, W], M, Float1]:
+    x = image.data
+    original_shape = x.shape
+    x_flat = x.view(-1, *original_shape[-3:])
+    
+    x_out = _apply_random_affine(x_flat, max_angle_deg, max_translate)
+    
     return FlatViewTensorImage(
         data=x_out.view(original_shape),
         num_views=image.num_views,
@@ -262,9 +280,9 @@ def extract_patches[B: Batch](
     )
 
 
-def random_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
-    patches: FlatViewPatches[B, BV, V, NumPatches, P], drop_rate: float
-) -> FlatViewPatches[B, BV, V, NumPatches, P]:
+def random_patch_drop[B: Batch, P: PatchDim](
+    patches: Patches[B, NumPatches, P], drop_rate: float
+) -> Patches[B, NumPatches, P]:
     if drop_rate <= 0.0:
         return patches
 
@@ -288,19 +306,31 @@ def random_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
         indices_sort,
     )
 
-    return FlatViewEmbeddings(
+    return Embeddings(
         data=kept_data,
         indices=kept_indices,
         image_shape=patches.image_shape,
         patch_size=patches.patch_size,
+    )
+
+
+def random_flatview_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
+    patches: FlatViewPatches[B, BV, V, NumPatches, P], drop_rate: float
+) -> FlatViewPatches[B, BV, V, NumPatches, P]:
+    dropped = random_patch_drop(patches, drop_rate)
+    return FlatViewEmbeddings(
+        data=dropped.data,
+        indices=dropped.indices,
+        image_shape=dropped.image_shape,
+        patch_size=dropped.patch_size,
         num_views=patches.num_views,
         original_batch_size=patches.original_batch_size,
     )
 
 
-def variance_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
-    patches: FlatViewPatches[B, BV, V, NumPatches, P], drop_rate: float
-) -> FlatViewPatches[B, BV, V, NumPatches, P]:
+def variance_patch_drop[B: Batch, P: PatchDim](
+    patches: Patches[B, NumPatches, P], drop_rate: float
+) -> Patches[B, NumPatches, P]:
     if drop_rate <= 0.0:
         return patches
 
@@ -325,11 +355,23 @@ def variance_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
         indices_sort,
     )
 
-    return FlatViewEmbeddings(
+    return Embeddings(
         data=kept_data,
         indices=kept_indices,
         image_shape=patches.image_shape,
         patch_size=patches.patch_size,
+    )
+
+
+def variance_flatview_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
+    patches: FlatViewPatches[B, BV, V, NumPatches, P], drop_rate: float
+) -> FlatViewPatches[B, BV, V, NumPatches, P]:
+    dropped = variance_patch_drop(patches, drop_rate)
+    return FlatViewEmbeddings(
+        data=dropped.data,
+        indices=dropped.indices,
+        image_shape=dropped.image_shape,
+        patch_size=dropped.patch_size,
         num_views=patches.num_views,
         original_batch_size=patches.original_batch_size,
     )
