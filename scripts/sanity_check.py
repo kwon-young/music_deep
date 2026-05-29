@@ -12,12 +12,13 @@ from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from transform import extract_patches
+from music_types import DetectionTarget
 
 
-def load_yolo_label(txt_path: Path, img_w: int, img_h: int):
+def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
     """Converts YOLO normalized [cx, cy, w, h] to absolute [x1, y1, x2, y2]"""
-    labels = []
-    boxes = []
+    labels: list[int] = []
+    boxes: list[list[float]] = []
     if txt_path.exists():
         with open(txt_path, "r") as f:
             for line in f:
@@ -36,16 +37,16 @@ def load_yolo_label(txt_path: Path, img_w: int, img_h: int):
                 labels.append(class_id)
                 boxes.append([x1, y1, x2, y2])
 
-    return {
-        "labels": torch.tensor(labels, dtype=torch.int64),
-        "boxes": torch.tensor(boxes, dtype=torch.float32),
-    }
+    return DetectionTarget(
+        labels=torch.tensor(labels, dtype=torch.int64),
+        boxes=torch.tensor(boxes, dtype=torch.float32),
+    )
 
 
 def update_plot(
     ax,
     image_tensor,
-    targets,
+    targets: list[DetectionTarget],
     outputs,
     img_w,
     img_h,
@@ -66,10 +67,10 @@ def update_plot(
     ax.imshow(img)
 
     # Plot Ground Truth boxes (Green)
-    gt_boxes = targets[0]["boxes"].cpu().numpy() * np.array(
+    gt_boxes = targets[0].boxes.cpu().numpy() * np.array(
         [img_w, img_h, img_w, img_h]
     )
-    gt_labels = targets[0]["labels"].cpu().numpy()
+    gt_labels = targets[0].labels.cpu().numpy()
 
     for box, label in zip(gt_boxes, gt_labels):
         x1, y1, x2, y2 = box
@@ -195,12 +196,12 @@ def main():
     )  # (1, 3, H, W)
 
     # Load targets
-    target_dict = load_yolo_label(lbl_path, img_w, img_h)
-    target_dict["labels"] = target_dict["labels"].to(device)
-    target_dict["boxes"] = target_dict["boxes"].to(device)
-    targets = [target_dict]
+    target = load_yolo_label(lbl_path, img_w, img_h)
+    target.labels = target.labels.to(device)
+    target.boxes = target.boxes.to(device)
+    targets = [target]
 
-    print(f"Found {len(target_dict['labels'])} objects in the image.")
+    print(f"Found {len(target.labels)} objects in the image.")
 
     # 4. Prepare Patches and Centers
     patches_obj = extract_patches(image, patch_size=(16, 16))

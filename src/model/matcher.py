@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from .box_ops import box_xyxy_to_cxcywh, generalized_box_iou
+from music_types import DetectionTarget
 
 
 class HungarianMatcher(nn.Module):
@@ -29,16 +30,14 @@ class HungarianMatcher(nn.Module):
         )
 
     @torch.no_grad()
-    def forward(self, outputs: dict, targets: list):
+    def forward(self, outputs: dict, targets: list[DetectionTarget]):
         """
         Params:
             outputs: This is a dict that contains at least these entries:
                  "pred_logits": Tensor of dim [batch_size, num_queries, num_classes]
                  "pred_boxes": Tensor of dim [batch_size, num_queries, 4] in [x1, y1, x2, y2] format
 
-            targets: This is a list of targets (len(targets) = batch_size), where each target is a dict:
-                 "labels": Tensor of dim [num_target_boxes]
-                 "boxes": Tensor of dim [num_target_boxes, 4] in [x1, y1, x2, y2] format
+            targets: This is a list of DetectionTarget (len(targets) = batch_size)
 
         Returns:
             A list of size batch_size, containing tuples of (index_i, index_j) where:
@@ -57,8 +56,8 @@ class HungarianMatcher(nn.Module):
         )  # [batch_size * num_queries, 4]
 
         # Also concat the target labels and boxes
-        tgt_ids = torch.cat([v["labels"] for v in targets])
-        tgt_bbox = torch.cat([v["boxes"] for v in targets])
+        tgt_ids = torch.cat([v.labels for v in targets])
+        tgt_bbox = torch.cat([v.boxes for v in targets])
 
         # 1. Compute the classification cost (Focal Loss approximation)
         out_prob = out_prob[:, tgt_ids]
@@ -94,7 +93,7 @@ class HungarianMatcher(nn.Module):
         # Handle potential NaNs
         C = torch.nan_to_num(C, nan=1e6)
 
-        sizes = [len(v["boxes"]) for v in targets]
+        sizes = [len(v.boxes) for v in targets]
 
         # Run Hungarian Matching (linear_sum_assignment)
         indices = [

@@ -89,3 +89,12 @@ class Patches[B: Batch, N: NumPatches, P: PatchDim]:
 class BatchedPatchData[Meta, PT: Patches]:
     metadata: list[Meta]
     patches: PT
+
+
+@dataclass
+class DetectionTarget:
+    """
+    Holds the ground truth bounding boxes and labels for an image.
+    """
+    labels: torch.Tensor  # 1D tensor of shape (N,), dtype: torch.int64
+    boxes: torch.Tensor   # 2D tensor of shape (N, 4), dtype: torch.float32
