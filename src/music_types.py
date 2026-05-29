@@ -110,3 +110,25 @@ class DetectionOutput:
     pred_edge_logits: torch.Tensor  # (B, P*K, 4, reg_max+1)
     absolute_centers: torch.Tensor  # (B, P*K, 2)
     learnable_shapes: torch.Tensor  # (B, P*K, 2)
+
+
+@dataclass
+class DetectionLossWeights:
+    """Weights for the different components of the detection loss."""
+    loss_ce: float = 2.0
+    loss_bbox: float = 5.0
+    loss_giou: float = 2.0
+    loss_fgl: float = 0.15
+
+
+@dataclass
+class DetectionLosses:
+    """Holds the weighted losses from the DFINECriterion."""
+    loss_ce: torch.Tensor
+    loss_bbox: torch.Tensor
+    loss_giou: torch.Tensor
+    loss_fgl: torch.Tensor
+
+    @property
+    def total(self) -> torch.Tensor:
+        return self.loss_ce + self.loss_bbox + self.loss_giou + self.loss_fgl

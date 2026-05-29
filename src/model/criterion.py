@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .box_ops import generalized_box_iou
 from .detector import DFINEWeightingFunction
-from music_types import DetectionTarget, DetectionOutput
+from music_types import DetectionTarget, DetectionOutput, DetectionLosses, DetectionLossWeights
 
 
 def sigmoid_focal_loss(
@@ -47,16 +47,16 @@ class DFINECriterion(nn.Module):
     def __init__(
         self,
         matcher,
-        num_classes,
-        weight_dict,
-        reg_max=32,
-        alpha=0.25,
-        gamma=2.0,
+        num_classes: int,
+        weights: DetectionLossWeights,
+        reg_max: int = 32,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
     ):
         super().__init__()
         self.matcher = matcher
         self.num_classes = num_classes
-        self.weight_dict = weight_dict
+        self.weights = weights
         self.reg_max = reg_max
         self.alpha = alpha
         self.gamma = gamma
@@ -72,7 +72,7 @@ class DFINECriterion(nn.Module):
         src_idx = torch.cat([src for (src, _) in indices])
         return batch_idx, src_idx
 
-    def loss_labels(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes):
+    def loss_labels(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes) -> torch.Tensor:
         """Classification loss (Focal Loss) applied to ALL predictions."""
         src_logits = outputs.pred_logits  # Shape: (Batch, Num_Predictions, Num_Classes)
         idx = self._get_src_permutation_idx(indices)
@@ -97,9 +97,9 @@ class DFINECriterion(nn.Module):
             reduction="none",
         )
         loss_ce = loss_ce.sum() / num_boxes
-        return {"loss_ce": loss_ce}
+        return loss_ce
 
-    def loss_boxes(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes):
+    def loss_boxes(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes) -> tuple[torch.Tensor, torch.Tensor]:
         """L1 and GIoU loss applied ONLY to matched predictions."""
         idx = self._get_src_permutation_idx(indices)
 
@@ -119,9 +119,9 @@ class DFINECriterion(nn.Module):
         loss_giou = 1 - torch.diag(generalized_box_iou(src_boxes, target_boxes))
         loss_giou = loss_giou.sum() / num_boxes
 
-        return {"loss_bbox": loss_bbox, "loss_giou": loss_giou}
+        return loss_bbox, loss_giou
 
-    def loss_fgl(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes):
+    def loss_fgl(self, outputs: DetectionOutput, targets: list[DetectionTarget], indices, num_boxes) -> torch.Tensor:
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
         idx = self._get_src_permutation_idx(indices)
 
@@ -182,9 +182,9 @@ class DFINECriterion(nn.Module):
 
         loss_fgl = (loss_left + loss_right).sum() / num_boxes
 
-        return {"loss_fgl": loss_fgl}
+        return loss_fgl
 
-    def forward(self, outputs: DetectionOutput, targets: list[DetectionTarget]):
+    def forward(self, outputs: DetectionOutput, targets: list[DetectionTarget]) -> DetectionLosses:
         """
         outputs: DetectionOutput
         targets: list of DetectionTarget
@@ -199,15 +199,15 @@ class DFINECriterion(nn.Module):
         )
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
-        # 3. Compute all losses
-        losses = {}
-        losses.update(self.loss_labels(outputs, targets, indices, num_boxes))
-        losses.update(self.loss_boxes(outputs, targets, indices, num_boxes))
-        losses.update(self.loss_fgl(outputs, targets, indices, num_boxes))
+        # 3. Compute all raw losses
+        raw_loss_ce = self.loss_labels(outputs, targets, indices, num_boxes)
+        raw_loss_bbox, raw_loss_giou = self.loss_boxes(outputs, targets, indices, num_boxes)
+        raw_loss_fgl = self.loss_fgl(outputs, targets, indices, num_boxes)
 
-        # 4. Apply weights
-        return {
-            k: v * self.weight_dict[k]
-            for k, v in losses.items()
-            if k in self.weight_dict
-        }
+        # 4. Apply weights and return dataclass
+        return DetectionLosses(
+            loss_ce=raw_loss_ce * self.weights.loss_ce,
+            loss_bbox=raw_loss_bbox * self.weights.loss_bbox,
+            loss_giou=raw_loss_giou * self.weights.loss_giou,
+            loss_fgl=raw_loss_fgl * self.weights.loss_fgl,
+        )

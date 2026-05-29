@@ -12,7 +12,7 @@ from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from transform import extract_patches
-from music_types import DetectionTarget, DetectionOutput
+from music_types import DetectionTarget, DetectionOutput, DetectionLossWeights
 
 
 def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
@@ -157,14 +157,14 @@ def main():
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(cost_class=2.0, cost_bbox=5.0, cost_giou=2.0)
-    weight_dict = {
-        "loss_ce": 2.0,
-        "loss_bbox": 5.0,
-        "loss_giou": 2.0,
-        "loss_fgl": 0.15,
-    }
+    weights = DetectionLossWeights(
+        loss_ce=2.0,
+        loss_bbox=5.0,
+        loss_giou=2.0,
+        loss_fgl=0.15,
+    )
     criterion = DFINECriterion(
-        matcher, num_classes=num_classes, weight_dict=weight_dict
+        matcher, num_classes=num_classes, weights=weights
     ).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=1e-3)
@@ -233,8 +233,8 @@ def main():
         outputs = model(patches_obj, patch_centers)
 
         # Compute loss
-        loss_dict = criterion(outputs, targets)
-        total_loss = sum(loss_dict.values())
+        losses = criterion(outputs, targets)
+        total_loss = losses.total
 
         # Backward pass
         total_loss.backward()
@@ -243,10 +243,10 @@ def main():
         if epoch % 50 == 0:
             print(
                 f"Epoch {epoch:03d} | Total Loss: {total_loss.item():.4f} | "
-                f"CE: {loss_dict.get('loss_ce', torch.tensor(0)).item():.4f} | "
-                f"BBox: {loss_dict.get('loss_bbox', torch.tensor(0)).item():.4f} | "
-                f"GIoU: {loss_dict.get('loss_giou', torch.tensor(0)).item():.4f} | "
-                f"FGL: {loss_dict.get('loss_fgl', torch.tensor(0)).item():.4f}"
+                f"CE: {losses.loss_ce.item():.4f} | "
+                f"BBox: {losses.loss_bbox.item():.4f} | "
+                f"GIoU: {losses.loss_giou.item():.4f} | "
+                f"FGL: {losses.loss_fgl.item():.4f}"
             )
 
             # Get matcher indices for visualization
