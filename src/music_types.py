@@ -96,8 +96,9 @@ class DetectionTarget:
     """
     Holds the ground truth bounding boxes and labels for an image.
     """
+
     labels: torch.Tensor  # 1D tensor of shape (N,), dtype: torch.int64
-    boxes: torch.Tensor   # 2D tensor of shape (N, 4), dtype: torch.float32
+    boxes: torch.Tensor  # 2D tensor of shape (N, 4), dtype: torch.float32
 
 
 @dataclass
@@ -105,8 +106,9 @@ class DetectionOutput:
     """
     Holds the predictions from the OMRDetector.
     """
-    pred_logits: torch.Tensor       # (B, P*K, C)
-    pred_boxes: torch.Tensor        # (B, P*K, 4)
+
+    pred_logits: torch.Tensor  # (B, P*K, C)
+    pred_boxes: torch.Tensor  # (B, P*K, 4)
     pred_edge_logits: torch.Tensor  # (B, P*K, 4, reg_max+1)
     absolute_centers: torch.Tensor  # (B, P*K, 2)
     learnable_shapes: torch.Tensor  # (B, P*K, 2)
@@ -115,6 +117,7 @@ class DetectionOutput:
 @dataclass
 class DetectionLossWeights:
     """Weights for the different components of the detection loss."""
+
     loss_ce: float = 2.0
     loss_bbox: float = 5.0
     loss_giou: float = 2.0
@@ -124,6 +127,7 @@ class DetectionLossWeights:
 @dataclass
 class DetectionLosses:
     """Holds the weighted losses from the DFINECriterion."""
+
     loss_ce: torch.Tensor
     loss_bbox: torch.Tensor
     loss_giou: torch.Tensor
@@ -137,5 +141,6 @@ class DetectionLosses:
 @dataclass
 class MatchIndices:
     """Holds the bipartite matching indices for a single image."""
-    pred_indices: torch.Tensor    # 1D tensor of matched prediction indices
+
+    pred_indices: torch.Tensor  # 1D tensor of matched prediction indices
     target_indices: torch.Tensor  # 1D tensor of matched ground truth indices
