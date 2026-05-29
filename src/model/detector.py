@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
-from music_types import Patches
+from music_types import Patches, DetectionOutput
 
 
 class DFINEWeightingFunction(nn.Module):
@@ -137,10 +137,10 @@ class OMRDetector(nn.Module):
         self,
         patches: Patches,
         patch_centers: torch.Tensor,
-    ) -> dict:
+    ) -> DetectionOutput:
         """
         patch_centers: (Batch, Num_Patches, 2) containing the normalized (x, y) center of each patch.
-        Returns a dictionary ready for DFINECriterion.
+        Returns a DetectionOutput ready for DFINECriterion.
         """
         features = self.backbone(patches)
         patch_tokens = features
@@ -167,11 +167,11 @@ class OMRDetector(nn.Module):
         expanded_shapes = raw_shapes.view(1, 1, K, 2).expand(B, P, K, 2)
 
         # Flatten P and K dimensions into a single "num_queries" dimension
-        # and return the exact dictionary expected by the criterion
-        return {
-            "pred_logits": classes.view(B, P * K, -1),
-            "pred_boxes": boxes.view(B, P * K, 4),
-            "pred_edge_logits": edge_logits.view(B, P * K, 4, -1),
-            "absolute_centers": absolute_centers.view(B, P * K, 2),
-            "learnable_shapes": expanded_shapes.reshape(B, P * K, 2),
-        }
+        # and return the dataclass expected by the criterion
+        return DetectionOutput(
+            pred_logits=classes.view(B, P * K, -1),
+            pred_boxes=boxes.view(B, P * K, 4),
+            pred_edge_logits=edge_logits.view(B, P * K, 4, -1),
+            absolute_centers=absolute_centers.view(B, P * K, 2),
+            learnable_shapes=expanded_shapes.reshape(B, P * K, 2),
+        )

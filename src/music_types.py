@@ -98,3 +98,15 @@ class DetectionTarget:
     """
     labels: torch.Tensor  # 1D tensor of shape (N,), dtype: torch.int64
     boxes: torch.Tensor   # 2D tensor of shape (N, 4), dtype: torch.float32
+
+
+@dataclass
+class DetectionOutput:
+    """
+    Holds the predictions from the OMRDetector.
+    """
+    pred_logits: torch.Tensor       # (B, P*K, C)
+    pred_boxes: torch.Tensor        # (B, P*K, 4)
+    pred_edge_logits: torch.Tensor  # (B, P*K, 4, reg_max+1)
+    absolute_centers: torch.Tensor  # (B, P*K, 2)
+    learnable_shapes: torch.Tensor  # (B, P*K, 2)

@@ -12,7 +12,7 @@ from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from transform import extract_patches
-from music_types import DetectionTarget
+from music_types import DetectionTarget, DetectionOutput
 
 
 def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
@@ -47,7 +47,7 @@ def update_plot(
     ax,
     image_tensor,
     targets: list[DetectionTarget],
-    outputs,
+    outputs: DetectionOutput,
     img_w,
     img_h,
     epoch,
@@ -94,8 +94,8 @@ def update_plot(
         )
 
     # Plot Predicted boxes (Red)
-    pred_logits = outputs["pred_logits"][0].detach().cpu()  # (P*K, C)
-    pred_boxes = outputs["pred_boxes"][0].detach().cpu().numpy() * np.array(
+    pred_logits = outputs.pred_logits[0].detach().cpu()  # (P*K, C)
+    pred_boxes = outputs.pred_boxes[0].detach().cpu().numpy() * np.array(
         [img_w, img_h, img_w, img_h]
     )
 

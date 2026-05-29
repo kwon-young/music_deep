@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from .box_ops import box_xyxy_to_cxcywh, generalized_box_iou
-from music_types import DetectionTarget
+from music_types import DetectionTarget, DetectionOutput
 
 
 class HungarianMatcher(nn.Module):
@@ -30,13 +30,10 @@ class HungarianMatcher(nn.Module):
         )
 
     @torch.no_grad()
-    def forward(self, outputs: dict, targets: list[DetectionTarget]):
+    def forward(self, outputs: DetectionOutput, targets: list[DetectionTarget]):
         """
         Params:
-            outputs: This is a dict that contains at least these entries:
-                 "pred_logits": Tensor of dim [batch_size, num_queries, num_classes]
-                 "pred_boxes": Tensor of dim [batch_size, num_queries, 4] in [x1, y1, x2, y2] format
-
+            outputs: DetectionOutput containing predictions
             targets: This is a list of DetectionTarget (len(targets) = batch_size)
 
         Returns:
@@ -44,14 +41,14 @@ class HungarianMatcher(nn.Module):
                 - index_i is the indices of the selected predictions (in order)
                 - index_j is the indices of the corresponding selected targets (in order)
         """
-        bs, num_queries = outputs["pred_logits"].shape[:2]
+        bs, num_queries = outputs.pred_logits.shape[:2]
 
         # We flatten to compute the cost matrices in a batch
         # Using Focal Loss approximation for probabilities
         out_prob = F.sigmoid(
-            outputs["pred_logits"].flatten(0, 1)
+            outputs.pred_logits.flatten(0, 1)
         )  # [batch_size * num_queries, num_classes]
-        out_bbox = outputs["pred_boxes"].flatten(
+        out_bbox = outputs.pred_boxes.flatten(
             0, 1
         )  # [batch_size * num_queries, 4]
 
