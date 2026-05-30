@@ -25,6 +25,8 @@ def load_mnist(
             yield MNISTMetadata(path=img_path, label=label)
 
 
-def load_image(metadata: MNISTMetadata) -> Data[MNISTMetadata, SSLSample[PILImage[HWC, RGB, Int255]]]:
+def load_image(
+    metadata: MNISTMetadata,
+) -> Data[MNISTMetadata, SSLSample[PILImage[HWC, RGB, Int255]]]:
     pil_img = Image_.open(metadata.path).convert("RGB")
     return Data(metadata, SSLSample(cast(PILImage[HWC, RGB, Int255], pil_img)))

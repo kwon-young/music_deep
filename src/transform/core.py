@@ -83,12 +83,14 @@ def to_float1_img[L: AnyLayouts, M: Mode](
     return TensorImage(image.data.float() / 255.0)
 
 
-def to_device_img[I: TensorImage](image: I, device: torch.device) -> I:
+def to_device[I: TensorImage | BoundingBoxes | ClassLabels](
+    image: I, device: torch.device
+) -> I:
     return replace(image, data=image.data.to(device))
 
 
-def extract_patches_img[B: Batch, M: Mode, R: Range](
-    image: TensorImage[tuple[B, *CHW], M, R],
+def extract_patches_img[B: Batch](
+    image: TensorImage[tuple[B, *CHW], Mode, Range],
     patch_size: tuple[int, int],
 ) -> Patches[B, NumPatches, PatchDim]:
     x_data = image.data
@@ -134,10 +136,10 @@ def make_views_img[L: CHW, M: Mode, R: Range](
     return FlatViewTensorImage(data, num_views=n, original_batch_size=1)
 
 
-def extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
-    image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
+def extract_flatviewpatches_img[B: Batch, V: View, BV: BatchView](
+    image: FlatViewTensorImage[B, V, tuple[BV, *CHW], Mode, Range],
     patch_size: tuple[int, int],
-) -> FlatViewPatches[B, BatchView, V, NumPatches, PatchDim]:
+) -> FlatViewPatches[B, BV, V, NumPatches, PatchDim]:
     patches = extract_patches_img(image, patch_size)
     return FlatViewEmbeddings(
         data=patches.data,
@@ -185,7 +187,7 @@ def crop_img[C: Channel, M: Mode, R: Range](
     y: int,
     crop_size: int,
 ) -> TensorImage[tuple[C, Height, Width], M, R]:
-    return TensorImage(image.data[:, y:y + crop_size, x:x + crop_size])
+    return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
 
 
 def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:

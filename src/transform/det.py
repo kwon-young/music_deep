@@ -124,11 +124,11 @@ def random_crop[C: Channel, M: Mode, R: Range, L](
 
 
 @transform
-def random_flatview_affine[I: FlatViewTensorImage, L](
-    sample: DetectionSample[I, BoundingBoxes, L],
+def random_flatview_affine[I: FlatViewTensorImage, B: BoundingBoxes, L](
+    sample: DetectionSample[I, B, L],
     max_angle_deg: float,
     max_translate: float,
-) -> DetectionSample[I, BoundingBoxes, L]:
+) -> DetectionSample[I, B, L]:
     bv = sample.image.data.shape[0]
     matrices = affine_matrix_params(
         bv, max_angle_deg, max_translate, sample.image.data.device
@@ -139,8 +139,8 @@ def random_flatview_affine[I: FlatViewTensorImage, L](
 
     return DetectionSample(
         image=replace(sample.image, data=new_img_base.data),
-        boxes=new_boxes,
-        labels=sample.labels
+        boxes=replace(sample.boxes, data=new_boxes),
+        labels=sample.labels,
     )
 
 

@@ -110,9 +110,7 @@ def random_flatview_affine[I: FlatViewTensorImage](
 
     new_img_base = random_affine_img(sample.image, matrices)
 
-    return SSLSample(
-        image=replace(sample.image, data=new_img_base.data)
-    )
+    return SSLSample(image=replace(sample.image, data=new_img_base.data))
 
 
 @batched_transform
