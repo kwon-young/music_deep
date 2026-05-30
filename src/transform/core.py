@@ -1,6 +1,5 @@
-from typing import Iterable, Generator, Callable, Concatenate, Any, Literal
+from typing import Iterable, Generator, Callable, Concatenate, Literal
 from functools import wraps
-from itertools import batched
 from dataclasses import replace
 import random
 import math
@@ -20,16 +19,12 @@ from music_types import (
     ArrayImage,
     TensorImage,
     FlatViewTensorImage,
-    Image,
-    BatchedImage,
     Batch,
     Height,
     Width,
     Channel,
     View,
     CHW,
-    BCHW,
-    BVCHW,
     RGB,
     Embeddings,
     Patches,
@@ -40,11 +35,6 @@ from music_types import (
     ViewEmbeddings,
     BatchView,
     EmbedDim,
-    SSLSample,
-    ClassificationSample,
-    DetectionSample,
-    BoundingBoxes,
-    ClassLabels,
 )
 
 
@@ -70,9 +60,6 @@ def batched_transform[Meta, T, U, **P](
         return BatchedData(batch.metadata, func(batch.data, *args, **kwargs))
 
     return wrapper
-
-
-# --- Core Math ---
 
 
 def _to_numpy_img[H: Height, W: Width, C: Channel, R: Range](
@@ -149,7 +136,7 @@ def _random_crop_img[C: Channel, M: Mode, R: Range](
     y = torch.randint(
         0, h - crop_size + 1, size=(1,), device=image.data.device
     )[0]
-    return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
+    return TensorImage(image.data[:, y:y + crop_size, x:x + crop_size])
 
 
 def _make_views_img[L: CHW, M: Mode, R: Range](
