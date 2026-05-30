@@ -35,6 +35,8 @@ from music_types import (
     ViewEmbeddings,
     BatchView,
     EmbedDim,
+    BoundingBoxes,
+    ClassLabels,
 )
 
 
@@ -126,19 +128,6 @@ def shuffle[T](
     yield from buffer
 
 
-def _random_crop_img[C: Channel, M: Mode, R: Range](
-    image: TensorImage[tuple[C, Height, Width], M, R], crop_size: int
-) -> TensorImage[tuple[C, Height, Width], M, R]:
-    c, h, w = image.data.shape
-    x = torch.randint(
-        0, w - crop_size + 1, size=(1,), device=image.data.device
-    )[0]
-    y = torch.randint(
-        0, h - crop_size + 1, size=(1,), device=image.data.device
-    )[0]
-    return TensorImage(image.data[:, y:y + crop_size, x:x + crop_size])
-
-
 def _make_views_img[L: CHW, M: Mode, R: Range](
     image: TensorImage[L, M, R], n: int
 ) -> FlatViewTensorImage[Literal[1], View, tuple[BatchView, *CHW], M, R]:
@@ -160,42 +149,6 @@ def _create_affine_matrix(
     )
 
 
-def _random_flatview_affine_img[B: Batch, V: View, M: Mode, R: Range](
-    image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
-    max_angle_deg: float,
-    max_translate: float,
-) -> FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]:
-    bv, c, h, w = image.data.shape
-    device = image.data.device
-
-    angles = [random.uniform(-max_angle_deg, max_angle_deg) for _ in range(bv)]
-    translates = [
-        (
-            random.uniform(-max_translate, max_translate),
-            random.uniform(-max_translate, max_translate),
-        )
-        for _ in range(bv)
-    ]
-
-    matrices = torch.stack(
-        [
-            _create_affine_matrix(a, t, device)
-            for a, t in zip(angles, translates)
-        ]
-    )
-
-    grid = F.affine_grid(matrices, [bv, c, h, w], align_corners=False)
-    transformed_data = F.grid_sample(
-        image.data,
-        grid,
-        mode="bilinear",
-        padding_mode="zeros",
-        align_corners=False,
-    )
-
-    return replace(image, data=transformed_data)
-
-
 def _extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
     image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
     patch_size: tuple[int, int],
@@ -209,30 +162,6 @@ def _extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
         num_views=image.num_views,
         original_batch_size=image.original_batch_size,
     )
-
-
-def _random_flatview_patch_drop_img[
-    B: Batch,
-    BV: BatchView,
-    V: View,
-    N: NumPatches,
-    D: EmbedDim | PatchDim,
-](
-    patches: FlatViewEmbeddings[B, BV, V, N, D], drop_rate: float
-) -> FlatViewEmbeddings[B, BV, V, NumPatches, D]:
-    bv, n, d = patches.data.shape
-    device = patches.data.device
-
-    num_keep = max(1, int(n * (1.0 - drop_rate)))
-    noise = torch.rand(bv, n, device=device)
-    ids_keep = torch.argsort(noise, dim=1)[:, :num_keep]
-
-    kept_data = torch.gather(
-        patches.data, 1, ids_keep.unsqueeze(-1).expand(-1, -1, d)
-    )
-    kept_indices = torch.gather(patches.indices, 1, ids_keep)
-
-    return replace(patches, data=kept_data, indices=kept_indices)
 
 
 def _unflatten_views_img[
@@ -255,3 +184,79 @@ def _unflatten_views_img[
         image_shape=patches.image_shape,
         patch_size=patches.patch_size,
     )
+
+
+# --- Crop ---
+
+def get_random_crop_params(h: int, w: int, crop_size: int, device: torch.device) -> tuple[int, int]:
+    x = torch.randint(0, w - crop_size + 1, size=(1,), device=device).item()
+    y = torch.randint(0, h - crop_size + 1, size=(1,), device=device).item()
+    return int(x), int(y)
+
+def apply_crop_img[C: Channel, M: Mode, R: Range](
+    image: TensorImage[tuple[C, Height, Width], M, R], x: int, y: int, crop_size: int
+) -> TensorImage[tuple[C, Height, Width], M, R]:
+    return TensorImage(image.data[:, y:y + crop_size, x:x + crop_size])
+
+def apply_crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
+    new_data = boxes.data.clone()
+    if boxes.format == "xyxy":
+        new_data[:, [0, 2]] -= x
+        new_data[:, [1, 3]] -= y
+    # TODO: handle cxcywh if needed
+    return BoundingBoxes(new_data, boxes.format)
+
+
+# --- Affine ---
+
+def get_affine_matrices(bv: int, max_angle_deg: float, max_translate: float, device: torch.device) -> torch.Tensor:
+    angles = [random.uniform(-max_angle_deg, max_angle_deg) for _ in range(bv)]
+    translates = [
+        (
+            random.uniform(-max_translate, max_translate),
+            random.uniform(-max_translate, max_translate),
+        )
+        for _ in range(bv)
+    ]
+    return torch.stack([
+        _create_affine_matrix(a, t, device)
+        for a, t in zip(angles, translates)
+    ])
+
+def apply_flatview_affine_img[B: Batch, V: View, M: Mode, R: Range](
+    image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
+    matrices: torch.Tensor,
+) -> FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]:
+    bv, c, h, w = image.data.shape
+    grid = F.affine_grid(matrices, [bv, c, h, w], align_corners=False)
+    transformed_data = F.grid_sample(
+        image.data, grid, mode="bilinear", padding_mode="zeros", align_corners=False
+    )
+    return replace(image, data=transformed_data)
+
+def apply_flatview_affine_boxes(boxes: BoundingBoxes, matrices: torch.Tensor) -> BoundingBoxes:
+    # TODO: Implement bounding box rotation/translation using the affine matrices
+    return boxes
+
+
+# --- Patch Drop ---
+
+def get_random_patch_drop_indices(bv: int, n: int, drop_rate: float, device: torch.device) -> torch.Tensor:
+    num_keep = max(1, int(n * (1.0 - drop_rate)))
+    noise = torch.rand(bv, n, device=device)
+    ids_keep = torch.argsort(noise, dim=1)[:, :num_keep]
+    return ids_keep
+
+def apply_flatview_patch_drop_img[
+    B: Batch, BV: BatchView, V: View, N: NumPatches, D: EmbedDim | PatchDim
+](
+    patches: FlatViewEmbeddings[B, BV, V, N, D], ids_keep: torch.Tensor
+) -> FlatViewEmbeddings[B, BV, V, NumPatches, D]:
+    bv, n, d = patches.data.shape
+    kept_data = torch.gather(patches.data, 1, ids_keep.unsqueeze(-1).expand(-1, -1, d))
+    kept_indices = torch.gather(patches.indices, 1, ids_keep)
+    return replace(patches, data=kept_data, indices=kept_indices)
+
+def apply_flatview_patch_drop_labels(labels: ClassLabels, ids_keep: torch.Tensor) -> ClassLabels:
+    # TODO: Implement label dropping if doing dense patch-level prediction
+    return labels

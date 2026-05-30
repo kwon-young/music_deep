@@ -7,12 +7,15 @@ from .core import (
     _to_tensor_img,
     _to_float1_img,
     _to_device_img,
-    _random_crop_img,
     _make_views_img,
-    _random_flatview_affine_img,
     _extract_flatviewpatches_img,
-    _random_flatview_patch_drop_img,
     _unflatten_views_img,
+    get_random_crop_params,
+    apply_crop_img,
+    get_affine_matrices,
+    apply_flatview_affine_img,
+    get_random_patch_drop_indices,
+    apply_flatview_patch_drop_img,
 )
 from music_types import (
     SSLSample,
@@ -78,7 +81,9 @@ def random_crop[C: Channel, M: Mode, R: Range](
     sample: SSLSample[TensorImage[tuple[C, Height, Width], M, R]],
     crop_size: int,
 ) -> SSLSample[TensorImage[tuple[C, Height, Width], M, R]]:
-    return SSLSample(image=_random_crop_img(sample.image, crop_size))
+    c, h, w = sample.image.data.shape
+    x, y = get_random_crop_params(h, w, crop_size, sample.image.data.device)
+    return SSLSample(image=apply_crop_img(sample.image, x, y, crop_size))
 
 
 @transform
@@ -96,11 +101,9 @@ def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range](
     max_angle_deg: float,
     max_translate: float,
 ) -> SSLSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]]:
-    return SSLSample(
-        image=_random_flatview_affine_img(
-            sample.image, max_angle_deg, max_translate
-        )
-    )
+    bv = sample.image.data.shape[0]
+    matrices = get_affine_matrices(bv, max_angle_deg, max_translate, sample.image.data.device)
+    return SSLSample(image=apply_flatview_affine_img(sample.image, matrices))
 
 
 @batched_transform
@@ -123,9 +126,9 @@ def random_flatview_patch_drop[
 ](
     sample: SSLSample[FlatViewEmbeddings[B, BV, V, N, D]], drop_rate: float
 ) -> SSLSample[FlatViewEmbeddings[B, BV, V, NumPatches, D]]:
-    return SSLSample(
-        image=_random_flatview_patch_drop_img(sample.image, drop_rate)
-    )
+    bv, n, _ = sample.image.data.shape
+    ids_keep = get_random_patch_drop_indices(bv, n, drop_rate, sample.image.data.device)
+    return SSLSample(image=apply_flatview_patch_drop_img(sample.image, ids_keep))
 
 
 def unflatten_views[
