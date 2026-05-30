@@ -116,46 +116,69 @@ def extract_patches[B: Batch, M: Mode, R: Range, Bx, L](
 
 @transform
 def random_crop[C: Channel, M: Mode, R: Range, L](
-    sample: DetectionSample[TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L],
+    sample: DetectionSample[
+        TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L
+    ],
     crop_size: int,
-) -> DetectionSample[TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L]:
+) -> DetectionSample[
+    TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L
+]:
     c, h, w = sample.image.data.shape
     x, y = get_random_crop_params(h, w, crop_size, sample.image.data.device)
-    
+
     new_img = apply_crop_img(sample.image, x, y, crop_size)
     new_boxes = apply_crop_boxes(sample.boxes, x, y)
-    
+
     return DetectionSample(image=new_img, boxes=new_boxes, labels=sample.labels)
 
 
 @transform
 def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range, L](
-    sample: DetectionSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R], BoundingBoxes, L],
+    sample: DetectionSample[
+        FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
+        BoundingBoxes,
+        L,
+    ],
     max_angle_deg: float,
     max_translate: float,
-) -> DetectionSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R], BoundingBoxes, L]:
+) -> DetectionSample[
+    FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R], BoundingBoxes, L
+]:
     bv = sample.image.data.shape[0]
-    matrices = get_affine_matrices(bv, max_angle_deg, max_translate, sample.image.data.device)
-    
+    matrices = get_affine_matrices(
+        bv, max_angle_deg, max_translate, sample.image.data.device
+    )
+
     new_img = apply_flatview_affine_img(sample.image, matrices)
     new_boxes = apply_flatview_affine_boxes(sample.boxes, matrices)
-    
+
     return DetectionSample(image=new_img, boxes=new_boxes, labels=sample.labels)
 
 
 @batched_transform
 def random_flatview_patch_drop[
-    B: Batch, BV: BatchView, V: View, N: NumPatches, D: EmbedDim | PatchDim, Bx
+    B: Batch,
+    BV: BatchView,
+    V: View,
+    N: NumPatches,
+    D: EmbedDim | PatchDim,
+    Bx,
 ](
-    sample: DetectionSample[FlatViewEmbeddings[B, BV, V, N, D], Bx, ClassLabels], 
-    drop_rate: float
-) -> DetectionSample[FlatViewEmbeddings[B, BV, V, NumPatches, D], Bx, ClassLabels]:
+    sample: DetectionSample[
+        FlatViewEmbeddings[B, BV, V, N, D], Bx, ClassLabels
+    ],
+    drop_rate: float,
+) -> DetectionSample[
+    FlatViewEmbeddings[B, BV, V, NumPatches, D], Bx, ClassLabels
+]:
     bv, n, _ = sample.image.data.shape
-    ids_keep = get_random_patch_drop_indices(bv, n, drop_rate, sample.image.data.device)
-    
+    ids_keep = get_random_patch_drop_indices(
+        bv, n, drop_rate, sample.image.data.device
+    )
+
     new_img = apply_flatview_patch_drop_img(sample.image, ids_keep)
     new_labels = apply_flatview_patch_drop_labels(sample.labels, ids_keep)
-    
+
     return DetectionSample(image=new_img, boxes=sample.boxes, labels=new_labels)
 
 

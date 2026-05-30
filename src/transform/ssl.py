@@ -102,7 +102,9 @@ def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range](
     max_translate: float,
 ) -> SSLSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]]:
     bv = sample.image.data.shape[0]
-    matrices = get_affine_matrices(bv, max_angle_deg, max_translate, sample.image.data.device)
+    matrices = get_affine_matrices(
+        bv, max_angle_deg, max_translate, sample.image.data.device
+    )
     return SSLSample(image=apply_flatview_affine_img(sample.image, matrices))
 
 
@@ -127,8 +129,12 @@ def random_flatview_patch_drop[
     sample: SSLSample[FlatViewEmbeddings[B, BV, V, N, D]], drop_rate: float
 ) -> SSLSample[FlatViewEmbeddings[B, BV, V, NumPatches, D]]:
     bv, n, _ = sample.image.data.shape
-    ids_keep = get_random_patch_drop_indices(bv, n, drop_rate, sample.image.data.device)
-    return SSLSample(image=apply_flatview_patch_drop_img(sample.image, ids_keep))
+    ids_keep = get_random_patch_drop_indices(
+        bv, n, drop_rate, sample.image.data.device
+    )
+    return SSLSample(
+        image=apply_flatview_patch_drop_img(sample.image, ids_keep)
+    )
 
 
 def unflatten_views[
