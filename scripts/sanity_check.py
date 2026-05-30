@@ -12,7 +12,8 @@ from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
-from transform import to_numpy, to_tensor, to_float1, to, extract_patches
+from dataset.yolo import load_yolo_metadata, load_sample
+from transform import det, collate_tensors
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -58,65 +59,13 @@ class TrainParams:
     device: torch.device
 
 
-def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
-    """Converts YOLO normalized [cx, cy, w, h] to absolute [x1, y1, x2, y2]"""
-    labels: list[int] = []
-    boxes: list[list[float]] = []
-    if txt_path.exists():
-        with open(txt_path, "r") as f:
-            for line in f:
-                parts = line.strip().split()
-                if not parts:
-                    continue
-                class_id = int(parts[0])
-                cx, cy, w, h = map(float, parts[1:5])
-
-                # Keep normalized coordinates
-                x1 = cx - w / 2
-                y1 = cy - h / 2
-                x2 = cx + w / 2
-                y2 = cy + h / 2
-
-                labels.append(class_id)
-                boxes.append([x1, y1, x2, y2])
-
-    return DetectionTarget(
-        labels=torch.tensor(labels, dtype=torch.int64),
-        boxes=torch.tensor(boxes, dtype=torch.float32),
-    )
-
-
-def load_sample(
-    img_path: Path,
-    lbl_path: Path,
-    img_w: int,
-    img_h: int,
-) -> Data[DetectionTarget, PILImage[HWC, RGB, Int255]]:
-    """Loads the image and target, returning a strongly-typed Data object."""
-    # Load and resize image
-    pil_img = Image_.open(img_path).convert("RGB").resize((img_w, img_h))
-
-    # Load target (using your existing load_yolo_label function)
-    target = load_yolo_label(lbl_path, img_w, img_h)
-
-    return Data(metadata=target, data=PILImage(pil_img))
-
-
-def transform_image(
-    item: Data[DetectionTarget, PILImage[HWC, RGB, Int255]],
-    device: torch.device,
-) -> Data[DetectionTarget, TensorImage[CHW, RGB, Float1]]:
+def transform_image(item, device: torch.device):
     """Applies the standard transformation pipeline to the image."""
-    item_np = to_numpy(item)
-    item_t = to_tensor(item_np)
-    item_t = to(item_t, device=device)
-    item_tf = to_float1(item_t)
-
-    # Move targets to device as well
-    item_tf.metadata.labels = item_tf.metadata.labels.to(device)
-    item_tf.metadata.boxes = item_tf.metadata.boxes.to(device)
-
-    return item_tf
+    item = det.to_numpy(item)
+    item = det.to_tensor(item)
+    item = det.to(item, device=device)
+    item = det.to_float1(item)
+    return item
 
 
 def update_plot(
@@ -259,28 +208,29 @@ def train(params: TrainParams):
         return
 
     # Get the first image
-    img_path = next(img_dir.glob("*.jpg"))
-    lbl_path = lbl_dir / (img_path.stem + ".txt")
+    metadata_gen = load_yolo_metadata(img_dir, lbl_dir, params.img_w, params.img_h)
+    first_metadata = next(metadata_gen)
 
-    print(f"Loading image: {img_path.name}")
+    print(f"Loading image: {first_metadata.img_path.name}")
 
-    raw_data = load_sample(img_path, lbl_path, params.img_w, params.img_h)
+    raw_data = load_sample(first_metadata)
     transformed_data = transform_image(raw_data, device)
 
     # 4. Prepare Batch, Patches, and Centers
-    # Wrap in BatchedData (batch size of 1 for sanity check)
-    # Note: unsqueeze(0) adds the batch dimension required by extract_patches
-    batched_image = BatchedData(
-        metadata=[transformed_data.metadata],
-        data=TensorImage(transformed_data.data.data.unsqueeze(0))
-    )
+    batched_image = collate_tensors((transformed_data,))
 
-    patches_obj_batched = extract_patches(
+    patches_obj_batched = det.extract_patches(
         batched_image, patch_size=(params.patch_size, params.patch_size)
     )
-    patches_obj = patches_obj_batched.data
-    targets = patches_obj_batched.metadata
-    image_tensor = batched_image.data.data  # For plotting
+    
+    patches_obj = patches_obj_batched.data.image
+    image_tensor = batched_image.data.image.data  # For plotting
+    
+    # Reconstruct DetectionTarget for the criterion
+    targets = [
+        DetectionTarget(labels=l.data, boxes=b.data) 
+        for b, l in zip(patches_obj_batched.data.boxes, patches_obj_batched.data.labels)
+    ]
 
     print(f"Found {len(targets[0].labels)} objects in the image.")
 

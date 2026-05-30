@@ -215,3 +215,33 @@ class MatchedOutputs:
     edge_logits: torch.Tensor
     centers: torch.Tensor
     shapes: torch.Tensor
+
+
+# --- Modalities ---
+
+@dataclass
+class BoundingBoxes:
+    data: torch.Tensor  # shape (N, 4)
+    format: Literal["xyxy", "cxcywh"] = "xyxy"
+
+@dataclass
+class ClassLabels:
+    data: torch.Tensor  # shape (N,)
+
+
+# --- Task-Specific Samples ---
+
+@dataclass
+class SSLSample[I]:
+    image: I
+
+@dataclass
+class ClassificationSample[I, L]:
+    image: I
+    labels: L
+
+@dataclass
+class DetectionSample[I, B, L]:
+    image: I
+    boxes: B
+    labels: L

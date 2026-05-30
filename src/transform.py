@@ -1,4 +1,4 @@
-from typing import Iterable, Generator, Callable, Concatenate
+from typing import Iterable, Generator, Callable, Concatenate, Any
 from functools import wraps
 from itertools import batched
 from dataclasses import replace
@@ -40,6 +40,11 @@ from music_types import (
     ViewEmbeddings,
     BatchView,
     EmbedDim,
+    SSLSample,
+    ClassificationSample,
+    DetectionSample,
+    BoundingBoxes,
+    ClassLabels,
 )
 
 
@@ -67,184 +72,29 @@ def batched_transform[Meta, T, U, **P](
     return wrapper
 
 
-@transform
-def to_numpy[H: Height, W: Width, C: Channel, R: Range](
+# --- Core Math ---
+
+def _to_numpy_img[H: Height, W: Width, C: Channel, R: Range](
     image: PILImage[tuple[H, W, C], RGB, R],
 ) -> ArrayImage[tuple[C, H, W], RGB, R]:
     arr = np.array(image.data)
     arr = np.transpose(arr, (2, 0, 1))
     return ArrayImage(arr)
 
-
-@transform
-def to_tensor[L: Layout, M: Mode, R: Range](
+def _to_tensor_img[L: Layout, M: Mode, R: Range](
     image: ArrayImage[L, M, R],
 ) -> TensorImage[L, M, R]:
     return TensorImage(torch.as_tensor(image.data))
 
-
-@transform
-def to_float1[L: AnyLayouts, M: Mode](
+def _to_float1_img[L: AnyLayouts, M: Mode](
     image: TensorImage[L, M, Int255],
 ) -> TensorImage[L, M, Float1]:
     return TensorImage(image.data.float() / 255.0)
 
-
-def shuffle[T](it: Iterable[T]) -> Generator[T]:
-    l = list(it)
-    random.shuffle(l)
-    yield from l
-
-
-@transform
-def to[I: TensorImage](image: I, device: torch.device) -> I:
+def _to_device_img[I: TensorImage](image: I, device: torch.device) -> I:
     return replace(image, data=image.data.to(device))
 
-
-def _apply_random_affine(
-    x: torch.Tensor, max_angle_deg: float, max_translate: float
-) -> torch.Tensor:
-    N = x.size(0)
-    device = x.device
-
-    max_angle_rad = max_angle_deg * math.pi / 180.0
-    angles = (torch.rand(N, device=device) * 2 - 1) * max_angle_rad
-
-    tx = (torch.rand(N, device=device) * 2 - 1) * max_translate
-    ty = (torch.rand(N, device=device) * 2 - 1) * max_translate
-
-    cos_a = torch.cos(angles)
-    sin_a = torch.sin(angles)
-
-    matrix = torch.zeros(N, 2, 3, device=device)
-    matrix[:, 0, 0] = cos_a
-    matrix[:, 0, 1] = -sin_a
-    matrix[:, 0, 2] = tx
-    matrix[:, 1, 0] = sin_a
-    matrix[:, 1, 1] = cos_a
-    matrix[:, 1, 2] = ty
-
-    grid = F.affine_grid(matrix, x.size(), align_corners=False)
-
-    # Assuming normalized image where white is 1.0.
-    # Shift so white is 0.0, apply grid_sample (pads with 0.0), then shift back to 1.0
-    x_shifted = x - 1.0
-    x_transformed = F.grid_sample(
-        x_shifted, grid, padding_mode="zeros", align_corners=False
-    )
-    return x_transformed + 1.0
-
-
-@transform
-def random_affine[B: Batch, C: Channel, H: Height, W: Width, M: Mode](
-    image: TensorImage[tuple[B, C, H, W], M, Float1],
-    max_angle_deg: float = 3.0,
-    max_translate: float = 0.05,
-) -> TensorImage[tuple[B, C, H, W], M, Float1]:
-    x_out = _apply_random_affine(image.data, max_angle_deg, max_translate)
-    return TensorImage(data=x_out)
-
-
-@transform
-def random_flatview_affine[
-    B: Batch,
-    V: View,
-    BV: BatchView,
-    C: Channel,
-    H: Height,
-    W: Width,
-    M: Mode,
-](
-    image: FlatViewTensorImage[B, V, tuple[BV, C, H, W], M, Float1],
-    max_angle_deg: float = 3.0,
-    max_translate: float = 0.05,
-) -> FlatViewTensorImage[B, V, tuple[BV, C, H, W], M, Float1]:
-    x = image.data
-    original_shape = x.shape
-    x_flat = x.view(-1, *original_shape[-3:])
-
-    x_out = _apply_random_affine(x_flat, max_angle_deg, max_translate)
-
-    return FlatViewTensorImage(
-        data=x_out.view(original_shape),
-        num_views=image.num_views,
-        original_batch_size=image.original_batch_size,
-    )
-
-
-def random_crops[C: Channel, M: Mode, R: Range](
-    image: TensorImage[tuple[C, Height, Width], M, R], crop_size: int
-) -> TensorImage[tuple[Batch, C, Height, Width], M, R]:
-    x = image.data
-    # random crop n time where n*crop_size**2 will in average == h*w
-    (c, h, w) = x.shape
-    num_crop_frac = (h / crop_size) * (w / crop_size)
-    num_crop = int(num_crop_frac)
-    frac = num_crop_frac - num_crop
-    last_crop = random.binomialvariate(n=1, p=frac)
-    num_crop += last_crop
-    x_max = w - crop_size + 1
-    y_max = h - crop_size + 1
-    xs = torch.randint(0, x_max, size=(num_crop,), device=x.device)
-    ys = torch.randint(0, y_max, size=(num_crop,), device=x.device)
-    crops = [
-        x[:, y : y + crop_size, x_val : x_val + crop_size]
-        for y, x_val in zip(ys, xs)
-    ]
-    return TensorImage(torch.stack(crops))
-
-
-@transform
-def random_crop[C: Channel, M: Mode, R: Range](
-    image: TensorImage[tuple[C, Height, Width], M, R], crop_size: int
-) -> TensorImage[tuple[C, Height, Width], M, R]:
-    x_data = image.data
-    (c, h, w) = x_data.shape
-    x_max = w - crop_size + 1
-    y_max = h - crop_size + 1
-    x = torch.randint(0, x_max, size=(1,), device=x_data.device)[0]
-    y = torch.randint(0, y_max, size=(1,), device=x_data.device)[0]
-    cropped = x_data[:, y : y + crop_size, x : x + crop_size]
-    return TensorImage(cropped)
-
-
-@transform
-def make_views[C: Channel, H: Height, W: Width, M: Mode, R: Range](
-    image: TensorImage[tuple[C, H, W], M, R], n: int
-) -> FlatViewTensorImage[int, int, tuple[BatchView, C, H, W], M, R]:
-    stacked = torch.stack([image.data] * n)
-    return FlatViewTensorImage(
-        data=stacked,
-        num_views=n,
-        original_batch_size=1,
-    )
-
-
-def collate[Meta, V: View, C: Channel, H: Height, W: Width, M: Mode, R: Range](
-    batch: tuple[
-        Data[
-            Meta, FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]
-        ],
-        ...,
-    ],
-    batch_size: Batch,
-) -> BatchedData[
-    Meta, FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]
-]:
-    m = [b.metadata for b in batch]
-    i = [b.data.data for b in batch]
-    v = batch[0].data.num_views
-    return BatchedData(
-        m,
-        FlatViewTensorImage(
-            data=torch.cat(i, dim=0),
-            num_views=v,
-            original_batch_size=len(batch),
-        ),
-    )
-
-
-def _extract_patches[B: Batch, M: Mode, R: Range](
+def _extract_patches_img[B: Batch, M: Mode, R: Range](
     image: TensorImage[tuple[B, *CHW], M, R],
     patch_size: tuple[int, int],
 ) -> Patches[B, NumPatches, PatchDim]:
@@ -271,157 +121,87 @@ def _extract_patches[B: Batch, M: Mode, R: Range](
     )
 
 
-@batched_transform
-def extract_patches[B: Batch, M: Mode, R: Range](
-    image: TensorImage[tuple[B, *CHW], M, R],
-    patch_size: tuple[int, int],
-) -> Patches[B, NumPatches, PatchDim]:
-    return _extract_patches(image, patch_size)
+# --- Namespaces ---
+
+class det:
+    @staticmethod
+    @transform
+    def to_numpy[H: Height, W: Width, C: Channel, R: Range, B, L](
+        sample: DetectionSample[PILImage[tuple[H, W, C], RGB, R], B, L],
+    ) -> DetectionSample[ArrayImage[tuple[C, H, W], RGB, R], B, L]:
+        return DetectionSample(
+            image=_to_numpy_img(sample.image),
+            boxes=sample.boxes,
+            labels=sample.labels
+        )
+
+    @staticmethod
+    @transform
+    def to_tensor[L: Layout, M: Mode, R: Range, B, Lbl](
+        sample: DetectionSample[ArrayImage[L, M, R], B, Lbl],
+    ) -> DetectionSample[TensorImage[L, M, R], B, Lbl]:
+        return DetectionSample(
+            image=_to_tensor_img(sample.image),
+            boxes=sample.boxes,
+            labels=sample.labels
+        )
+
+    @staticmethod
+    @transform
+    def to_float1[L: AnyLayouts, M: Mode, B, Lbl](
+        sample: DetectionSample[TensorImage[L, M, Int255], B, Lbl],
+    ) -> DetectionSample[TensorImage[L, M, Float1], B, Lbl]:
+        return DetectionSample(
+            image=_to_float1_img(sample.image),
+            boxes=sample.boxes,
+            labels=sample.labels
+        )
+
+    @staticmethod
+    @transform
+    def to[I: TensorImage, B, L](
+        sample: DetectionSample[I, B, L], device: torch.device
+    ) -> DetectionSample[I, B, L]:
+        new_boxes = sample.boxes
+        if isinstance(sample.boxes, BoundingBoxes):
+            new_boxes = BoundingBoxes(sample.boxes.data.to(device), sample.boxes.format)
+        new_labels = sample.labels
+        if isinstance(sample.labels, ClassLabels):
+            new_labels = ClassLabels(sample.labels.data.to(device))
+            
+        return DetectionSample(
+            image=_to_device_img(sample.image, device),
+            boxes=new_boxes,
+            labels=new_labels
+        )
+
+    @staticmethod
+    @batched_transform
+    def extract_patches[B: Batch, M: Mode, R: Range, Bx, L](
+        sample: DetectionSample[TensorImage[tuple[B, *CHW], M, R], Bx, L],
+        patch_size: tuple[int, int],
+    ) -> DetectionSample[Patches[B, NumPatches, PatchDim], Bx, L]:
+        return DetectionSample(
+            image=_extract_patches_img(sample.image, patch_size),
+            boxes=sample.boxes,
+            labels=sample.labels
+        )
 
 
-@batched_transform
-def extract_flatviewpatches[B: Batch, V: View, BV: BatchView, M: Mode, R: Range](
-    image: FlatViewTensorImage[B, V, tuple[BV, *CHW], M, R],
-    patch_size: tuple[int, int],
-) -> FlatViewPatches[B, BV, V, NumPatches, PatchDim]:
-    patches = _extract_patches(image, patch_size)
-    return FlatViewEmbeddings(
-        data=patches.data,
-        indices=patches.indices,
-        image_shape=patches.image_shape,
-        patch_size=patches.patch_size,
-        num_views=image.num_views,
-        original_batch_size=image.original_batch_size,
-    )
-
-
-def _random_patch_drop[B: Batch, P: PatchDim](
-    patches: Patches[B, NumPatches, P], drop_rate: float
-) -> Patches[B, NumPatches, P]:
-    if drop_rate <= 0.0:
-        return patches
-
-    b, num_patches, _ = patches.data.shape
-    num_keep = int(num_patches * (1.0 - drop_rate))
-
-    if num_keep >= num_patches:
-        return patches
-
-    rand_indices = torch.rand(b, num_patches, device=patches.data.device)
-    indices_sort, _ = rand_indices.argsort(dim=-1)[:, :num_keep].sort(dim=-1)
-
-    kept_data = torch.gather(
-        patches.data,
-        1,
-        indices_sort.unsqueeze(-1).expand(-1, -1, patches.data.shape[-1]),
-    )
-    kept_indices = torch.gather(
-        patches.indices,
-        1,
-        indices_sort,
-    )
-
-    return Embeddings(
-        data=kept_data,
-        indices=kept_indices,
-        image_shape=patches.image_shape,
-        patch_size=patches.patch_size,
-    )
-
-
-@batched_transform
-def random_patch_drop[B: Batch, P: PatchDim](
-    patches: Patches[B, NumPatches, P], drop_rate: float
-) -> Patches[B, NumPatches, P]:
-    return _random_patch_drop(patches, drop_rate)
-
-
-@batched_transform
-def random_flatview_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
-    patches: FlatViewPatches[B, BV, V, NumPatches, P], drop_rate: float
-) -> FlatViewPatches[B, BV, V, NumPatches, P]:
-    dropped = _random_patch_drop(patches, drop_rate)
-    return FlatViewEmbeddings(
-        data=dropped.data,
-        indices=dropped.indices,
-        image_shape=dropped.image_shape,
-        patch_size=dropped.patch_size,
-        num_views=patches.num_views,
-        original_batch_size=patches.original_batch_size,
-    )
-
-
-def _variance_patch_drop[B: Batch, P: PatchDim](
-    patches: Patches[B, NumPatches, P], drop_rate: float
-) -> Patches[B, NumPatches, P]:
-    if drop_rate <= 0.0:
-        return patches
-
-    b, num_patches, _ = patches.data.shape
-    num_keep = int(num_patches * (1.0 - drop_rate))
-
-    if num_keep >= num_patches:
-        return patches
-
-    variances = patches.data.var(dim=-1)
-    _, top_indices = variances.topk(num_keep, dim=-1)
-    indices_sort, _ = top_indices.sort(dim=-1)
-
-    kept_data = torch.gather(
-        patches.data,
-        1,
-        indices_sort.unsqueeze(-1).expand(-1, -1, patches.data.shape[-1]),
-    )
-    kept_indices = torch.gather(
-        patches.indices,
-        1,
-        indices_sort,
-    )
-
-    return Embeddings(
-        data=kept_data,
-        indices=kept_indices,
-        image_shape=patches.image_shape,
-        patch_size=patches.patch_size,
-    )
-
-
-@batched_transform
-def variance_patch_drop[B: Batch, P: PatchDim](
-    patches: Patches[B, NumPatches, P], drop_rate: float
-) -> Patches[B, NumPatches, P]:
-    return _variance_patch_drop(patches, drop_rate)
-
-
-@batched_transform
-def variance_flatview_patch_drop[B: Batch, V: View, BV: BatchView, P: PatchDim](
-    patches: FlatViewPatches[B, BV, V, NumPatches, P], drop_rate: float
-) -> FlatViewPatches[B, BV, V, NumPatches, P]:
-    dropped = _variance_patch_drop(patches, drop_rate)
-    return FlatViewEmbeddings(
-        data=dropped.data,
-        indices=dropped.indices,
-        image_shape=dropped.image_shape,
-        patch_size=dropped.patch_size,
-        num_views=patches.num_views,
-        original_batch_size=patches.original_batch_size,
-    )
-
-
-def unflatten_views[
-    B: Batch,
-    BV: BatchView,
-    V: View,
-    N: NumPatches,
-    D: EmbedDim | PatchDim,
-](emb: FlatViewEmbeddings[B, BV, V, N, D]) -> ViewEmbeddings[B, V, N, D]:
-    b = emb.original_batch_size
-    v = emb.num_views
-    _, n, d = emb.data.shape
-
-    return ViewEmbeddings(
-        data=emb.data.view(b, v, n, d),
-        indices=emb.indices.view(b, v, n),
-        image_shape=emb.image_shape,
-        patch_size=emb.patch_size,
+def collate_tensors[Meta, C: Channel, H: Height, W: Width, M: Mode, R: Range, B, L](
+    batch: tuple[Data[Meta, DetectionSample[TensorImage[tuple[C, H, W], M, R], B, L]], ...],
+) -> BatchedData[Meta, DetectionSample[TensorImage[tuple[Batch, C, H, W], M, R], list[B], list[L]]]:
+    """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""
+    m = [b.metadata for b in batch]
+    i = [b.data.image.data for b in batch]
+    boxes = [b.data.boxes for b in batch]
+    labels = [b.data.labels for b in batch]
+    
+    return BatchedData(
+        metadata=m,
+        data=DetectionSample(
+            image=TensorImage(torch.stack(i, dim=0)),
+            boxes=boxes,
+            labels=labels
+        ),
     )
