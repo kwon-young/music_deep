@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Generator
 from PIL import Image as Image_
 
-from music_types import Data, PILImage, HWC, RGB, Int255
+from music_types import Data, PILImage, HWC, RGB, Int255, SSLSample
 
 
 @dataclass
@@ -23,6 +23,6 @@ def load_imslp(manifest: Path) -> Generator[Metadata, None, None]:
 def load_image(
     metadata: Metadata,
     image_dir: Path,
-) -> Data[Metadata, PILImage[HWC, RGB, Int255]]:
+) -> Data[Metadata, SSLSample[PILImage[HWC, RGB, Int255]]]:
     pil_img = Image_.open(image_dir / metadata.name).convert("RGB")
-    return Data(metadata, PILImage(pil_img))
+    return Data(metadata, SSLSample(PILImage(pil_img)))

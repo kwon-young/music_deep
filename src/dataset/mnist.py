@@ -4,6 +4,7 @@ from typing import Generator, cast
 from PIL import Image as Image_
 
 from dataset.imslp import Data, PILImage, HWC, RGB, Int255
+from music_types import SSLSample
 
 
 @dataclass
@@ -24,6 +25,6 @@ def load_mnist(
             yield MNISTMetadata(path=img_path, label=label)
 
 
-def load_image(metadata: MNISTMetadata) -> Data[PILImage[HWC, RGB, Int255]]:
+def load_image(metadata: MNISTMetadata) -> Data[MNISTMetadata, SSLSample[PILImage[HWC, RGB, Int255]]]:
     pil_img = Image_.open(metadata.path).convert("RGB")
-    return Data(metadata, cast(PILImage[HWC, RGB, Int255], pil_img))
+    return Data(metadata, SSLSample(cast(PILImage[HWC, RGB, Int255], pil_img)))
