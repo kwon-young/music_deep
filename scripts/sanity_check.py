@@ -1,4 +1,3 @@
-import sys
 import torch
 import torch.optim as optim
 from pathlib import Path
