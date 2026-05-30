@@ -105,7 +105,7 @@ def load_sample(
 def transform_image(
     item: Data[DetectionTarget, PILImage[HWC, RGB, Int255]],
     device: torch.device,
-) -> Data[DetectionTarget, TensorImage[tuple[CHW], RGB, Float1]]:
+) -> Data[DetectionTarget, TensorImage[CHW, RGB, Float1]]:
     """Applies the standard transformation pipeline to the image."""
     item_np = to_numpy(item)
     item_t = to_tensor(item_np)
