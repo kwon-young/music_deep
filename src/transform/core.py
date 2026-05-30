@@ -134,20 +134,6 @@ def make_views_img[L: CHW, M: Mode, R: Range](
     return FlatViewTensorImage(data, num_views=n, original_batch_size=1)
 
 
-def create_affine_matrix(
-    angle_deg: float, translate: tuple[float, float], device: torch.device
-) -> torch.Tensor:
-    angle_rad = angle_deg * math.pi / 180.0
-    cos_a = math.cos(angle_rad)
-    sin_a = math.sin(angle_rad)
-    tx, ty = translate
-    return torch.tensor(
-        [[cos_a, -sin_a, tx], [sin_a, cos_a, ty]],
-        dtype=torch.float32,
-        device=device,
-    )
-
-
 def extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
     image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
     patch_size: tuple[int, int],
@@ -220,17 +206,24 @@ def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
 def affine_matrix_params(
     bv: int, max_angle_deg: float, max_translate: float, device: torch.device
 ) -> torch.Tensor:
-    angles = [random.uniform(-max_angle_deg, max_angle_deg) for _ in range(bv)]
-    translates = [
-        (
-            random.uniform(-max_translate, max_translate),
-            random.uniform(-max_translate, max_translate),
+    matrices = []
+    for _ in range(bv):
+        angle_deg = random.uniform(-max_angle_deg, max_angle_deg)
+        tx = random.uniform(-max_translate, max_translate)
+        ty = random.uniform(-max_translate, max_translate)
+        
+        angle_rad = angle_deg * math.pi / 180.0
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        
+        matrices.append(
+            torch.tensor(
+                [[cos_a, -sin_a, tx], [sin_a, cos_a, ty]],
+                dtype=torch.float32,
+                device=device,
+            )
         )
-        for _ in range(bv)
-    ]
-    return torch.stack(
-        [create_affine_matrix(a, t, device) for a, t in zip(angles, translates)]
-    )
+    return torch.stack(matrices)
 
 
 def random_affine_img[B: Batch, M: Mode, R: Range](
