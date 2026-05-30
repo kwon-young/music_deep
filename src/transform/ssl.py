@@ -143,13 +143,10 @@ def random_flatview_patch_drop[
     new_img_base = patch_drop_img(sample.image, ids_keep)
 
     return SSLSample(
-        image=FlatViewEmbeddings(
+        image=replace(
+            sample.image,
             data=new_img_base.data,
             indices=new_img_base.indices,
-            image_shape=new_img_base.image_shape,
-            patch_size=new_img_base.patch_size,
-            num_views=sample.image.num_views,
-            original_batch_size=sample.image.original_batch_size,
         )
     )
 

@@ -1,4 +1,5 @@
 import torch
+from dataclasses import replace
 from .core import (
     transform,
     batched_transform,
@@ -123,32 +124,24 @@ def random_crop[C: Channel, M: Mode, R: Range, L](
 
 
 @transform
-def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range, L](
-    sample: DetectionSample[
-        FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
-        BoundingBoxes,
-        L,
-    ],
+def random_flatview_affine[I: FlatViewTensorImage, L](
+    sample: DetectionSample[I, BoundingBoxes, L],
     max_angle_deg: float,
     max_translate: float,
-) -> DetectionSample[
-    FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R], BoundingBoxes, L
-]:
+) -> DetectionSample[I, BoundingBoxes, L]:
     bv = sample.image.data.shape[0]
     matrices = affine_matrix_params(
         bv, max_angle_deg, max_translate, sample.image.data.device
     )
 
     new_img_base = random_affine_img(sample.image, matrices)
-
-    new_img = FlatViewTensorImage(
-        data=new_img_base.data,
-        num_views=sample.image.num_views,
-        original_batch_size=sample.image.original_batch_size,
-    )
     new_boxes = affine_boxes(sample.boxes, matrices)
 
-    return DetectionSample(image=new_img, boxes=new_boxes, labels=sample.labels)
+    return DetectionSample(
+        image=replace(sample.image, data=new_img_base.data),
+        boxes=new_boxes,
+        labels=sample.labels
+    )
 
 
 @batched_transform
@@ -175,13 +168,10 @@ def random_flatview_patch_drop[
     new_img_base = patch_drop_img(sample.image, ids_keep)
     new_labels = patch_drop_labels(sample.labels, ids_keep)
 
-    new_img = FlatViewEmbeddings(
+    new_img = replace(
+        sample.image,
         data=new_img_base.data,
         indices=new_img_base.indices,
-        image_shape=new_img_base.image_shape,
-        patch_size=new_img_base.patch_size,
-        num_views=sample.image.num_views,
-        original_batch_size=sample.image.original_batch_size,
     )
 
     return DetectionSample(image=new_img, boxes=sample.boxes, labels=new_labels)
