@@ -1,4 +1,4 @@
-from typing import Iterable, Generator, Callable, Concatenate, Literal
+from typing import Iterable, Generator, Callable, Concatenate, Literal, TypeVar, Any
 from functools import wraps
 from dataclasses import replace
 import random
@@ -36,6 +36,7 @@ from music_types import (
     EmbedDim,
     BoundingBoxes,
     ClassLabels,
+    TensorData,
 )
 
 
@@ -61,6 +62,17 @@ def batched_transform[Meta, T, U, **P](
         return BatchedData(batch.metadata, func(batch.data, *args, **kwargs))
 
     return wrapper
+
+
+T_TensorData = TypeVar("T_TensorData", bound=TensorData[Any])
+
+def stack_tensor_data(items: list[T_TensorData]) -> T_TensorData:
+    """
+    Stacks the underlying tensors of a list of TensorData objects along a new batch dimension.
+    Preserves the original dataclass type and any additional attributes.
+    """
+    stacked_tensor = torch.stack([item.data for item in items], dim=0)
+    return replace(items[0], data=stacked_tensor)
 
 
 def to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](

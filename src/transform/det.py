@@ -16,6 +16,7 @@ from .core import (
     affine_boxes,
     random_patch_drop_indices,
     patch_drop_img,
+    stack_tensor_data,
 )
 from music_types import (
     DetectionSample,
@@ -164,31 +165,40 @@ def random_patch_drop[I: Patches, B, L](
 
 def collate[
     Meta,
-    C: Channel,
-    H: Height,
-    W: Width,
+    *ImgL,
+    *BoxL,
+    *LblL,
     M: Mode,
     R: Range,
-    B,
-    L,
 ](
     batch: tuple[
-        Data[Meta, DetectionSample[TensorImage[tuple[C, H, W], M, R], B, L]],
+        Data[Meta, DetectionSample[
+            TensorImage[tuple[*ImgL], M, R], 
+            BoundingBoxes[tuple[*BoxL]], 
+            ClassLabels[tuple[*LblL]]
+        ]],
         ...,
     ],
 ) -> BatchedData[
     Meta,
-    DetectionSample[TensorImage[tuple[Batch, C, H, W], M, R], list[B], list[L]],
+    DetectionSample[
+        TensorImage[tuple[Batch, *ImgL], M, R], 
+        BoundingBoxes[tuple[Batch, *BoxL]], 
+        ClassLabels[tuple[Batch, *LblL]]
+    ],
 ]:
     """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""
     m = [b.metadata for b in batch]
-    i = [b.data.image.data for b in batch]
-    boxes = [b.data.boxes for b in batch]
-    labels = [b.data.labels for b in batch]
+    
+    stacked_image = stack_tensor_data([b.data.image for b in batch])
+    stacked_boxes = stack_tensor_data([b.data.boxes for b in batch])
+    stacked_labels = stack_tensor_data([b.data.labels for b in batch])
 
     return BatchedData(
         metadata=m,
         data=DetectionSample(
-            image=TensorImage(torch.stack(i, dim=0)), boxes=boxes, labels=labels
+            image=stacked_image,
+            boxes=stacked_boxes,
+            labels=stacked_labels,
         ),
     )

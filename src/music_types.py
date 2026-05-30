@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Any
 from dataclasses import dataclass
 from PIL import Image as Image_
 import numpy as np
@@ -45,8 +45,14 @@ class ArrayImage[L: AnyLayouts, M: Mode, R: Range]:
 
 
 @dataclass
-class TensorImage[L: AnyLayouts, M: Mode, R: Range]:
+class TensorData[Shape]:
+    """Base class for any dataclass that wraps a PyTorch tensor."""
     data: torch.Tensor
+
+
+@dataclass
+class TensorImage[L: AnyLayouts, M: Mode, R: Range](TensorData[L]):
+    pass
 
 
 @dataclass
@@ -102,8 +108,7 @@ type EmbedDim = int
 
 
 @dataclass
-class Embeddings[B: Batch, N: NumPatches, D: EmbedDim]:
-    data: torch.Tensor
+class Embeddings[B: Batch, N: NumPatches, D: EmbedDim](TensorData[tuple[B, N, D]]):
     indices: torch.Tensor
     image_shape: CHW
     patch_size: HW
@@ -234,16 +239,26 @@ class MatchedOutputs:
 
 # --- Modalities ---
 
+type NumBoxes = int
+type BoxDim = int
+
+type BoxShape = tuple[NumBoxes, BoxDim]
+type BatchedBoxShape = tuple[Batch, NumBoxes, BoxDim]
+type AnyBoxShape = BoxShape | BatchedBoxShape
+
+type LabelShape = tuple[NumBoxes]
+type BatchedLabelShape = tuple[Batch, NumBoxes]
+type AnyLabelShape = LabelShape | BatchedLabelShape
+
 
 @dataclass
-class BoundingBoxes:
-    data: torch.Tensor  # shape (N, 4)
+class BoundingBoxes[L: AnyBoxShape](TensorData[L]):
     format: Literal["xyxy", "cxcywh"] = "xyxy"
 
 
 @dataclass
-class ClassLabels:
-    data: torch.Tensor  # shape (N,)
+class ClassLabels[L: AnyLabelShape](TensorData[L]):
+    pass
 
 
 # --- Task-Specific Samples ---
