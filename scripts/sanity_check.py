@@ -119,23 +119,6 @@ def transform_image(
     return item_tf
 
 
-def generate_patch_centers(
-    patches: Patches[Batch, NumPatches, PatchDim]
-) -> torch.Tensor:
-    """Generates normalized patch centers based on the patch grid."""
-    device = patches.data.device
-    c, h, w = patches.image_shape
-    ph, pw = patches.patch_size
-    grid_h, grid_w = h // ph, w // pw
-
-    y_centers = (torch.arange(grid_h, device=device) + 0.5) / grid_h
-    x_centers = (torch.arange(grid_w, device=device) + 0.5) / grid_w
-    y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
-
-    # (1, P, 2) - assuming batch size 1 for the sanity check
-    return torch.stack([x_grid.flatten(), y_grid.flatten()], dim=-1).unsqueeze(0)
-
-
 def update_plot(
     ax,
     image_tensor,
@@ -296,7 +279,6 @@ def train(params: TrainParams):
         batched_image, patch_size=(params.patch_size, params.patch_size)
     )
     patches_obj = patches_obj_batched.data
-    patch_centers = generate_patch_centers(patches_obj)
     targets = patches_obj_batched.metadata
     image_tensor = batched_image.data.data  # For plotting
 
@@ -314,7 +296,7 @@ def train(params: TrainParams):
         optimizer.zero_grad()
 
         # Forward pass
-        outputs = model(patches_obj, patch_centers)
+        outputs = model(patches_obj)
 
         # Compute loss
         losses = criterion(outputs, targets)
@@ -360,7 +342,7 @@ def train(params: TrainParams):
     plt.ioff()
     model.eval()
     with torch.no_grad():
-        outputs = model(patches_obj, patch_centers)
+        outputs = model(patches_obj)
         update_plot(
             ax,
             image_tensor,

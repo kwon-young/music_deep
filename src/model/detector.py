@@ -2,7 +2,49 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
+from functools import lru_cache
 from music_types import Patches, DetectionOutput
+
+
+@lru_cache(maxsize=32)
+def get_2d_patch_centers(grid_h: int, grid_w: int, device: str) -> torch.Tensor:
+    """
+    Computes the base normalized (x, y) centers for a full grid.
+    Cached to avoid recomputing meshgrids on every forward pass.
+    """
+    torch_device = torch.device(device)
+    
+    y_centers = (torch.arange(grid_h, device=torch_device) + 0.5) / grid_h
+    x_centers = (torch.arange(grid_w, device=torch_device) + 0.5) / grid_w
+    y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
+
+    # Shape: (Total_Patches, 2)
+    return torch.stack([x_grid.flatten(), y_grid.flatten()], dim=-1)
+
+
+def compute_patch_centers(embeddings: Patches) -> torch.Tensor:
+    """
+    Computes and gathers normalized (x, y) centers for the given patches.
+    Uses the indices to ensure centers match even if patches were dropped.
+    """
+    c, h, w = embeddings.image_shape
+    ph, pw = embeddings.patch_size
+    grid_h, grid_w = h // ph, w // pw
+    
+    # Get the cached base grid of centers. Shape: (Total_Patches, 2)
+    base_centers = get_2d_patch_centers(
+        grid_h, grid_w, device=str(embeddings.data.device)
+    )
+
+    # Expand to (Batch, Total_Patches, 2)
+    centers = base_centers.unsqueeze(0).expand(embeddings.batch_size, -1, -1)
+
+    # Gather only the centers for the kept patches using the indices
+    kept_centers = torch.gather(
+        centers, 1, embeddings.indices.unsqueeze(-1).expand(-1, -1, 2)
+    )
+
+    return kept_centers
 
 
 class DFINEWeightingFunction(nn.Module):
@@ -136,15 +178,17 @@ class OMRDetector(nn.Module):
     def forward(
         self,
         patches: Patches,
-        patch_centers: torch.Tensor,
     ) -> DetectionOutput:
         """
-        patch_centers: (Batch, Num_Patches, 2) containing the normalized (x, y) center of each patch.
         Returns a DetectionOutput ready for DFINECriterion.
         """
         features = self.backbone(patches)
-        patch_tokens = features
+        
+        # Compute centers dynamically based on the kept patches
+        patch_centers = compute_patch_centers(features)
 
+        # Pass the actual tensor data to the dense head
+        patch_tokens = features.data
         classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
 
         B, P, K, _ = boxes.shape
