@@ -63,7 +63,7 @@ def batched_transform[Meta, T, U, **P](
     return wrapper
 
 
-def _to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](
+def to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](
     image: PILImage[tuple[H, W, C], M, R],
 ) -> ArrayImage[tuple[C, H, W], M, R]:
     arr = np.array(image.data)
@@ -71,23 +71,23 @@ def _to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](
     return ArrayImage(arr)
 
 
-def _to_tensor_img[L: Layout, M: Mode, R: Range](
+def to_tensor_img[L: Layout, M: Mode, R: Range](
     image: ArrayImage[L, M, R],
 ) -> TensorImage[L, M, R]:
     return TensorImage(torch.as_tensor(image.data))
 
 
-def _to_float1_img[L: AnyLayouts, M: Mode](
+def to_float1_img[L: AnyLayouts, M: Mode](
     image: TensorImage[L, M, Int255],
 ) -> TensorImage[L, M, Float1]:
     return TensorImage(image.data.float() / 255.0)
 
 
-def _to_device_img[I: TensorImage](image: I, device: torch.device) -> I:
+def to_device_img[I: TensorImage](image: I, device: torch.device) -> I:
     return replace(image, data=image.data.to(device))
 
 
-def _extract_patches_img[B: Batch, M: Mode, R: Range](
+def extract_patches_img[B: Batch, M: Mode, R: Range](
     image: TensorImage[tuple[B, *CHW], M, R],
     patch_size: tuple[int, int],
 ) -> Patches[B, NumPatches, PatchDim]:
@@ -127,14 +127,14 @@ def shuffle[T](
     yield from buffer
 
 
-def _make_views_img[L: CHW, M: Mode, R: Range](
+def make_views_img[L: CHW, M: Mode, R: Range](
     image: TensorImage[L, M, R], n: int
 ) -> FlatViewTensorImage[Literal[1], View, tuple[BatchView, *CHW], M, R]:
     data = image.data.unsqueeze(0).expand(n, -1, -1, -1)
     return FlatViewTensorImage(data, num_views=n, original_batch_size=1)
 
 
-def _create_affine_matrix(
+def create_affine_matrix(
     angle_deg: float, translate: tuple[float, float], device: torch.device
 ) -> torch.Tensor:
     angle_rad = angle_deg * math.pi / 180.0
@@ -148,11 +148,11 @@ def _create_affine_matrix(
     )
 
 
-def _extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
+def extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
     image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
     patch_size: tuple[int, int],
 ) -> FlatViewPatches[B, BatchView, V, NumPatches, PatchDim]:
-    patches = _extract_patches_img(image, patch_size)
+    patches = extract_patches_img(image, patch_size)
     return FlatViewEmbeddings(
         data=patches.data,
         indices=patches.indices,
@@ -163,7 +163,7 @@ def _extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
     )
 
 
-def _unflatten_views_img[
+def unflatten_views_img[
     B: Batch,
     BV: BatchView,
     V: View,
@@ -188,7 +188,7 @@ def _unflatten_views_img[
 # --- Crop ---
 
 
-def get_random_crop_params(
+def random_crop_params(
     h: int, w: int, crop_size: int, device: torch.device
 ) -> tuple[int, int]:
     x = torch.randint(0, w - crop_size + 1, size=(1,), device=device).item()
@@ -196,7 +196,7 @@ def get_random_crop_params(
     return int(x), int(y)
 
 
-def apply_crop_img[C: Channel, M: Mode, R: Range](
+def crop_img[C: Channel, M: Mode, R: Range](
     image: TensorImage[tuple[C, Height, Width], M, R],
     x: int,
     y: int,
@@ -205,7 +205,7 @@ def apply_crop_img[C: Channel, M: Mode, R: Range](
     return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
 
 
-def apply_crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
+def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
     new_data = boxes.data.clone()
     if boxes.format == "xyxy":
         new_data[:, [0, 2]] -= x
@@ -217,7 +217,7 @@ def apply_crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
 # --- Affine ---
 
 
-def get_affine_matrices(
+def affine_matrix_params(
     bv: int, max_angle_deg: float, max_translate: float, device: torch.device
 ) -> torch.Tensor:
     angles = [random.uniform(-max_angle_deg, max_angle_deg) for _ in range(bv)]
@@ -230,18 +230,18 @@ def get_affine_matrices(
     ]
     return torch.stack(
         [
-            _create_affine_matrix(a, t, device)
+            create_affine_matrix(a, t, device)
             for a, t in zip(angles, translates)
         ]
     )
 
 
-def apply_flatview_affine_img[B: Batch, V: View, M: Mode, R: Range](
-    image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
+def random_affine_img[B: Batch, M: Mode, R: Range](
+    image: TensorImage[tuple[B, *CHW], M, R],
     matrices: torch.Tensor,
-) -> FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]:
-    bv, c, h, w = image.data.shape
-    grid = F.affine_grid(matrices, [bv, c, h, w], align_corners=False)
+) -> TensorImage[tuple[B, *CHW], M, R]:
+    b, c, h, w = image.data.shape
+    grid = F.affine_grid(matrices, [b, c, h, w], align_corners=False)
     transformed_data = F.grid_sample(
         image.data,
         grid,
@@ -252,7 +252,7 @@ def apply_flatview_affine_img[B: Batch, V: View, M: Mode, R: Range](
     return replace(image, data=transformed_data)
 
 
-def apply_flatview_affine_boxes(
+def affine_boxes(
     boxes: BoundingBoxes, matrices: torch.Tensor
 ) -> BoundingBoxes:
     # TODO: Implement bounding box rotation/translation using the affine matrices
@@ -262,7 +262,7 @@ def apply_flatview_affine_boxes(
 # --- Patch Drop ---
 
 
-def get_random_patch_drop_indices(
+def random_patch_drop_indices(
     bv: int, n: int, drop_rate: float, device: torch.device
 ) -> torch.Tensor:
     num_keep = max(1, int(n * (1.0 - drop_rate)))
@@ -271,7 +271,7 @@ def get_random_patch_drop_indices(
     return ids_keep
 
 
-def apply_flatview_patch_drop_img[
+def flatview_patch_drop_img[
     B: Batch,
     BV: BatchView,
     V: View,
@@ -288,7 +288,7 @@ def apply_flatview_patch_drop_img[
     return replace(patches, data=kept_data, indices=kept_indices)
 
 
-def apply_flatview_patch_drop_labels(
+def flatview_patch_drop_labels(
     labels: ClassLabels, ids_keep: torch.Tensor
 ) -> ClassLabels:
     # TODO: Implement label dropping if doing dense patch-level prediction

@@ -2,20 +2,20 @@ import torch
 from .core import (
     transform,
     batched_transform,
-    _to_numpy_img,
-    _to_tensor_img,
-    _to_float1_img,
-    _to_device_img,
-    _extract_patches_img,
-    get_random_crop_params,
-    apply_crop_img,
-    apply_crop_boxes,
-    get_affine_matrices,
-    apply_flatview_affine_img,
-    apply_flatview_affine_boxes,
-    get_random_patch_drop_indices,
-    apply_flatview_patch_drop_img,
-    apply_flatview_patch_drop_labels,
+    to_numpy_img,
+    to_tensor_img,
+    to_float1_img,
+    to_device_img,
+    extract_patches_img,
+    random_crop_params,
+    crop_img,
+    crop_boxes,
+    affine_matrix_params,
+    random_affine_img,
+    affine_boxes,
+    random_patch_drop_indices,
+    flatview_patch_drop_img,
+    flatview_patch_drop_labels,
 )
 from music_types import (
     DetectionSample,
@@ -54,7 +54,7 @@ def to_numpy[H: Height, W: Width, C: Channel, R: Range, B, L](
     sample: DetectionSample[PILImage[tuple[H, W, C], RGB, R], B, L],
 ) -> DetectionSample[ArrayImage[tuple[C, H, W], RGB, R], B, L]:
     return DetectionSample(
-        image=_to_numpy_img(sample.image),
+        image=to_numpy_img(sample.image),
         boxes=sample.boxes,
         labels=sample.labels,
     )
@@ -65,7 +65,7 @@ def to_tensor[L: Layout, M: Mode, R: Range, B, Lbl](
     sample: DetectionSample[ArrayImage[L, M, R], B, Lbl],
 ) -> DetectionSample[TensorImage[L, M, R], B, Lbl]:
     return DetectionSample(
-        image=_to_tensor_img(sample.image),
+        image=to_tensor_img(sample.image),
         boxes=sample.boxes,
         labels=sample.labels,
     )
@@ -76,7 +76,7 @@ def to_float1[L: AnyLayouts, M: Mode, B, Lbl](
     sample: DetectionSample[TensorImage[L, M, Int255], B, Lbl],
 ) -> DetectionSample[TensorImage[L, M, Float1], B, Lbl]:
     return DetectionSample(
-        image=_to_float1_img(sample.image),
+        image=to_float1_img(sample.image),
         boxes=sample.boxes,
         labels=sample.labels,
     )
@@ -96,7 +96,7 @@ def to[I: TensorImage, B, L](
         new_labels = ClassLabels(sample.labels.data.to(device))
 
     return DetectionSample(
-        image=_to_device_img(sample.image, device),
+        image=to_device_img(sample.image, device),
         boxes=new_boxes,
         labels=new_labels,
     )
@@ -108,7 +108,7 @@ def extract_patches[B: Batch, M: Mode, R: Range, Bx, L](
     patch_size: tuple[int, int],
 ) -> DetectionSample[Patches[B, NumPatches, PatchDim], Bx, L]:
     return DetectionSample(
-        image=_extract_patches_img(sample.image, patch_size),
+        image=extract_patches_img(sample.image, patch_size),
         boxes=sample.boxes,
         labels=sample.labels,
     )
@@ -124,10 +124,10 @@ def random_crop[C: Channel, M: Mode, R: Range, L](
     TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L
 ]:
     c, h, w = sample.image.data.shape
-    x, y = get_random_crop_params(h, w, crop_size, sample.image.data.device)
+    x, y = random_crop_params(h, w, crop_size, sample.image.data.device)
 
-    new_img = apply_crop_img(sample.image, x, y, crop_size)
-    new_boxes = apply_crop_boxes(sample.boxes, x, y)
+    new_img = crop_img(sample.image, x, y, crop_size)
+    new_boxes = crop_boxes(sample.boxes, x, y)
 
     return DetectionSample(image=new_img, boxes=new_boxes, labels=sample.labels)
 
@@ -145,12 +145,12 @@ def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range, L](
     FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R], BoundingBoxes, L
 ]:
     bv = sample.image.data.shape[0]
-    matrices = get_affine_matrices(
+    matrices = affine_matrix_params(
         bv, max_angle_deg, max_translate, sample.image.data.device
     )
 
-    new_img = apply_flatview_affine_img(sample.image, matrices)
-    new_boxes = apply_flatview_affine_boxes(sample.boxes, matrices)
+    new_img = random_affine_img(sample.image, matrices)
+    new_boxes = affine_boxes(sample.boxes, matrices)
 
     return DetectionSample(image=new_img, boxes=new_boxes, labels=sample.labels)
 
@@ -172,12 +172,12 @@ def random_flatview_patch_drop[
     FlatViewEmbeddings[B, BV, V, NumPatches, D], Bx, ClassLabels
 ]:
     bv, n, _ = sample.image.data.shape
-    ids_keep = get_random_patch_drop_indices(
+    ids_keep = random_patch_drop_indices(
         bv, n, drop_rate, sample.image.data.device
     )
 
-    new_img = apply_flatview_patch_drop_img(sample.image, ids_keep)
-    new_labels = apply_flatview_patch_drop_labels(sample.labels, ids_keep)
+    new_img = flatview_patch_drop_img(sample.image, ids_keep)
+    new_labels = flatview_patch_drop_labels(sample.labels, ids_keep)
 
     return DetectionSample(image=new_img, boxes=sample.boxes, labels=new_labels)
 
