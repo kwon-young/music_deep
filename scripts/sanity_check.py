@@ -18,7 +18,7 @@ from music_types import (
     DetectionOutput,
     DetectionLossWeights,
     MatchIndices,
-    FlatViewTensorImage,
+    TensorImage,
     BatchedData,
 )
 
@@ -230,10 +230,8 @@ def train(params: TrainParams):
         torch.from_numpy(img_np).float().unsqueeze(0).to(device) / 255.0
     )  # (1, 3, H, W)
 
-    image = FlatViewTensorImage(
+    image = TensorImage(
         data=image_tensor,
-        num_views=1,
-        original_batch_size=1,
     )
 
     # Load targets
