@@ -17,23 +17,12 @@ from threaded_generator import (
     Monitor,
     partial_generator,
 )
-from transform import (
-    random_flatview_affine,
-    shuffle,
-    to_numpy,
-    to_tensor,
-    to,
-    make_views,
-    to_float1,
-    collate,
-    extract_flatviewpatches,
-    random_flatview_patch_drop,
-    unflatten_views,
-)
+from transform.core import shuffle
+import transform.ssl as ssl_tf
 from dataset.mnist import load_mnist, load_image, MNISTMetadata
 from dataset.imslp import Data
 from dataset.imslp import TensorImage, VCHW, RGB, Float1
-from music_types import FlatViewEmbeddings, BatchedData
+from music_types import FlatViewEmbeddings, BatchedData, SSLSample
 
 
 @dataclass
@@ -66,14 +55,14 @@ class TrainParams:
 def transform_image(
     metadata: MNISTMetadata,
     params: TrainParams,
-) -> Data[MNISTMetadata, TensorImage[VCHW, RGB, Float1]]:
+) -> Data[MNISTMetadata, SSLSample[TensorImage[VCHW, RGB, Float1]]]:
     data_pil = load_image(metadata)
-    data_np = to_numpy(data_pil)
-    data_t = to_tensor(data_np)
-    data_t = to(data_t, device=params.device)
-    data_t = to_float1(data_t)
-    data_tfv = make_views(data_t, n=params.n_views)
-    data_tfv = random_flatview_affine(
+    data_np = ssl_tf.to_numpy(data_pil)
+    data_t = ssl_tf.to_tensor(data_np)
+    data_t = ssl_tf.to(data_t, device=params.device)
+    data_t = ssl_tf.to_float1(data_t)
+    data_tfv = ssl_tf.make_views(data_t, n=params.n_views)
+    data_tfv = ssl_tf.random_flatview_affine(
         data_tfv, params.max_angle_deg, params.max_translate
     )
     return data_tfv
@@ -84,7 +73,7 @@ def create_lejepa_mnist_iterator(
     params: TrainParams,
     monitor: Monitor,
 ) -> Generator[
-    BatchedData[MNISTMetadata, FlatViewEmbeddings],
+    BatchedData[MNISTMetadata, SSLSample[FlatViewEmbeddings]],
     None,
     None,
 ]:
@@ -102,14 +91,14 @@ def create_lejepa_mnist_iterator(
         maxsize=params.batch_size,
         name="transform",
     )
-    batched_data = collate(data_gen, batch_size=params.batch_size)
+    batched_data = ssl_tf.collate(data_gen, batch_size=params.batch_size)
 
     for batch in batched_data:
-        patch_seq = extract_flatviewpatches(
+        patch_seq = ssl_tf.extract_flatviewpatches(
             batch,
             patch_size=(params.patch_size, params.patch_size),
         )
-        patch_seq = random_flatview_patch_drop(
+        patch_seq = ssl_tf.random_flatview_patch_drop(
             patch_seq, drop_rate=params.drop_rate
         )
 
@@ -172,7 +161,7 @@ def train(params: TrainParams):
             )
             labels_v = labels.repeat_interleave(V)
 
-            emb = backbone(batch.data)
+            emb = backbone(batch.data.image)
             proj_emb = projector(emb)
 
             global_emb = emb.data.mean(dim=1)
@@ -183,7 +172,7 @@ def train(params: TrainParams):
             preds = logits.argmax(dim=-1)
             acc = (preds == labels_v).float().mean().item()
 
-            proj_view = unflatten_views(proj_emb)
+            proj_view = ssl_tf.unflatten_views(proj_emb)
             proj_v = proj_view.data.flatten(start_dim=2).transpose(0, 1)
 
             inv_loss = (proj_v.mean(0) - proj_v).square().mean()

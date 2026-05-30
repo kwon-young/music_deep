@@ -16,20 +16,8 @@ from threaded_generator import (
     Monitor,
     partial_generator,
 )
-from transform import (
-    random_flatview_affine,
-    shuffle,
-    random_crop,
-    to_numpy,
-    to_tensor,
-    to,
-    make_views,
-    to_float1,
-    collate,
-    extract_flatviewpatches,
-    random_flatview_patch_drop,
-    unflatten_views,
-)
+from transform.core import shuffle
+import transform.ssl as ssl_tf
 from dataset.imslp import (
     load_imslp,
     load_image,
@@ -50,6 +38,7 @@ from music_types import (
     NumPatches,
     FlatViewEmbeddings,
     FlatViewPatches,
+    SSLSample,
 )
 
 
@@ -86,15 +75,15 @@ class TrainParams:
 def transform_image(
     metadata: Metadata,
     params: TrainParams,
-) -> Data[Metadata, FlatViewTensorImage[Batch, View, BVCHW, RGB, Float1]]:
+) -> Data[Metadata, SSLSample[FlatViewTensorImage[Batch, View, BVCHW, RGB, Float1]]]:
     data_pil = load_image(metadata, image_dir=params.image_dir)
-    data_np = to_numpy(data_pil)
-    data_t = to_tensor(data_np)
-    data_t = to(data_t, device=params.device)
-    data_t = random_crop(data_t, crop_size=params.image_size)
-    data_tf = to_float1(data_t)
-    data_tfv = make_views(data_tf, n=params.n_views)
-    data_tfv = random_flatview_affine(
+    data_np = ssl_tf.to_numpy(data_pil)
+    data_t = ssl_tf.to_tensor(data_np)
+    data_t = ssl_tf.to(data_t, device=params.device)
+    data_t = ssl_tf.random_crop(data_t, crop_size=params.image_size)
+    data_tf = ssl_tf.to_float1(data_t)
+    data_tfv = ssl_tf.make_views(data_tf, n=params.n_views)
+    data_tfv = ssl_tf.random_flatview_affine(
         data_tfv, params.max_angle_deg, params.max_translate
     )
     return data_tfv
@@ -104,7 +93,7 @@ def transform_image(
 def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor,
-) -> Generator[BatchedData[Metadata, FlatViewEmbeddings]]:
+) -> Generator[BatchedData[Metadata, SSLSample[FlatViewEmbeddings]]]:
 
     gen = partial_generator(shuffle)(
         partial_generator(load_imslp)(params.manifest_path)
@@ -131,20 +120,20 @@ def transform_batch[Meta, V: View](
     batch: tuple[
         Data[
             Meta,
-            FlatViewTensorImage[Batch, V, tuple[BatchView, *CHW], RGB, Float1],
+            SSLSample[FlatViewTensorImage[Batch, V, tuple[BatchView, *CHW], RGB, Float1]],
         ],
         ...,
     ],
 ) -> BatchedData[
-    Meta, FlatViewPatches[Batch, BatchView, V, NumPatches, PatchDim]
+    Meta, SSLSample[FlatViewPatches[Batch, BatchView, V, NumPatches, PatchDim]]
 ]:
-    batched_data = collate(batch, batch_size=params.batch_size)
+    batched_data = ssl_tf.collate(batch, batch_size=params.batch_size)
 
-    patches = extract_flatviewpatches(
+    patches = ssl_tf.extract_flatviewpatches(
         batched_data,
         patch_size=(params.patch_size, params.patch_size),
     )
-    drop_patches = random_flatview_patch_drop(
+    drop_patches = ssl_tf.random_flatview_patch_drop(
         patches, drop_rate=params.drop_rate
     )
 
@@ -197,10 +186,10 @@ def train(params: TrainParams):
         for step, batch in enumerate(iterator):
             N = len(batch.metadata)
 
-            emb = backbone(batch.data)
+            emb = backbone(batch.data.image)
             proj_emb = projector(emb)
 
-            proj_view = unflatten_views(proj_emb)
+            proj_view = ssl_tf.unflatten_views(proj_emb)
             proj = proj_view.data.flatten(start_dim=2).transpose(0, 1)
 
             inv_loss = (proj.mean(0) - proj).square().mean()
