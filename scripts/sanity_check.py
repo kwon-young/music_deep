@@ -13,7 +13,8 @@ from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.yolo import load_yolo_metadata, load_sample
-from transform import det, collate_tensors
+import transform.det as det_tf
+from transform.det import collate_tensors
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -61,10 +62,10 @@ class TrainParams:
 
 def transform_image(item, device: torch.device):
     """Applies the standard transformation pipeline to the image."""
-    item = det.to_numpy(item)
-    item = det.to_tensor(item)
-    item = det.to(item, device=device)
-    item = det.to_float1(item)
+    item = det_tf.to_numpy(item)
+    item = det_tf.to_tensor(item)
+    item = det_tf.to(item, device=device)
+    item = det_tf.to_float1(item)
     return item
 
 
@@ -219,7 +220,7 @@ def train(params: TrainParams):
     # 4. Prepare Batch, Patches, and Centers
     batched_image = collate_tensors((transformed_data,))
 
-    patches_obj_batched = det.extract_patches(
+    patches_obj_batched = det_tf.extract_patches(
         batched_image, patch_size=(params.patch_size, params.patch_size)
     )
     
