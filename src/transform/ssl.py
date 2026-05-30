@@ -1,12 +1,13 @@
 import torch
 from typing import Literal
+from dataclasses import replace
 from .core import (
     transform,
     batched_transform,
     to_numpy_img,
     to_tensor_img,
     to_float1_img,
-    to_device_img,
+    to_device,
     make_views_img,
     extract_flatviewpatches_img,
     unflatten_views_img,
@@ -36,6 +37,7 @@ from music_types import (
     Batch,
     View,
     BatchView,
+    BVCHW,
     CHW,
     NumPatches,
     PatchDim,
@@ -73,7 +75,7 @@ def to_float1[L: AnyLayouts, M: Mode](
 def to[I: TensorImage](
     sample: SSLSample[I], device: torch.device
 ) -> SSLSample[I]:
-    return SSLSample(image=to_device_img(sample.image, device))
+    return SSLSample(image=to_device(sample.image, device))
 
 
 @transform
@@ -96,31 +98,28 @@ def make_views[L: CHW, M: Mode, R: Range](
 
 
 @transform
-def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range](
-    sample: SSLSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]],
+def random_flatview_affine[I: FlatViewTensorImage](
+    sample: SSLSample[I],
     max_angle_deg: float,
     max_translate: float,
-) -> SSLSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]]:
+) -> SSLSample[I]:
     bv = sample.image.data.shape[0]
     matrices = affine_matrix_params(
         bv, max_angle_deg, max_translate, sample.image.data.device
     )
-    
+
     new_img_base = random_affine_img(sample.image, matrices)
-    
-    new_img = FlatViewTensorImage(
-        data=new_img_base.data,
-        num_views=sample.image.num_views,
-        original_batch_size=sample.image.original_batch_size,
+
+    return SSLSample(
+        image=replace(sample.image, data=new_img_base.data)
     )
-    return SSLSample(image=new_img)
 
 
 @batched_transform
-def extract_flatviewpatches[B: Batch, V: View, M: Mode, R: Range](
-    sample: SSLSample[FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R]],
+def extract_flatviewpatches[B: Batch, V: View, BV: BatchView](
+    sample: SSLSample[FlatViewTensorImage[B, V, tuple[BV, *CHW], Mode, Range]],
     patch_size: tuple[int, int],
-) -> SSLSample[FlatViewPatches[B, BatchView, V, NumPatches, PatchDim]]:
+) -> SSLSample[FlatViewPatches[B, BV, V, NumPatches, PatchDim]]:
     return SSLSample(
         image=extract_flatviewpatches_img(sample.image, patch_size)
     )
@@ -140,18 +139,19 @@ def random_flatview_patch_drop[
     ids_keep = random_patch_drop_indices(
         bv, n, drop_rate, sample.image.data.device
     )
-    
+
     new_img_base = patch_drop_img(sample.image, ids_keep)
-    
-    new_img = FlatViewEmbeddings(
-        data=new_img_base.data,
-        indices=new_img_base.indices,
-        image_shape=new_img_base.image_shape,
-        patch_size=new_img_base.patch_size,
-        num_views=sample.image.num_views,
-        original_batch_size=sample.image.original_batch_size,
+
+    return SSLSample(
+        image=FlatViewEmbeddings(
+            data=new_img_base.data,
+            indices=new_img_base.indices,
+            image_shape=new_img_base.image_shape,
+            patch_size=new_img_base.patch_size,
+            num_views=sample.image.num_views,
+            original_batch_size=sample.image.original_batch_size,
+        )
     )
-    return SSLSample(image=new_img)
 
 
 def unflatten_views[
