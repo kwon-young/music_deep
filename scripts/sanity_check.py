@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.optim as optim
 from pathlib import Path
@@ -5,6 +6,7 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from dataclasses import dataclass
 
 from model.vit import vit_nano
 from model.detector import OMRDetector
@@ -19,6 +21,30 @@ from music_types import (
     FlatViewTensorImage,
     BatchedData,
 )
+
+
+@dataclass
+class TrainParams:
+    img_dir: Path
+    lbl_dir: Path
+    img_w: int
+    img_h: int
+    patch_size: int
+    channels: int
+    num_classes: int
+    num_shapes: int
+    cost_class: float
+    cost_bbox: float
+    cost_giou: float
+    loss_ce: float
+    loss_bbox: float
+    loss_giou: float
+    loss_fgl: float
+    lr: float
+    epochs: int
+    log_interval: int
+    conf_thresh: float
+    device: torch.device
 
 
 def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
@@ -150,34 +176,37 @@ def update_plot(
     ax.axis("off")
 
 
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def train(params: TrainParams):
+    device = params.device
     print(f"Using device: {device}")
 
     # 1. Setup Model (using vit_nano for speed)
-    num_classes = 80  # COCO has 80 classes
-    backbone = vit_nano(patch_size=16, channels=3)
-    model = OMRDetector(backbone, num_classes=num_classes, num_shapes=5).to(
-        device
-    )
-
-    # 2. Setup Matcher and Criterion
-    matcher = HungarianMatcher(cost_class=2.0, cost_bbox=5.0, cost_giou=2.0)
-    weights = DetectionLossWeights(
-        loss_ce=2.0,
-        loss_bbox=5.0,
-        loss_giou=2.0,
-        loss_fgl=0.15,
-    )
-    criterion = DFINECriterion(
-        matcher, num_classes=num_classes, weights=weights
+    backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
+    model = OMRDetector(
+        backbone, num_classes=params.num_classes, num_shapes=params.num_shapes
     ).to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+    # 2. Setup Matcher and Criterion
+    matcher = HungarianMatcher(
+        cost_class=params.cost_class,
+        cost_bbox=params.cost_bbox,
+        cost_giou=params.cost_giou,
+    )
+    weights = DetectionLossWeights(
+        loss_ce=params.loss_ce,
+        loss_bbox=params.loss_bbox,
+        loss_giou=params.loss_giou,
+        loss_fgl=params.loss_fgl,
+    )
+    criterion = DFINECriterion(
+        matcher, num_classes=params.num_classes, weights=weights
+    ).to(device)
+
+    optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
     # 3. Load a single image from COCO128
-    img_dir = Path("data/coco128/images/train2017")
-    lbl_dir = Path("data/coco128/labels/train2017")
+    img_dir = params.img_dir
+    lbl_dir = params.lbl_dir
 
     if not img_dir.exists():
         print(
@@ -192,7 +221,7 @@ def main():
     print(f"Loading image: {img_path.name}")
 
     # Resize to a fixed size that is a multiple of 16 (e.g., 256x256) for simplicity
-    img_h, img_w = 256, 256
+    img_h, img_w = params.img_h, params.img_w
     img = Image.open(img_path).convert("RGB").resize((img_w, img_h))
 
     # Convert to tensor without torchvision
@@ -217,7 +246,9 @@ def main():
 
     # 4. Prepare Patches and Centers
     batched_image = BatchedData(metadata=[None], data=image)
-    patches_obj_batched = extract_patches(batched_image, patch_size=(16, 16))
+    patches_obj_batched = extract_patches(
+        batched_image, patch_size=(params.patch_size, params.patch_size)
+    )
     patches_obj = patches_obj_batched.data
 
     # Generate normalized patch centers for the detector
@@ -240,7 +271,7 @@ def main():
     # 6. Overfit Loop
     print("Starting sanity check (overfitting a single batch)...")
     model.train()
-    for epoch in range(3001):
+    for epoch in range(params.epochs):
         optimizer.zero_grad()
 
         # Forward pass
@@ -254,7 +285,7 @@ def main():
         total_loss.backward()
         optimizer.step()
 
-        if epoch % 50 == 0:
+        if epoch % params.log_interval == 0:
             print(
                 f"Epoch {epoch:03d} | Total Loss: {total_loss.item():.4f} | "
                 f"CE: {losses.loss_ce.item():.4f} | "
@@ -298,8 +329,8 @@ def main():
             outputs,
             img_w,
             img_h,
-            epoch="Final (Threshold > 0.5)",
-            conf_thresh=0.5,
+            epoch=f"Final (Threshold > {params.conf_thresh})",
+            conf_thresh=params.conf_thresh,
             indices=None,
         )
 
@@ -309,4 +340,61 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Sanity check for OMR Detector")
+    parser.add_argument(
+        "--img_dir", type=Path, default=Path("data/coco128/images/train2017")
+    )
+    parser.add_argument(
+        "--lbl_dir", type=Path, default=Path("data/coco128/labels/train2017")
+    )
+    parser.add_argument("--img_w", type=int, default=256)
+    parser.add_argument("--img_h", type=int, default=256)
+    parser.add_argument("--patch_size", type=int, default=16)
+    parser.add_argument("--channels", type=int, default=3)
+    parser.add_argument("--num_classes", type=int, default=80)
+    parser.add_argument("--num_shapes", type=int, default=5)
+
+    # Matcher costs
+    parser.add_argument("--cost_class", type=float, default=2.0)
+    parser.add_argument("--cost_bbox", type=float, default=5.0)
+    parser.add_argument("--cost_giou", type=float, default=2.0)
+
+    # Loss weights
+    parser.add_argument("--loss_ce", type=float, default=2.0)
+    parser.add_argument("--loss_bbox", type=float, default=5.0)
+    parser.add_argument("--loss_giou", type=float, default=2.0)
+    parser.add_argument("--loss_fgl", type=float, default=0.15)
+
+    # Training params
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--epochs", type=int, default=3001)
+    parser.add_argument("--log_interval", type=int, default=50)
+    parser.add_argument("--conf_thresh", type=float, default=0.5)
+
+    args = parser.parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    params = TrainParams(
+        img_dir=args.img_dir,
+        lbl_dir=args.lbl_dir,
+        img_w=args.img_w,
+        img_h=args.img_h,
+        patch_size=args.patch_size,
+        channels=args.channels,
+        num_classes=args.num_classes,
+        num_shapes=args.num_shapes,
+        cost_class=args.cost_class,
+        cost_bbox=args.cost_bbox,
+        cost_giou=args.cost_giou,
+        loss_ce=args.loss_ce,
+        loss_bbox=args.loss_bbox,
+        loss_giou=args.loss_giou,
+        loss_fgl=args.loss_fgl,
+        lr=args.lr,
+        epochs=args.epochs,
+        log_interval=args.log_interval,
+        conf_thresh=args.conf_thresh,
+        device=device,
+    )
+
+    train(params)
