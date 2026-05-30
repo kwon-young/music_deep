@@ -2,7 +2,7 @@ import argparse
 import torch
 import torch.optim as optim
 from pathlib import Path
-from PIL import Image
+from PIL import Image as Image_
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -12,7 +12,7 @@ from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
-from transform import extract_patches
+from transform import to_numpy, to_tensor, to_float1, to, extract_patches
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -20,6 +20,17 @@ from music_types import (
     MatchIndices,
     TensorImage,
     BatchedData,
+    Data,
+    PILImage,
+    Patches,
+    HWC,
+    RGB,
+    Int255,
+    CHW,
+    Float1,
+    Batch,
+    NumPatches,
+    PatchDim,
 )
 
 
@@ -73,6 +84,56 @@ def load_yolo_label(txt_path: Path, img_w: int, img_h: int) -> DetectionTarget:
         labels=torch.tensor(labels, dtype=torch.int64),
         boxes=torch.tensor(boxes, dtype=torch.float32),
     )
+
+
+def load_sample(
+    img_path: Path,
+    lbl_path: Path,
+    img_w: int,
+    img_h: int,
+) -> Data[DetectionTarget, PILImage[HWC, RGB, Int255]]:
+    """Loads the image and target, returning a strongly-typed Data object."""
+    # Load and resize image
+    pil_img = Image_.open(img_path).convert("RGB").resize((img_w, img_h))
+
+    # Load target (using your existing load_yolo_label function)
+    target = load_yolo_label(lbl_path, img_w, img_h)
+
+    return Data(metadata=target, data=PILImage(pil_img))
+
+
+def transform_image(
+    item: Data[DetectionTarget, PILImage[HWC, RGB, Int255]],
+    device: torch.device,
+) -> Data[DetectionTarget, TensorImage[tuple[CHW], RGB, Float1]]:
+    """Applies the standard transformation pipeline to the image."""
+    item_np = to_numpy(item)
+    item_t = to_tensor(item_np)
+    item_t = to(item_t, device=device)
+    item_tf = to_float1(item_t)
+
+    # Move targets to device as well
+    item_tf.metadata.labels = item_tf.metadata.labels.to(device)
+    item_tf.metadata.boxes = item_tf.metadata.boxes.to(device)
+
+    return item_tf
+
+
+def generate_patch_centers(
+    patches: Patches[Batch, NumPatches, PatchDim]
+) -> torch.Tensor:
+    """Generates normalized patch centers based on the patch grid."""
+    device = patches.data.device
+    c, h, w = patches.image_shape
+    ph, pw = patches.patch_size
+    grid_h, grid_w = h // ph, w // pw
+
+    y_centers = (torch.arange(grid_h, device=device) + 0.5) / grid_h
+    x_centers = (torch.arange(grid_w, device=device) + 0.5) / grid_w
+    y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
+
+    # (1, P, 2) - assuming batch size 1 for the sanity check
+    return torch.stack([x_grid.flatten(), y_grid.flatten()], dim=-1).unsqueeze(0)
 
 
 def update_plot(
@@ -204,7 +265,7 @@ def train(params: TrainParams):
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
-    # 3. Load a single image from COCO128
+    # 3. Load and Transform Data
     img_dir = params.img_dir
     lbl_dir = params.lbl_dir
 
@@ -220,46 +281,26 @@ def train(params: TrainParams):
 
     print(f"Loading image: {img_path.name}")
 
-    # Resize to a fixed size that is a multiple of 16 (e.g., 256x256) for simplicity
-    img_h, img_w = params.img_h, params.img_w
-    img = Image.open(img_path).convert("RGB").resize((img_w, img_h))
+    raw_data = load_sample(img_path, lbl_path, params.img_w, params.img_h)
+    transformed_data = transform_image(raw_data, device)
 
-    # Convert to tensor without torchvision
-    img_np = np.array(img).transpose(2, 0, 1)  # HWC to CHW
-    image_tensor = (
-        torch.from_numpy(img_np).float().unsqueeze(0).to(device) / 255.0
-    )  # (1, 3, H, W)
-
-    image = TensorImage(
-        data=image_tensor,
+    # 4. Prepare Batch, Patches, and Centers
+    # Wrap in BatchedData (batch size of 1 for sanity check)
+    # Note: unsqueeze(0) adds the batch dimension required by extract_patches
+    batched_image = BatchedData(
+        metadata=[transformed_data.metadata],
+        data=TensorImage(transformed_data.data.data.unsqueeze(0))
     )
 
-    # Load targets
-    target = load_yolo_label(lbl_path, img_w, img_h)
-    target.labels = target.labels.to(device)
-    target.boxes = target.boxes.to(device)
-    targets = [target]
-
-    print(f"Found {len(target.labels)} objects in the image.")
-
-    # 4. Prepare Patches and Centers
-    batched_image = BatchedData(metadata=[None], data=image)
     patches_obj_batched = extract_patches(
         batched_image, patch_size=(params.patch_size, params.patch_size)
     )
     patches_obj = patches_obj_batched.data
+    patch_centers = generate_patch_centers(patches_obj)
+    targets = patches_obj_batched.metadata
+    image_tensor = batched_image.data.data  # For plotting
 
-    # Generate normalized patch centers for the detector
-    c, h, w = patches_obj.image_shape
-    ph, pw = patches_obj.patch_size
-    grid_h, grid_w = h // ph, w // pw
-
-    y_centers = (torch.arange(grid_h, device=device) + 0.5) / grid_h
-    x_centers = (torch.arange(grid_w, device=device) + 0.5) / grid_w
-    y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
-    patch_centers = torch.stack(
-        [x_grid.flatten(), y_grid.flatten()], dim=-1
-    ).unsqueeze(0)  # (1, P, 2)
+    print(f"Found {len(targets[0].labels)} objects in the image.")
 
     # 5. Setup Interactive Plotting
     plt.ion()  # Turn on interactive mode
@@ -302,8 +343,8 @@ def train(params: TrainParams):
                 image_tensor,
                 targets,
                 outputs,
-                img_w,
-                img_h,
+                params.img_w,
+                params.img_h,
                 epoch,
                 indices=indices_match,
             )
@@ -325,8 +366,8 @@ def train(params: TrainParams):
             image_tensor,
             targets,
             outputs,
-            img_w,
-            img_h,
+            params.img_w,
+            params.img_h,
             epoch=f"Final (Threshold > {params.conf_thresh})",
             conf_thresh=params.conf_thresh,
             indices=None,
