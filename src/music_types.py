@@ -50,6 +50,17 @@ class TensorImage[L: AnyLayouts, M: Mode, R: Range]:
 
 
 @dataclass
+class BatchedTensorImage[
+    B: Batch,
+    M: Mode,
+    R: Range,
+](TensorImage[tuple[B, *CHW], M, R]):
+    @property
+    def batch_size(self) -> B:
+        return self.data.shape[0]
+
+
+@dataclass
 class FlatViewTensorImage[
     B: Batch,
     V: View,
@@ -59,6 +70,10 @@ class FlatViewTensorImage[
 ](TensorImage[L, M, R]):
     num_views: V
     original_batch_size: B
+
+    @property
+    def batch_size(self) -> B:
+        return self.data.shape[0]
 
 
 type Image[L: Layout, M, R] = (

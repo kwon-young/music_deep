@@ -22,6 +22,7 @@ from music_types import (
     PILImage,
     ArrayImage,
     TensorImage,
+    BatchedTensorImage,
     BoundingBoxes,
     ClassLabels,
     Height,
@@ -118,12 +119,12 @@ def random_crop[C: Channel, M: Mode, R: Range, L](
 
 
 @transform
-def random_affine[I: TensorImage, B, L](
+def random_affine[I: BatchedTensorImage, B: BoundingBoxes, L](
     sample: DetectionSample[I, B, L],
     max_angle_deg: float,
     max_translate: float,
 ) -> DetectionSample[I, B, L]:
-    b = sample.image.data.shape[0]
+    b = sample.image.batch_size
     matrices = affine_matrix_params(
         b, max_angle_deg, max_translate, sample.image.data.device
     )
@@ -133,7 +134,7 @@ def random_affine[I: TensorImage, B, L](
 
     return DetectionSample(
         image=replace(sample.image, data=new_img_base.data),
-        boxes=new_boxes,
+        boxes=replace(sample.boxes, data=new_boxes),
         labels=sample.labels,
     )
 
@@ -156,10 +157,12 @@ def random_patch_drop[I: Patches, B, L](
         indices=new_img_base.indices,
     )
 
-    return DetectionSample(image=new_img, boxes=sample.boxes, labels=sample.labels)
+    return DetectionSample(
+        image=new_img, boxes=sample.boxes, labels=sample.labels
+    )
 
 
-def collate_tensors[
+def collate[
     Meta,
     C: Channel,
     H: Height,
