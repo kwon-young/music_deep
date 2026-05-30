@@ -30,7 +30,9 @@ class HungarianMatcher(nn.Module):
         )
 
     @torch.no_grad()
-    def forward(self, outputs: DetectionOutput, targets: list[DetectionTarget]) -> list[MatchIndices]:
+    def forward(
+        self, outputs: DetectionOutput, targets: list[DetectionTarget]
+    ) -> list[MatchIndices]:
         """
         Params:
             outputs: DetectionOutput containing predictions

@@ -75,7 +75,9 @@ class TrainParams:
 def transform_image(
     metadata: Metadata,
     params: TrainParams,
-) -> Data[Metadata, SSLSample[FlatViewTensorImage[Batch, View, BVCHW, RGB, Float1]]]:
+) -> Data[
+    Metadata, SSLSample[FlatViewTensorImage[Batch, View, BVCHW, RGB, Float1]]
+]:
     data_pil = load_image(metadata, image_dir=params.image_dir)
     data_np = ssl_tf.to_numpy(data_pil)
     data_t = ssl_tf.to_tensor(data_np)
@@ -120,7 +122,11 @@ def transform_batch[Meta, V: View](
     batch: tuple[
         Data[
             Meta,
-            SSLSample[FlatViewTensorImage[Batch, V, tuple[BatchView, *CHW], RGB, Float1]],
+            SSLSample[
+                FlatViewTensorImage[
+                    Batch, V, tuple[BatchView, *CHW], RGB, Float1
+                ]
+            ],
         ],
         ...,
     ],

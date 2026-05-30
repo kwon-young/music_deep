@@ -124,7 +124,9 @@ class DFINECriterion(nn.Module):
         )
 
         # 2. GIoU Loss
-        loss_giou = 1 - torch.diag(generalized_box_iou(src_boxes, matched_boxes))
+        loss_giou = 1 - torch.diag(
+            generalized_box_iou(src_boxes, matched_boxes)
+        )
         loss_giou = loss_giou.sum() / num_boxes
 
         return loss_bbox, loss_giou
@@ -204,10 +206,15 @@ class DFINECriterion(nn.Module):
 
         # 3. Pre-extract matched targets and flatten indices ONCE
         flat_idx = flatten_indices(indices)
-        
+
+        labels = []
+        boxes = []
+        for t, match in zip(targets, indices):
+            labels.append(t.labels[match.target_indices])
+            boxes.append(t.boxes[match.target_indices])
         matched_targets = MatchedTargets(
-            labels=torch.cat([t.labels[match.target_indices] for t, match in zip(targets, indices)]),
-            boxes=torch.cat([t.boxes[match.target_indices] for t, match in zip(targets, indices)], dim=0),
+            labels=torch.cat(labels),
+            boxes=torch.cat(boxes, dim=0),
         )
 
         # 4. Pre-extract matched predictions for box and fgl losses

@@ -23,8 +23,13 @@ data
     │   ├── IMSLP96504-007.tiff
     │   └── IMSLP96504-008.tiff
     └── imslp.jsonl
-
-3 directories, 2592 files
+data/trompa-coco
+├── annotations
+│   └── instances_trainval2017.json
+└── trainval2017
+    ├── Beethoven_Op119_Nr01-Breitkopf_001.png
+    ...
+    └── Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll_003.png
 ```
 
 ### IMSLP

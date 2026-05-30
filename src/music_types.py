@@ -219,10 +219,12 @@ class MatchedOutputs:
 
 # --- Modalities ---
 
+
 @dataclass
 class BoundingBoxes:
     data: torch.Tensor  # shape (N, 4)
     format: Literal["xyxy", "cxcywh"] = "xyxy"
+
 
 @dataclass
 class ClassLabels:
@@ -231,14 +233,17 @@ class ClassLabels:
 
 # --- Task-Specific Samples ---
 
+
 @dataclass
 class SSLSample[I]:
     image: I
+
 
 @dataclass
 class ClassificationSample[I, L]:
     image: I
     labels: L
+
 
 @dataclass
 class DetectionSample[I, B, L]:

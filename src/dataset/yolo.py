@@ -4,7 +4,16 @@ from dataclasses import dataclass
 import torch
 from PIL import Image as Image_
 
-from music_types import Data, PILImage, HWC, RGB, Int255, DetectionSample, BoundingBoxes, ClassLabels
+from music_types import (
+    Data,
+    PILImage,
+    HWC,
+    RGB,
+    Int255,
+    DetectionSample,
+    BoundingBoxes,
+    ClassLabels,
+)
 
 
 @dataclass
@@ -26,14 +35,17 @@ def load_yolo_metadata(
 
 def load_sample(
     metadata: YOLOMetadata,
-) -> Data[YOLOMetadata, DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels]]:
+) -> Data[
+    YOLOMetadata,
+    DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
+]:
     """Loads the image and target, returning a strongly-typed Data object."""
     pil_img = (
         Image_.open(metadata.img_path)
         .convert("RGB")
         .resize((metadata.img_w, metadata.img_h))
     )
-    
+
     labels: list[int] = []
     boxes: list[list[float]] = []
     if metadata.lbl_path.exists():
@@ -57,10 +69,10 @@ def load_sample(
     labels_tensor = torch.tensor(labels, dtype=torch.int64)
 
     return Data(
-        metadata=metadata, 
+        metadata=metadata,
         data=DetectionSample(
             image=PILImage(pil_img),
             boxes=BoundingBoxes(boxes_tensor, "xyxy"),
-            labels=ClassLabels(labels_tensor)
-        )
+            labels=ClassLabels(labels_tensor),
+        ),
     )

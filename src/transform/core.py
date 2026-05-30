@@ -74,6 +74,7 @@ def batched_transform[Meta, T, U, **P](
 
 # --- Core Math ---
 
+
 def _to_numpy_img[H: Height, W: Width, C: Channel, R: Range](
     image: PILImage[tuple[H, W, C], RGB, R],
 ) -> ArrayImage[tuple[C, H, W], RGB, R]:
@@ -81,18 +82,22 @@ def _to_numpy_img[H: Height, W: Width, C: Channel, R: Range](
     arr = np.transpose(arr, (2, 0, 1))
     return ArrayImage(arr)
 
+
 def _to_tensor_img[L: Layout, M: Mode, R: Range](
     image: ArrayImage[L, M, R],
 ) -> TensorImage[L, M, R]:
     return TensorImage(torch.as_tensor(image.data))
+
 
 def _to_float1_img[L: AnyLayouts, M: Mode](
     image: TensorImage[L, M, Int255],
 ) -> TensorImage[L, M, Float1]:
     return TensorImage(image.data.float() / 255.0)
 
+
 def _to_device_img[I: TensorImage](image: I, device: torch.device) -> I:
     return replace(image, data=image.data.to(device))
+
 
 def _extract_patches_img[B: Batch, M: Mode, R: Range](
     image: TensorImage[tuple[B, *CHW], M, R],
@@ -120,7 +125,10 @@ def _extract_patches_img[B: Batch, M: Mode, R: Range](
         patch_size=(ph, pw),
     )
 
-def shuffle[T](iterator: Iterable[T], buffer_size: int = 1000) -> Generator[T, None, None]:
+
+def shuffle[T](
+    iterator: Iterable[T], buffer_size: int = 1000
+) -> Generator[T, None, None]:
     buffer = []
     for item in iterator:
         buffer.append(item)
@@ -130,19 +138,26 @@ def shuffle[T](iterator: Iterable[T], buffer_size: int = 1000) -> Generator[T, N
     random.shuffle(buffer)
     yield from buffer
 
+
 def _random_crop_img[C: Channel, M: Mode, R: Range](
     image: TensorImage[tuple[C, Height, Width], M, R], crop_size: int
 ) -> TensorImage[tuple[C, Height, Width], M, R]:
     c, h, w = image.data.shape
-    x = torch.randint(0, w - crop_size + 1, size=(1,), device=image.data.device)[0]
-    y = torch.randint(0, h - crop_size + 1, size=(1,), device=image.data.device)[0]
+    x = torch.randint(
+        0, w - crop_size + 1, size=(1,), device=image.data.device
+    )[0]
+    y = torch.randint(
+        0, h - crop_size + 1, size=(1,), device=image.data.device
+    )[0]
     return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
+
 
 def _make_views_img[L: CHW, M: Mode, R: Range](
     image: TensorImage[L, M, R], n: int
 ) -> FlatViewTensorImage[Literal[1], View, tuple[BatchView, *CHW], M, R]:
     data = image.data.unsqueeze(0).expand(n, -1, -1, -1)
     return FlatViewTensorImage(data, num_views=n, original_batch_size=1)
+
 
 def _create_affine_matrix(
     angle_deg: float, translate: tuple[float, float], device: torch.device
@@ -156,6 +171,7 @@ def _create_affine_matrix(
         dtype=torch.float32,
         device=device,
     )
+
 
 def _random_flatview_affine_img[B: Batch, V: View, M: Mode, R: Range](
     image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
@@ -183,10 +199,15 @@ def _random_flatview_affine_img[B: Batch, V: View, M: Mode, R: Range](
 
     grid = F.affine_grid(matrices, [bv, c, h, w], align_corners=False)
     transformed_data = F.grid_sample(
-        image.data, grid, mode="bilinear", padding_mode="zeros", align_corners=False
+        image.data,
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False,
     )
 
     return replace(image, data=transformed_data)
+
 
 def _extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
     image: FlatViewTensorImage[B, V, tuple[BatchView, *CHW], M, R],
@@ -202,7 +223,14 @@ def _extract_flatviewpatches_img[B: Batch, V: View, M: Mode, R: Range](
         original_batch_size=image.original_batch_size,
     )
 
-def _random_flatview_patch_drop_img[B: Batch, BV: BatchView, V: View, N: NumPatches, D: EmbedDim | PatchDim](
+
+def _random_flatview_patch_drop_img[
+    B: Batch,
+    BV: BatchView,
+    V: View,
+    N: NumPatches,
+    D: EmbedDim | PatchDim,
+](
     patches: FlatViewEmbeddings[B, BV, V, N, D], drop_rate: float
 ) -> FlatViewEmbeddings[B, BV, V, NumPatches, D]:
     bv, n, d = patches.data.shape
@@ -212,14 +240,21 @@ def _random_flatview_patch_drop_img[B: Batch, BV: BatchView, V: View, N: NumPatc
     noise = torch.rand(bv, n, device=device)
     ids_keep = torch.argsort(noise, dim=1)[:, :num_keep]
 
-    kept_data = torch.gather(patches.data, 1, ids_keep.unsqueeze(-1).expand(-1, -1, d))
+    kept_data = torch.gather(
+        patches.data, 1, ids_keep.unsqueeze(-1).expand(-1, -1, d)
+    )
     kept_indices = torch.gather(patches.indices, 1, ids_keep)
 
     return replace(patches, data=kept_data, indices=kept_indices)
 
-def _unflatten_views_img[B: Batch, BV: BatchView, V: View, N: NumPatches, D: EmbedDim | PatchDim](
-    patches: FlatViewEmbeddings[B, BV, V, N, D]
-) -> ViewEmbeddings[B, V, N, D]:
+
+def _unflatten_views_img[
+    B: Batch,
+    BV: BatchView,
+    V: View,
+    N: NumPatches,
+    D: EmbedDim | PatchDim,
+](patches: FlatViewEmbeddings[B, BV, V, N, D]) -> ViewEmbeddings[B, V, N, D]:
     b = patches.original_batch_size
     v = patches.num_views
     _, n, d = patches.data.shape

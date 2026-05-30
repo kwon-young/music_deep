@@ -42,7 +42,7 @@ def to_numpy[H: Height, W: Width, C: Channel, R: Range, B, L](
     return DetectionSample(
         image=_to_numpy_img(sample.image),
         boxes=sample.boxes,
-        labels=sample.labels
+        labels=sample.labels,
     )
 
 
@@ -53,7 +53,7 @@ def to_tensor[L: Layout, M: Mode, R: Range, B, Lbl](
     return DetectionSample(
         image=_to_tensor_img(sample.image),
         boxes=sample.boxes,
-        labels=sample.labels
+        labels=sample.labels,
     )
 
 
@@ -64,7 +64,7 @@ def to_float1[L: AnyLayouts, M: Mode, B, Lbl](
     return DetectionSample(
         image=_to_float1_img(sample.image),
         boxes=sample.boxes,
-        labels=sample.labels
+        labels=sample.labels,
     )
 
 
@@ -74,15 +74,17 @@ def to[I: TensorImage, B, L](
 ) -> DetectionSample[I, B, L]:
     new_boxes = sample.boxes
     if isinstance(sample.boxes, BoundingBoxes):
-        new_boxes = BoundingBoxes(sample.boxes.data.to(device), sample.boxes.format)
+        new_boxes = BoundingBoxes(
+            sample.boxes.data.to(device), sample.boxes.format
+        )
     new_labels = sample.labels
     if isinstance(sample.labels, ClassLabels):
         new_labels = ClassLabels(sample.labels.data.to(device))
-        
+
     return DetectionSample(
         image=_to_device_img(sample.image, device),
         boxes=new_boxes,
-        labels=new_labels
+        labels=new_labels,
     )
 
 
@@ -94,24 +96,37 @@ def extract_patches[B: Batch, M: Mode, R: Range, Bx, L](
     return DetectionSample(
         image=_extract_patches_img(sample.image, patch_size),
         boxes=sample.boxes,
-        labels=sample.labels
+        labels=sample.labels,
     )
 
 
-def collate_tensors[Meta, C: Channel, H: Height, W: Width, M: Mode, R: Range, B, L](
-    batch: tuple[Data[Meta, DetectionSample[TensorImage[tuple[C, H, W], M, R], B, L]], ...],
-) -> BatchedData[Meta, DetectionSample[TensorImage[tuple[Batch, C, H, W], M, R], list[B], list[L]]]:
+def collate_tensors[
+    Meta,
+    C: Channel,
+    H: Height,
+    W: Width,
+    M: Mode,
+    R: Range,
+    B,
+    L,
+](
+    batch: tuple[
+        Data[Meta, DetectionSample[TensorImage[tuple[C, H, W], M, R], B, L]],
+        ...,
+    ],
+) -> BatchedData[
+    Meta,
+    DetectionSample[TensorImage[tuple[Batch, C, H, W], M, R], list[B], list[L]],
+]:
     """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""
     m = [b.metadata for b in batch]
     i = [b.data.image.data for b in batch]
     boxes = [b.data.boxes for b in batch]
     labels = [b.data.labels for b in batch]
-    
+
     return BatchedData(
         metadata=m,
         data=DetectionSample(
-            image=TensorImage(torch.stack(i, dim=0)),
-            boxes=boxes,
-            labels=labels
+            image=TensorImage(torch.stack(i, dim=0)), boxes=boxes, labels=labels
         ),
     )

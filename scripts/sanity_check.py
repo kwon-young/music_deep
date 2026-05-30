@@ -209,7 +209,9 @@ def train(params: TrainParams):
         return
 
     # Get the first image
-    metadata_gen = load_yolo_metadata(img_dir, lbl_dir, params.img_w, params.img_h)
+    metadata_gen = load_yolo_metadata(
+        img_dir, lbl_dir, params.img_w, params.img_h
+    )
     first_metadata = next(metadata_gen)
 
     print(f"Loading image: {first_metadata.img_path.name}")
@@ -223,14 +225,16 @@ def train(params: TrainParams):
     patches_obj_batched = det_tf.extract_patches(
         batched_image, patch_size=(params.patch_size, params.patch_size)
     )
-    
+
     patches_obj = patches_obj_batched.data.image
     image_tensor = batched_image.data.image.data  # For plotting
-    
+
     # Reconstruct DetectionTarget for the criterion
     targets = [
-        DetectionTarget(labels=l.data, boxes=b.data) 
-        for b, l in zip(patches_obj_batched.data.boxes, patches_obj_batched.data.labels)
+        DetectionTarget(labels=l.data, boxes=b.data)
+        for b, l in zip(
+            patches_obj_batched.data.boxes, patches_obj_batched.data.labels
+        )
     ]
 
     print(f"Found {len(targets[0].labels)} objects in the image.")
@@ -312,7 +316,9 @@ def train(params: TrainParams):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sanity check for OMR Detector")
+    parser = argparse.ArgumentParser(
+        description="Sanity check for OMR Detector"
+    )
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/coco128/images/train2017")
     )

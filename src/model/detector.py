@@ -13,7 +13,7 @@ def get_2d_patch_centers(grid_h: int, grid_w: int, device: str) -> torch.Tensor:
     Cached to avoid recomputing meshgrids on every forward pass.
     """
     torch_device = torch.device(device)
-    
+
     y_centers = (torch.arange(grid_h, device=torch_device) + 0.5) / grid_h
     x_centers = (torch.arange(grid_w, device=torch_device) + 0.5) / grid_w
     y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
@@ -30,7 +30,7 @@ def compute_patch_centers(embeddings: Patches) -> torch.Tensor:
     c, h, w = embeddings.image_shape
     ph, pw = embeddings.patch_size
     grid_h, grid_w = h // ph, w // pw
-    
+
     # Get the cached base grid of centers. Shape: (Total_Patches, 2)
     base_centers = get_2d_patch_centers(
         grid_h, grid_w, device=str(embeddings.data.device)
@@ -183,7 +183,7 @@ class OMRDetector(nn.Module):
         Returns a DetectionOutput ready for DFINECriterion.
         """
         features = self.backbone(patches)
-        
+
         # Compute centers dynamically based on the kept patches
         patch_centers = compute_patch_centers(features)
 
