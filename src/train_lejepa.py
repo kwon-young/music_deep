@@ -36,12 +36,7 @@ from dataset.imslp import (
     Metadata,
 )
 from music_types import (
-    Channel,
-    Height,
-    Width,
     CHW,
-    Mode,
-    Range,
     Batch,
     BatchedData,
     View,
