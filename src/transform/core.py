@@ -229,10 +229,7 @@ def affine_matrix_params(
         for _ in range(bv)
     ]
     return torch.stack(
-        [
-            create_affine_matrix(a, t, device)
-            for a, t in zip(angles, translates)
-        ]
+        [create_affine_matrix(a, t, device) for a, t in zip(angles, translates)]
     )
 
 
@@ -252,9 +249,7 @@ def random_affine_img[B: Batch, M: Mode, R: Range](
     return replace(image, data=transformed_data)
 
 
-def affine_boxes(
-    boxes: BoundingBoxes, matrices: torch.Tensor
-) -> BoundingBoxes:
+def affine_boxes(boxes: BoundingBoxes, matrices: torch.Tensor) -> BoundingBoxes:
     # TODO: Implement bounding box rotation/translation using the affine matrices
     return boxes
 
