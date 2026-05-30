@@ -200,7 +200,7 @@ def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
 
 
 def affine_matrix_params(
-    bv: int, max_angle_deg: float, max_translate: float, device: torch.device
+    bv: BatchView, max_angle_deg: float, max_translate: float, device: torch.device
 ) -> torch.Tensor:
     matrices = []
     for _ in range(bv):
