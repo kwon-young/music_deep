@@ -250,16 +250,14 @@ def random_patch_drop_indices(
     return ids_keep
 
 
-def flatview_patch_drop_img[
+def patch_drop_img[
     B: Batch,
-    BV: BatchView,
-    V: View,
     N: NumPatches,
     D: EmbedDim | PatchDim,
 ](
-    patches: FlatViewEmbeddings[B, BV, V, N, D], ids_keep: torch.Tensor
-) -> FlatViewEmbeddings[B, BV, V, NumPatches, D]:
-    bv, n, d = patches.data.shape
+    patches: Embeddings[B, N, D], ids_keep: torch.Tensor
+) -> Embeddings[B, NumPatches, D]:
+    b, n, d = patches.data.shape
     kept_data = torch.gather(
         patches.data, 1, ids_keep.unsqueeze(-1).expand(-1, -1, d)
     )
@@ -267,7 +265,7 @@ def flatview_patch_drop_img[
     return replace(patches, data=kept_data, indices=kept_indices)
 
 
-def flatview_patch_drop_labels(
+def patch_drop_labels(
     labels: ClassLabels, ids_keep: torch.Tensor
 ) -> ClassLabels:
     # TODO: Implement label dropping if doing dense patch-level prediction

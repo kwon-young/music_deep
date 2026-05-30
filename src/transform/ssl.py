@@ -15,7 +15,7 @@ from .core import (
     affine_matrix_params,
     random_affine_img,
     random_patch_drop_indices,
-    flatview_patch_drop_img,
+    patch_drop_img,
 )
 from music_types import (
     SSLSample,
@@ -105,7 +105,15 @@ def random_flatview_affine[B: Batch, V: View, M: Mode, R: Range](
     matrices = affine_matrix_params(
         bv, max_angle_deg, max_translate, sample.image.data.device
     )
-    return SSLSample(image=random_affine_img(sample.image, matrices))
+    
+    new_img_base = random_affine_img(sample.image, matrices)
+    
+    new_img = FlatViewTensorImage(
+        data=new_img_base.data,
+        num_views=sample.image.num_views,
+        original_batch_size=sample.image.original_batch_size,
+    )
+    return SSLSample(image=new_img)
 
 
 @batched_transform
@@ -132,7 +140,18 @@ def random_flatview_patch_drop[
     ids_keep = random_patch_drop_indices(
         bv, n, drop_rate, sample.image.data.device
     )
-    return SSLSample(image=flatview_patch_drop_img(sample.image, ids_keep))
+    
+    new_img_base = patch_drop_img(sample.image, ids_keep)
+    
+    new_img = FlatViewEmbeddings(
+        data=new_img_base.data,
+        indices=new_img_base.indices,
+        image_shape=new_img_base.image_shape,
+        patch_size=new_img_base.patch_size,
+        num_views=sample.image.num_views,
+        original_batch_size=sample.image.original_batch_size,
+    )
+    return SSLSample(image=new_img)
 
 
 def unflatten_views[
