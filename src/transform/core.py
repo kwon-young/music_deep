@@ -265,10 +265,3 @@ def patch_drop_img[
     )
     kept_indices = torch.gather(patches.indices, 1, ids_keep)
     return replace(patches, data=kept_data, indices=kept_indices)
-
-
-def patch_drop_labels(
-    labels: ClassLabels, ids_keep: torch.Tensor
-) -> ClassLabels:
-    # TODO: Implement label dropping if doing dense patch-level prediction
-    return labels

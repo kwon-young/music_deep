@@ -16,7 +16,6 @@ from .core import (
     affine_boxes,
     random_patch_drop_indices,
     patch_drop_img,
-    patch_drop_labels,
 )
 from music_types import (
     DetectionSample,
@@ -41,11 +40,6 @@ from music_types import (
     BatchedData,
     Int255,
     Float1,
-    View,
-    BatchView,
-    FlatViewTensorImage,
-    FlatViewEmbeddings,
-    EmbedDim,
 )
 
 
@@ -124,14 +118,14 @@ def random_crop[C: Channel, M: Mode, R: Range, L](
 
 
 @transform
-def random_flatview_affine[I: FlatViewTensorImage, B: BoundingBoxes, L](
+def random_affine[I: TensorImage, B, L](
     sample: DetectionSample[I, B, L],
     max_angle_deg: float,
     max_translate: float,
 ) -> DetectionSample[I, B, L]:
-    bv = sample.image.data.shape[0]
+    b = sample.image.data.shape[0]
     matrices = affine_matrix_params(
-        bv, max_angle_deg, max_translate, sample.image.data.device
+        b, max_angle_deg, max_translate, sample.image.data.device
     )
 
     new_img_base = random_affine_img(sample.image, matrices)
@@ -139,34 +133,22 @@ def random_flatview_affine[I: FlatViewTensorImage, B: BoundingBoxes, L](
 
     return DetectionSample(
         image=replace(sample.image, data=new_img_base.data),
-        boxes=replace(sample.boxes, data=new_boxes),
+        boxes=new_boxes,
         labels=sample.labels,
     )
 
 
 @batched_transform
-def random_flatview_patch_drop[
-    B: Batch,
-    BV: BatchView,
-    V: View,
-    N: NumPatches,
-    D: EmbedDim | PatchDim,
-    Bx,
-](
-    sample: DetectionSample[
-        FlatViewEmbeddings[B, BV, V, N, D], Bx, ClassLabels
-    ],
+def random_patch_drop[I: Patches, B, L](
+    sample: DetectionSample[I, B, L],
     drop_rate: float,
-) -> DetectionSample[
-    FlatViewEmbeddings[B, BV, V, NumPatches, D], Bx, ClassLabels
-]:
-    bv, n, _ = sample.image.data.shape
+) -> DetectionSample[I, B, L]:
+    b, n, _ = sample.image.data.shape
     ids_keep = random_patch_drop_indices(
-        bv, n, drop_rate, sample.image.data.device
+        b, n, drop_rate, sample.image.data.device
     )
 
     new_img_base = patch_drop_img(sample.image, ids_keep)
-    new_labels = patch_drop_labels(sample.labels, ids_keep)
 
     new_img = replace(
         sample.image,
@@ -174,7 +156,7 @@ def random_flatview_patch_drop[
         indices=new_img_base.indices,
     )
 
-    return DetectionSample(image=new_img, boxes=sample.boxes, labels=new_labels)
+    return DetectionSample(image=new_img, boxes=sample.boxes, labels=sample.labels)
 
 
 def collate_tensors[
