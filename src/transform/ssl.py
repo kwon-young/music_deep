@@ -132,9 +132,7 @@ def random_flatview_patch_drop[
     ids_keep = random_patch_drop_indices(
         bv, n, drop_rate, sample.image.data.device
     )
-    return SSLSample(
-        image=flatview_patch_drop_img(sample.image, ids_keep)
-    )
+    return SSLSample(image=flatview_patch_drop_img(sample.image, ids_keep))
 
 
 def unflatten_views[

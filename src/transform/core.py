@@ -171,9 +171,6 @@ def unflatten_views_img[
     )
 
 
-# --- Crop ---
-
-
 def random_crop_params(
     h: int, w: int, crop_size: int, device: torch.device
 ) -> tuple[int, int]:
@@ -188,7 +185,7 @@ def crop_img[C: Channel, M: Mode, R: Range](
     y: int,
     crop_size: int,
 ) -> TensorImage[tuple[C, Height, Width], M, R]:
-    return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
+    return TensorImage(image.data[:, y:y + crop_size, x:x + crop_size])
 
 
 def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
@@ -200,9 +197,6 @@ def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
     return BoundingBoxes(new_data, boxes.format)
 
 
-# --- Affine ---
-
-
 def affine_matrix_params(
     bv: int, max_angle_deg: float, max_translate: float, device: torch.device
 ) -> torch.Tensor:
@@ -211,11 +205,11 @@ def affine_matrix_params(
         angle_deg = random.uniform(-max_angle_deg, max_angle_deg)
         tx = random.uniform(-max_translate, max_translate)
         ty = random.uniform(-max_translate, max_translate)
-        
+
         angle_rad = angle_deg * math.pi / 180.0
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
-        
+
         matrices.append(
             torch.tensor(
                 [[cos_a, -sin_a, tx], [sin_a, cos_a, ty]],
@@ -245,9 +239,6 @@ def random_affine_img[B: Batch, M: Mode, R: Range](
 def affine_boxes(boxes: BoundingBoxes, matrices: torch.Tensor) -> BoundingBoxes:
     # TODO: Implement bounding box rotation/translation using the affine matrices
     return boxes
-
-
-# --- Patch Drop ---
 
 
 def random_patch_drop_indices(
