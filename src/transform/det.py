@@ -44,6 +44,8 @@ from music_types import (
     BatchedData,
     Int255,
     Float1,
+    NumBoxes,
+    BoxDim,
 )
 
 
@@ -167,9 +169,11 @@ def random_patch_drop[I: Patches, B, L](
 
 def collate[
     Meta,
-    *ImgL,
-    *BoxL,
-    *LblL,
+    C: Channel,
+    H: Height,
+    W: Width,
+    N: NumBoxes,
+    D: BoxDim,
     M: Mode,
     R: Range,
 ](
@@ -177,9 +181,9 @@ def collate[
         Data[
             Meta,
             DetectionSample[
-                TensorImage[tuple[*ImgL], M, R],
-                BoundingBoxes[tuple[*BoxL]],
-                ClassLabels[tuple[*LblL]],
+                TensorImage[tuple[C, H, W], M, R],
+                BoundingBoxes[tuple[N, D]],
+                ClassLabels[tuple[N]],
             ],
         ],
         ...,
@@ -187,9 +191,9 @@ def collate[
 ) -> BatchedData[
     Meta,
     DetectionSample[
-        TensorImage[tuple[Batch, *ImgL], M, R],
-        BoundingBoxes[tuple[Batch, *BoxL]],
-        ClassLabels[tuple[Batch, *LblL]],
+        TensorImage[tuple[Batch, C, H, W], M, R],
+        BoundingBoxes[tuple[Batch, N, D]],
+        ClassLabels[tuple[Batch, N]],
     ],
 ]:
     """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""

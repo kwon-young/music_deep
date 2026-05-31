@@ -45,6 +45,8 @@ from music_types import (
     BoundingBoxes,
     ClassLabels,
     TensorData,
+    NumBoxes,
+    BoxDim,
 )
 
 
@@ -72,25 +74,25 @@ def batched_transform[Meta, T, U, **P](
     return wrapper
 
 
-def stack_tensor_img[*ImgL: AnyLayouts, M: Mode, R: Range](
-    items: list[TensorImage[tuple[*ImgL], M, R]]
-) -> TensorImage[tuple[Batch, *ImgL], M, R]:
+def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
+    items: list[TensorImage[tuple[C, H, W], M, R]]
+) -> TensorImage[tuple[Batch, C, H, W], M, R]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
-    return replace(items[0], data=stacked_tensor)
+    return TensorImage(stacked_tensor)
 
 
-def stack_tensor_boxes[*BoxL](
-    items: list[BoundingBoxes[tuple[*BoxL]]]
-) -> BoundingBoxes[tuple[Batch, *BoxL]]:
+def stack_tensor_boxes[N: NumBoxes, D: BoxDim](
+    items: list[BoundingBoxes[tuple[N, D]]]
+) -> BoundingBoxes[tuple[Batch, N, D]]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
-    return replace(items[0], data=stacked_tensor)
+    return BoundingBoxes(stacked_tensor, items[0].format)
 
 
-def stack_tensor_labels[*LblL](
-    items: list[ClassLabels[tuple[*LblL]]]
-) -> ClassLabels[tuple[Batch, *LblL]]:
+def stack_tensor_labels[N: NumBoxes](
+    items: list[ClassLabels[tuple[N]]]
+) -> ClassLabels[tuple[Batch, N]]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
-    return replace(items[0], data=stacked_tensor)
+    return ClassLabels(stacked_tensor)
 
 
 def to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](
