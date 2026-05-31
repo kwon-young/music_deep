@@ -72,7 +72,7 @@ def batched_transform[Meta, T, U, **P](
     return wrapper
 
 
-def stack_tensor_img[*ImgL, M: Mode, R: Range](
+def stack_tensor_img[*ImgL: AnyLayouts, M: Mode, R: Range](
     items: list[TensorImage[tuple[*ImgL], M, R]]
 ) -> TensorImage[tuple[Batch, *ImgL], M, R]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
