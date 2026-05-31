@@ -13,6 +13,11 @@ from music_types import (
     DetectionSample,
     BoundingBoxes,
     ClassLabels,
+    NumBoxes,
+    BoxDim,
+    XYXY,
+    Float1,
+    TopLeft,
 )
 
 
@@ -37,7 +42,11 @@ def load_sample(
     metadata: YOLOMetadata,
 ) -> Data[
     YOLOMetadata,
-    DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
+    DetectionSample[
+        PILImage[HWC, RGB, Int255],
+        BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Float1, TopLeft],
+        ClassLabels
+    ],
 ]:
     """Loads the image and target, returning a strongly-typed Data object."""
     pil_img = (
@@ -72,7 +81,7 @@ def load_sample(
         metadata=metadata,
         data=DetectionSample(
             image=PILImage(pil_img),
-            boxes=BoundingBoxes(boxes_tensor, "xyxy"),
+            boxes=BoundingBoxes(boxes_tensor),
             labels=ClassLabels(labels_tensor),
         ),
     )
