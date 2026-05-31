@@ -218,6 +218,8 @@ def train(params: TrainParams):
 
     raw_data = load_sample(first_metadata)
     transformed_data = transform_image(raw_data, device)
+    from typing import reveal_type
+    reveal_type(transformed_data)
 
     # 4. Prepare Batch, Patches, and Centers
     batched_image = collate_tensors((transformed_data,))
