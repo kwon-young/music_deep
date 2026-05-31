@@ -172,24 +172,27 @@ def collate[
     R: Range,
 ](
     batch: tuple[
-        Data[Meta, DetectionSample[
-            TensorImage[tuple[*ImgL], M, R], 
-            BoundingBoxes[tuple[*BoxL]], 
-            ClassLabels[tuple[*LblL]]
-        ]],
+        Data[
+            Meta,
+            DetectionSample[
+                TensorImage[tuple[*ImgL], M, R],
+                BoundingBoxes[tuple[*BoxL]],
+                ClassLabels[tuple[*LblL]],
+            ],
+        ],
         ...,
     ],
 ) -> BatchedData[
     Meta,
     DetectionSample[
-        TensorImage[tuple[Batch, *ImgL], M, R], 
-        BoundingBoxes[tuple[Batch, *BoxL]], 
-        ClassLabels[tuple[Batch, *LblL]]
+        TensorImage[tuple[Batch, *ImgL], M, R],
+        BoundingBoxes[tuple[Batch, *BoxL]],
+        ClassLabels[tuple[Batch, *LblL]],
     ],
 ]:
     """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""
     m = [b.metadata for b in batch]
-    
+
     stacked_image = stack_tensor_data([b.data.image for b in batch])
     stacked_boxes = stack_tensor_data([b.data.boxes for b in batch])
     stacked_labels = stack_tensor_data([b.data.labels for b in batch])

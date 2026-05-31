@@ -1,4 +1,12 @@
-from typing import Iterable, Generator, Callable, Concatenate, Literal, TypeVar, Any
+from typing import (
+    Iterable,
+    Generator,
+    Callable,
+    Concatenate,
+    Literal,
+    TypeVar,
+    Any,
+)
 from functools import wraps
 from dataclasses import replace
 import random
@@ -64,13 +72,7 @@ def batched_transform[Meta, T, U, **P](
     return wrapper
 
 
-T_TensorData = TypeVar("T_TensorData", bound=TensorData[Any])
-
-def stack_tensor_data(items: list[T_TensorData]) -> T_TensorData:
-    """
-    Stacks the underlying tensors of a list of TensorData objects along a new batch dimension.
-    Preserves the original dataclass type and any additional attributes.
-    """
+def stack_tensor_data(items: list[TensorData]) -> TensorData:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
     return replace(items[0], data=stacked_tensor)
 
