@@ -72,7 +72,23 @@ def batched_transform[Meta, T, U, **P](
     return wrapper
 
 
-def stack_tensor_data(items: list[TensorData]) -> TensorData:
+def stack_tensor_img[*ImgL, M: Mode, R: Range](
+    items: list[TensorImage[tuple[*ImgL], M, R]]
+) -> TensorImage[tuple[Batch, *ImgL], M, R]:
+    stacked_tensor = torch.stack([item.data for item in items], dim=0)
+    return replace(items[0], data=stacked_tensor)
+
+
+def stack_tensor_boxes[*BoxL](
+    items: list[BoundingBoxes[tuple[*BoxL]]]
+) -> BoundingBoxes[tuple[Batch, *BoxL]]:
+    stacked_tensor = torch.stack([item.data for item in items], dim=0)
+    return replace(items[0], data=stacked_tensor)
+
+
+def stack_tensor_labels[*LblL](
+    items: list[ClassLabels[tuple[*LblL]]]
+) -> ClassLabels[tuple[Batch, *LblL]]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
     return replace(items[0], data=stacked_tensor)
 

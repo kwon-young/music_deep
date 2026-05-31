@@ -16,7 +16,9 @@ from .core import (
     affine_boxes,
     random_patch_drop_indices,
     patch_drop_img,
-    stack_tensor_data,
+    stack_tensor_img,
+    stack_tensor_boxes,
+    stack_tensor_labels,
 )
 from music_types import (
     DetectionSample,
@@ -193,9 +195,9 @@ def collate[
     """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""
     m = [b.metadata for b in batch]
 
-    stacked_image = stack_tensor_data([b.data.image for b in batch])
-    stacked_boxes = stack_tensor_data([b.data.boxes for b in batch])
-    stacked_labels = stack_tensor_data([b.data.labels for b in batch])
+    stacked_image = stack_tensor_img([b.data.image for b in batch])
+    stacked_boxes = stack_tensor_boxes([b.data.boxes for b in batch])
+    stacked_labels = stack_tensor_labels([b.data.labels for b in batch])
 
     return BatchedData(
         metadata=m,
