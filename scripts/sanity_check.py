@@ -33,6 +33,7 @@ from music_types import (
     Batch,
     NumPatches,
     PatchDim,
+    DetectionSample,
 )
 
 
@@ -60,7 +61,10 @@ class TrainParams:
     device: torch.device
 
 
-def transform_image(item, device: torch.device):
+def transform_image[Meta, B, L](
+    item: Data[Meta, DetectionSample[PILImage[HWC, RGB, Int255], B, L]],
+    device: torch.device
+) -> Data[Meta, DetectionSample[TensorImage[CHW, RGB, Float1], B, L]]:
     """Applies the standard transformation pipeline to the image."""
     item = det_tf.to_numpy(item)
     item = det_tf.to_tensor(item)
