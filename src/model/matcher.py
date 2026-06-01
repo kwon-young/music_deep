@@ -3,7 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from .box_ops import box_xyxy_to_cxcywh, generalized_box_iou
-from music_types import DetectionTarget, DetectionOutput, MatchIndices
+from music_types import (
+    DetectionTarget,
+    DetectionOutput,
+    MatchIndices,
+    BoundingBoxes,
+    ClassLabels,
+    BoxShape,
+    LabelShape,
+    XYXY,
+    Float1,
+    TopLeft,
+)
 
 
 class HungarianMatcher(nn.Module):
@@ -31,7 +42,14 @@ class HungarianMatcher(nn.Module):
 
     @torch.no_grad()
     def forward(
-        self, outputs: DetectionOutput, targets: list[DetectionTarget]
+        self,
+        outputs: DetectionOutput,
+        targets: list[
+            DetectionTarget[
+                BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+                ClassLabels[LabelShape],
+            ]
+        ],
     ) -> list[MatchIndices]:
         """
         Params:

@@ -12,6 +12,13 @@ from music_types import (
     FlattenedIndices,
     MatchedTargets,
     MatchedOutputs,
+    BoundingBoxes,
+    ClassLabels,
+    BoxShape,
+    LabelShape,
+    XYXY,
+    Float1,
+    TopLeft,
 )
 
 
@@ -192,7 +199,14 @@ class DFINECriterion(nn.Module):
         return loss_fgl
 
     def forward(
-        self, outputs: DetectionOutput, targets: list[DetectionTarget]
+        self,
+        outputs: DetectionOutput,
+        targets: list[
+            DetectionTarget[
+                BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+                ClassLabels[LabelShape],
+            ]
+        ],
     ) -> DetectionLosses:
         """
         outputs: DetectionOutput
