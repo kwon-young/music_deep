@@ -44,9 +44,11 @@ from music_types import (
     EmbedDim,
     BoundingBoxes,
     ClassLabels,
-    TensorData,
     NumBoxes,
     BoxDim,
+    BoxFormat,
+    BoxRange,
+    Origin,
 )
 
 
@@ -75,21 +77,27 @@ def batched_transform[Meta, T, U, **P](
 
 
 def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
-    items: list[TensorImage[tuple[C, H, W], M, R]]
+    items: list[TensorImage[tuple[C, H, W], M, R]],
 ) -> TensorImage[tuple[Batch, C, H, W], M, R]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
     return TensorImage(stacked_tensor)
 
 
-def stack_tensor_boxes[N: NumBoxes, D: BoxDim](
-    items: list[BoundingBoxes[tuple[N, D]]]
-) -> BoundingBoxes[tuple[Batch, N, D]]:
+def stack_tensor_boxes[
+    N: NumBoxes,
+    D: BoxDim,
+    F: BoxFormat,
+    R: BoxRange,
+    O: Origin,
+](
+    items: list[BoundingBoxes[tuple[N, D], F, R, O]],
+) -> BoundingBoxes[tuple[Batch, N, D], F, R, O]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
-    return BoundingBoxes(stacked_tensor, items[0].format)
+    return BoundingBoxes(stacked_tensor)
 
 
 def stack_tensor_labels[N: NumBoxes](
-    items: list[ClassLabels[tuple[N]]]
+    items: list[ClassLabels[tuple[N]]],
 ) -> ClassLabels[tuple[Batch, N]]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
     return ClassLabels(stacked_tensor)
@@ -222,15 +230,6 @@ def crop_img[C: Channel, M: Mode, R: Range](
     return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
 
 
-def crop_boxes(boxes: BoundingBoxes, x: int, y: int) -> BoundingBoxes:
-    new_data = boxes.data.clone()
-    if boxes.format == "xyxy":
-        new_data[:, [0, 2]] -= x
-        new_data[:, [1, 3]] -= y
-    # TODO: handle cxcywh if needed
-    return BoundingBoxes(new_data, boxes.format)
-
-
 def affine_matrix_params(
     bv: BatchView,
     max_angle_deg: float,
@@ -271,11 +270,6 @@ def random_affine_img[B: Batch, M: Mode, R: Range](
         align_corners=False,
     )
     return replace(image, data=transformed_data)
-
-
-def affine_boxes(boxes: BoundingBoxes, matrices: torch.Tensor) -> BoundingBoxes:
-    # TODO: Implement bounding box rotation/translation using the affine matrices
-    return boxes
 
 
 def random_patch_drop_indices(

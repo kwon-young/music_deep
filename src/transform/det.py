@@ -8,12 +8,6 @@ from .core import (
     to_float1_img,
     to_device,
     extract_patches_img,
-    random_crop_params,
-    crop_img,
-    crop_boxes,
-    affine_matrix_params,
-    random_affine_img,
-    affine_boxes,
     random_patch_drop_indices,
     patch_drop_img,
     stack_tensor_img,
@@ -25,7 +19,6 @@ from music_types import (
     PILImage,
     ArrayImage,
     TensorImage,
-    BatchedTensorImage,
     BoundingBoxes,
     ClassLabels,
     Height,
@@ -46,6 +39,10 @@ from music_types import (
     Float1,
     NumBoxes,
     BoxDim,
+    BoxFormat,
+    BoxRange,
+    Origin,
+    RGB,
 )
 
 
@@ -95,51 +92,12 @@ def to[I: TensorImage, B: BoundingBoxes, L: ClassLabels](
 
 @batched_transform
 def extract_patches[B: Batch, Bx, L](
-    sample: DetectionSample[TensorImage[tuple[B, *CHW], Mode, Range], Bx, L],
+    sample: DetectionSample[TensorImage[tuple[B, *CHW], RGB, Float1], Bx, L],
     patch_size: tuple[int, int],
 ) -> DetectionSample[Patches[B, NumPatches, PatchDim], Bx, L]:
     return DetectionSample(
         image=extract_patches_img(sample.image, patch_size),
         boxes=sample.boxes,
-        labels=sample.labels,
-    )
-
-
-@transform
-def random_crop[C: Channel, M: Mode, R: Range, L](
-    sample: DetectionSample[
-        TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L
-    ],
-    crop_size: int,
-) -> DetectionSample[
-    TensorImage[tuple[C, Height, Width], M, R], BoundingBoxes, L
-]:
-    c, h, w = sample.image.data.shape
-    x, y = random_crop_params(h, w, crop_size, sample.image.data.device)
-
-    new_img = crop_img(sample.image, x, y, crop_size)
-    new_boxes = crop_boxes(sample.boxes, x, y)
-
-    return DetectionSample(image=new_img, boxes=new_boxes, labels=sample.labels)
-
-
-@transform
-def random_affine[I: BatchedTensorImage, B: BoundingBoxes, L](
-    sample: DetectionSample[I, B, L],
-    max_angle_deg: float,
-    max_translate: float,
-) -> DetectionSample[I, B, L]:
-    b = sample.image.batch_size
-    matrices = affine_matrix_params(
-        b, max_angle_deg, max_translate, sample.image.data.device
-    )
-
-    new_img_base = random_affine_img(sample.image, matrices)
-    new_boxes = affine_boxes(sample.boxes, matrices)
-
-    return DetectionSample(
-        image=replace(sample.image, data=new_img_base.data),
-        boxes=replace(sample.boxes, data=new_boxes),
         labels=sample.labels,
     )
 
@@ -176,13 +134,16 @@ def collate[
     D: BoxDim,
     M: Mode,
     R: Range,
+    F: BoxFormat,
+    BR: BoxRange,
+    O: Origin
 ](
     batch: tuple[
         Data[
             Meta,
             DetectionSample[
                 TensorImage[tuple[C, H, W], M, R],
-                BoundingBoxes[tuple[N, D]],
+                BoundingBoxes[tuple[N, D], F, BR, O],
                 ClassLabels[tuple[N]],
             ],
         ],
@@ -192,11 +153,10 @@ def collate[
     Meta,
     DetectionSample[
         TensorImage[tuple[Batch, C, H, W], M, R],
-        BoundingBoxes[tuple[Batch, N, D]],
+        BoundingBoxes[tuple[Batch, N, D], F, BR, O],
         ClassLabels[tuple[Batch, N]],
     ],
 ]:
-    """Collates a tuple of Data[DetectionSample] into a BatchedData[DetectionSample]."""
     m = [b.metadata for b in batch]
 
     stacked_image = stack_tensor_img([b.data.image for b in batch])

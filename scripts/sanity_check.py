@@ -2,7 +2,6 @@ import argparse
 import torch
 import torch.optim as optim
 from pathlib import Path
-from PIL import Image as Image_
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -14,26 +13,23 @@ from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.yolo import load_yolo_metadata, load_sample
 import transform.det as det_tf
-from transform.det import collate_tensors
+from transform.det import collate
 from music_types import (
     DetectionTarget,
     DetectionOutput,
     DetectionLossWeights,
     MatchIndices,
     TensorImage,
-    BatchedData,
     Data,
     PILImage,
-    Patches,
     HWC,
-    RGB,
     Int255,
     CHW,
     Float1,
-    Batch,
-    NumPatches,
-    PatchDim,
     DetectionSample,
+    Mode,
+    BoundingBoxes,
+    ClassLabels,
 )
 
 
@@ -61,16 +57,15 @@ class TrainParams:
     device: torch.device
 
 
-def transform_image[Meta, B, L](
-    item: Data[Meta, DetectionSample[PILImage[HWC, RGB, Int255], B, L]],
+def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
+    item: Data[Meta, DetectionSample[PILImage[HWC, M, Int255], B, L]],
     device: torch.device
-) -> Data[Meta, DetectionSample[TensorImage[CHW, RGB, Float1], B, L]]:
-    """Applies the standard transformation pipeline to the image."""
-    item = det_tf.to_numpy(item)
-    item = det_tf.to_tensor(item)
-    item = det_tf.to(item, device=device)
-    item = det_tf.to_float1(item)
-    return item
+) -> Data[Meta, DetectionSample[TensorImage[CHW, M, Float1], B, L]]:
+    item_np = det_tf.to_numpy(item)
+    item_t = det_tf.to_tensor(item_np)
+    item_t = det_tf.to(item_t, device=device)
+    item_tf = det_tf.to_float1(item_t)
+    return item_tf
 
 
 def update_plot(
@@ -220,13 +215,12 @@ def train(params: TrainParams):
 
     print(f"Loading image: {first_metadata.img_path.name}")
 
+    from typing import reveal_type
     raw_data = load_sample(first_metadata)
     transformed_data = transform_image(raw_data, device)
-    from typing import reveal_type
-    reveal_type(transformed_data)
 
     # 4. Prepare Batch, Patches, and Centers
-    batched_image = collate_tensors((transformed_data,))
+    batched_image = collate((transformed_data,))
 
     patches_obj_batched = det_tf.extract_patches(
         batched_image, patch_size=(params.patch_size, params.patch_size)
@@ -239,9 +233,10 @@ def train(params: TrainParams):
     targets = [
         DetectionTarget(labels=l.data, boxes=b.data)
         for b, l in zip(
-            patches_obj_batched.data.boxes, patches_obj_batched.data.labels
+            patches_obj_batched.data.boxes.data, patches_obj_batched.data.labels.data
         )
     ]
+    reveal_type(targets)
 
     print(f"Found {len(targets[0].labels)} objects in the image.")
 
