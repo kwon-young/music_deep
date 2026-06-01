@@ -229,6 +229,7 @@ def train(params: TrainParams):
     patches_obj = patches_obj_batched.data.image
     image_tensor = batched_image.data.image.data  # For plotting
 
+    reveal_type(patches_obj_batched)
     # Reconstruct DetectionTarget for the criterion
     targets = [
         DetectionTarget(labels=l.data, boxes=b.data)

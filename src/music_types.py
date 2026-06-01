@@ -47,6 +47,7 @@ class ArrayImage[L: AnyLayouts, M: Mode, R: Range]:
 @dataclass
 class TensorData[Shape]:
     """Base class for any dataclass that wraps a PyTorch tensor."""
+
     data: torch.Tensor
 
 
@@ -108,7 +109,9 @@ type EmbedDim = int
 
 
 @dataclass
-class Embeddings[B: Batch, N: NumPatches, D: EmbedDim](TensorData[tuple[B, N, D]]):
+class Embeddings[B: Batch, N: NumPatches, D: EmbedDim](
+    TensorData[tuple[B, N, D]]
+):
     indices: torch.Tensor
     image_shape: CHW
     patch_size: HW
@@ -245,6 +248,16 @@ type BoxDim = int
 type BoxShape = tuple[NumBoxes, BoxDim]
 type BatchedBoxShape = tuple[Batch, NumBoxes, BoxDim]
 type AnyBoxShape = BoxShape | BatchedBoxShape
+type XYXY = Literal["xyxy"]
+type CXCYWH = Literal["cxcywh"]
+type LTRB = Literal["ltrb"]  # Left Top Right Bottom
+type BoxFormat = XYXY | CXCYWH | LTRB
+type Absolute = Literal["Absolute"]
+type ShapeNormalized = Literal["ShapeNormalized"]
+type BoxRange = Float1 | Absolute | ShapeNormalized
+type TopLeft = Literal["TopLeft"]
+type Center = Literal["Center"]
+type Origin = TopLeft | Center
 
 type LabelShape = tuple[NumBoxes]
 type BatchedLabelShape = tuple[Batch, NumBoxes]
@@ -252,8 +265,10 @@ type AnyLabelShape = LabelShape | BatchedLabelShape
 
 
 @dataclass
-class BoundingBoxes[L: AnyBoxShape](TensorData[L]):
-    format: Literal["xyxy", "cxcywh"] = "xyxy"
+class BoundingBoxes[L: AnyBoxShape, F: BoxFormat, R: BoxRange, O: Origin](
+    TensorData[L]
+):
+    pass
 
 
 @dataclass
