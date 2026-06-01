@@ -17,6 +17,7 @@ from .core import (
     random_affine_img,
     random_patch_drop_indices,
     patch_drop_img,
+    stack_tensor_img,
 )
 from music_types import (
     SSLSample,
@@ -37,7 +38,6 @@ from music_types import (
     Batch,
     View,
     BatchView,
-    BVCHW,
     CHW,
     NumPatches,
     PatchDim,
@@ -165,31 +165,32 @@ def collate[Meta, V: View, C: Channel, H: Height, W: Width, M: Mode, R: Range](
         Data[
             Meta,
             SSLSample[
-                FlatViewTensorImage[
-                    Literal[1], V, tuple[BatchView, C, H, W], M, R
-                ]
+                FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]
             ],
         ],
         ...,
     ],
-    batch_size: int,
 ) -> BatchedData[
     Meta,
     SSLSample[FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]],
 ]:
-    m = [b.metadata for b in batch]
-    i = [b.data.image.data for b in batch]
+    b0 = batch[0]
+    m, i = [b0.metadata], [b0.data.image.data]
+    for b in batch[1:]:
+        m.append(b.metadata)
+        i.append(b.data.image.data)
+    v = b0.data.image.num_views
+    ob = len(batch) * b0.data.image.original_batch_size
 
-    stacked_data = torch.cat(i, dim=0)
-    num_views = batch[0].data.image.num_views
+    stacked_data = stack_tensor_img(i)
 
     return BatchedData(
         metadata=m,
         data=SSLSample(
             image=FlatViewTensorImage(
                 stacked_data,
-                num_views=num_views,
-                original_batch_size=len(batch),
+                num_views=v,
+                original_batch_size=ob,
             )
         ),
     )

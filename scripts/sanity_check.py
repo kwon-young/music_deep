@@ -234,7 +234,6 @@ def train(params: TrainParams):
     patches_obj = patches_obj_batched.data.image
     image_tensor = batched_image.data.image.data  # For plotting
 
-    reveal_type(patches_obj_batched)
     # Reconstruct DetectionTarget for the criterion
     targets = [
         DetectionTarget(labels=l, boxes=b)
@@ -242,14 +241,15 @@ def train(params: TrainParams):
             patches_obj_batched.data.boxes, patches_obj_batched.data.labels
         )
     ]
-    reveal_type(targets)
 
     print(f"Found {len(targets[0].labels.data)} objects in the image.")
 
     # 5. Setup Interactive Plotting
     plt.ion()  # Turn on interactive mode
     fig, ax = plt.subplots(1, figsize=(8, 8))
-    fig.canvas.manager.set_window_title("OMR Detector Sanity Check")
+    manager = fig.canvas.manager
+    assert manager
+    manager.set_window_title("OMR Detector Sanity Check")
 
     # 6. Overfit Loop
     print("Starting sanity check (overfitting a single batch)...")
@@ -262,7 +262,12 @@ def train(params: TrainParams):
 
         # Compute loss
         losses = criterion(outputs, targets)
-        total_loss = losses.total
+        total_loss = (
+            losses.loss_ce
+            + losses.loss_bbox
+            + losses.loss_giou
+            + losses.loss_fgl
+        )
 
         # Backward pass
         total_loss.backward()

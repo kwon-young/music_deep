@@ -178,10 +178,6 @@ class DetectionLosses:
     loss_giou: torch.Tensor
     loss_fgl: torch.Tensor
 
-    @property
-    def total(self) -> torch.Tensor:
-        return self.loss_ce + self.loss_bbox + self.loss_giou + self.loss_fgl
-
 
 @dataclass
 class MatchIndices:
@@ -267,25 +263,31 @@ type LogitsShape = tuple[NumQueries, NumClasses]
 type BatchedLogitsShape = tuple[Batch, NumQueries, NumClasses]
 type AnyLogitsShape = LogitsShape | BatchedLogitsShape
 
+
 @dataclass
 class ClassLogits[L: AnyLogitsShape](TensorData[L]):
     pass
+
 
 type EdgeLogitsShape = tuple[NumQueries, BoxDim, NumBins]
 type BatchedEdgeLogitsShape = tuple[Batch, NumQueries, BoxDim, NumBins]
 type AnyEdgeLogitsShape = EdgeLogitsShape | BatchedEdgeLogitsShape
 
+
 @dataclass
 class EdgeLogits[L: AnyEdgeLogitsShape](TensorData[L]):
     pass
+
 
 type CoordShape = tuple[NumQueries, CoordDim]
 type BatchedCoordShape = tuple[Batch, NumQueries, CoordDim]
 type AnyCoordShape = CoordShape | BatchedCoordShape
 
+
 @dataclass
 class Coordinates[L: AnyCoordShape, R: Range](TensorData[L]):
     pass
+
 
 @dataclass
 class Dimensions[L: AnyCoordShape, R: Range](TensorData[L]):
