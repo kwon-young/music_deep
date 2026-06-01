@@ -219,8 +219,6 @@ def train(params: TrainParams):
 
     print(f"Loading image: {first_metadata.img_path.name}")
 
-    from typing import reveal_type
-
     raw_data = load_sample(first_metadata)
     transformed_data = transform_image(raw_data, device)
 
