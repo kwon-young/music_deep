@@ -59,7 +59,7 @@ class TrainParams:
 
 def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
     item: Data[Meta, DetectionSample[PILImage[HWC, M, Int255], B, L]],
-    device: torch.device
+    device: torch.device,
 ) -> Data[Meta, DetectionSample[TensorImage[CHW, M, Float1], B, L]]:
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
@@ -216,6 +216,7 @@ def train(params: TrainParams):
     print(f"Loading image: {first_metadata.img_path.name}")
 
     from typing import reveal_type
+
     raw_data = load_sample(first_metadata)
     transformed_data = transform_image(raw_data, device)
 

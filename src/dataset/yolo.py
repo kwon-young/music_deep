@@ -45,10 +45,9 @@ def load_sample(
     DetectionSample[
         PILImage[HWC, RGB, Int255],
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Float1, TopLeft],
-        ClassLabels
+        ClassLabels[tuple[NumBoxes]],
     ],
 ]:
-    """Loads the image and target, returning a strongly-typed Data object."""
     pil_img = (
         Image_.open(metadata.img_path)
         .convert("RGB")
