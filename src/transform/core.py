@@ -52,7 +52,7 @@ def transform[Meta, T, U, **P](
     def wrapper(
         item: Data[Meta, T], *args: P.args, **kwargs: P.kwargs
     ) -> Data[Meta, U]:
-        return Data(item.metadata, func(item.data, *args, **kwargs))
+        return Data(item.metadata, func(item.sample, *args, **kwargs))
 
     return wrapper
 
@@ -64,7 +64,7 @@ def batched_transform[Meta, T, U, **P](
     def wrapper(
         batch: BatchedData[Meta, T], *args: P.args, **kwargs: P.kwargs
     ) -> BatchedData[Meta, U]:
-        return BatchedData(batch.metadata, func(batch.data, *args, **kwargs))
+        return BatchedData(batch.metadata, func(batch.sample, *args, **kwargs))
 
     return wrapper
 

@@ -161,7 +161,7 @@ def train(params: TrainParams):
             )
             labels_v = labels.repeat_interleave(V)
 
-            emb = backbone(batch.data.image)
+            emb = backbone(batch.sample.image)
             proj_emb = projector(emb)
 
             global_emb = emb.data.mean(dim=1)

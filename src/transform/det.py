@@ -149,13 +149,13 @@ def collate[
 ]:
     m = [b.metadata for b in batch]
 
-    stacked_image = stack_tensor_img([b.data.image for b in batch])
-    boxes_list = [b.data.boxes for b in batch]
-    labels_list = [b.data.labels for b in batch]
+    stacked_image = stack_tensor_img([b.sample.image for b in batch])
+    boxes_list = [b.sample.boxes for b in batch]
+    labels_list = [b.sample.labels for b in batch]
 
     return BatchedData(
         metadata=m,
-        data=DetectionSample(
+        sample=DetectionSample(
             image=stacked_image,
             boxes=boxes_list,
             labels=labels_list,

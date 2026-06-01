@@ -79,7 +79,7 @@ def load_sample(
 
     return Data(
         metadata=metadata,
-        data=DetectionSample(
+        sample=DetectionSample(
             image=PILImage(pil_img),
             boxes=BoundingBoxes(boxes_tensor),
             labels=ClassLabels(labels_tensor),

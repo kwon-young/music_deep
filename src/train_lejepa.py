@@ -192,7 +192,7 @@ def train(params: TrainParams):
         for step, batch in enumerate(iterator):
             N = len(batch.metadata)
 
-            emb = backbone(batch.data.image)
+            emb = backbone(batch.sample.image)
             proj_emb = projector(emb)
 
             proj_view = ssl_tf.unflatten_views(proj_emb)

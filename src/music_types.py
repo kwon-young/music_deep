@@ -94,13 +94,13 @@ type BatchedImage[L: BatchedLayout, M, R] = (
 @dataclass
 class Data[Meta, T]:
     metadata: Meta
-    data: T
+    sample: T
 
 
 @dataclass
 class BatchedData[Meta, T]:
     metadata: list[Meta]
-    data: T
+    sample: T
 
 
 type NumPatches = int

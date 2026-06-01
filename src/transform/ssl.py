@@ -175,18 +175,18 @@ def collate[Meta, V: View, C: Channel, H: Height, W: Width, M: Mode, R: Range](
     SSLSample[FlatViewTensorImage[Batch, V, tuple[BatchView, C, H, W], M, R]],
 ]:
     b0 = batch[0]
-    m, i = [b0.metadata], [b0.data.image.data]
+    m, i = [b0.metadata], [b0.sample.image.data]
     for b in batch[1:]:
         m.append(b.metadata)
-        i.append(b.data.image.data)
-    v = b0.data.image.num_views
-    ob = len(batch) * b0.data.image.original_batch_size
+        i.append(b.sample.image.data)
+    v = b0.sample.image.num_views
+    ob = len(batch) * b0.sample.image.original_batch_size
 
     stacked_data = stack_tensor_img(i)
 
     return BatchedData(
         metadata=m,
-        data=SSLSample(
+        sample=SSLSample(
             image=FlatViewTensorImage(
                 stacked_data,
                 num_views=v,

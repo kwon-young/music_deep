@@ -231,14 +231,14 @@ def train(params: TrainParams):
         batched_image, patch_size=(params.patch_size, params.patch_size)
     )
 
-    patches_obj = patches_obj_batched.data.image
-    image_tensor = batched_image.data.image.data  # For plotting
+    patches_obj = patches_obj_batched.sample.image
+    image_tensor = batched_image.sample.image.data  # For plotting
 
     # Reconstruct DetectionTarget for the criterion
     targets = [
         DetectionTarget(labels=l, boxes=b)
         for b, l in zip(
-            patches_obj_batched.data.boxes, patches_obj_batched.data.labels
+            patches_obj_batched.sample.boxes, patches_obj_batched.sample.labels
         )
     ]
 
