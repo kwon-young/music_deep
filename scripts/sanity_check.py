@@ -233,7 +233,7 @@ def train(params: TrainParams):
     targets = [
         DetectionTarget(labels=l.data, boxes=b.data)
         for b, l in zip(
-            patches_obj_batched.data.boxes.data, patches_obj_batched.data.labels.data
+            patches_obj_batched.data.boxes, patches_obj_batched.data.labels
         )
     ]
     reveal_type(targets)

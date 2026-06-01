@@ -42,13 +42,6 @@ from music_types import (
     ViewEmbeddings,
     BatchView,
     EmbedDim,
-    BoundingBoxes,
-    ClassLabels,
-    NumBoxes,
-    BoxDim,
-    BoxFormat,
-    BoxRange,
-    Origin,
 )
 
 
@@ -81,26 +74,6 @@ def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
 ) -> TensorImage[tuple[Batch, C, H, W], M, R]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
     return TensorImage(stacked_tensor)
-
-
-def stack_tensor_boxes[
-    N: NumBoxes,
-    D: BoxDim,
-    F: BoxFormat,
-    R: BoxRange,
-    O: Origin,
-](
-    items: list[BoundingBoxes[tuple[N, D], F, R, O]],
-) -> BoundingBoxes[tuple[Batch, N, D], F, R, O]:
-    stacked_tensor = torch.stack([item.data for item in items], dim=0)
-    return BoundingBoxes(stacked_tensor)
-
-
-def stack_tensor_labels[N: NumBoxes](
-    items: list[ClassLabels[tuple[N]]],
-) -> ClassLabels[tuple[Batch, N]]:
-    stacked_tensor = torch.stack([item.data for item in items], dim=0)
-    return ClassLabels(stacked_tensor)
 
 
 def to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](
