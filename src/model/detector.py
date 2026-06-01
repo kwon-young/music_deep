@@ -3,7 +3,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 from functools import lru_cache
-from music_types import Patches, DetectionOutput
+from music_types import (
+    Patches,
+    DetectionOutput,
+    Batch,
+    NumPatches,
+    PatchDim,
+    EmbedDim,
+    Embeddings,
+)
 
 
 @lru_cache(maxsize=32)
@@ -22,7 +30,9 @@ def get_2d_patch_centers(grid_h: int, grid_w: int, device: str) -> torch.Tensor:
     return torch.stack([x_grid.flatten(), y_grid.flatten()], dim=-1)
 
 
-def compute_patch_centers(embeddings: Patches) -> torch.Tensor:
+def compute_centers(
+    embeddings: Embeddings[Batch, NumPatches, EmbedDim]
+) -> torch.Tensor:
     """
     Computes and gathers normalized (x, y) centers for the given patches.
     Uses the indices to ensure centers match even if patches were dropped.
@@ -177,7 +187,7 @@ class OMRDetector(nn.Module):
 
     def forward(
         self,
-        patches: Patches,
+        patches: Patches[Batch, NumPatches, PatchDim],
     ) -> DetectionOutput:
         """
         Returns a DetectionOutput ready for DFINECriterion.
@@ -185,7 +195,7 @@ class OMRDetector(nn.Module):
         features = self.backbone(patches)
 
         # Compute centers dynamically based on the kept patches
-        patch_centers = compute_patch_centers(features)
+        patch_centers = compute_centers(features)
 
         # Pass the actual tensor data to the dense head
         patch_tokens = features.data
