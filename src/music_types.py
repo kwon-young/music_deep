@@ -160,29 +160,6 @@ type ViewPatches[B: Batch, V: View, N: NumPatches, P: PatchDim] = (
 
 
 @dataclass
-class DetectionTarget[Bx, Lbl]:
-    """
-    Holds the ground truth bounding boxes and labels for an image.
-    """
-
-    labels: Lbl
-    boxes: Bx
-
-
-@dataclass
-class DetectionOutput:
-    """
-    Holds the predictions from the OMRDetector.
-    """
-
-    pred_logits: torch.Tensor  # (B, P*K, C)
-    pred_boxes: torch.Tensor  # (B, P*K, 4)
-    pred_edge_logits: torch.Tensor  # (B, P*K, 4, reg_max+1)
-    absolute_centers: torch.Tensor  # (B, P*K, 2)
-    learnable_shapes: torch.Tensor  # (B, P*K, 2)
-
-
-@dataclass
 class DetectionLossWeights:
     """Weights for the different components of the detection loss."""
 
@@ -264,6 +241,9 @@ type BatchedLabelShape = tuple[Batch, NumBoxes]
 type AnyLabelShape = LabelShape | BatchedLabelShape
 
 
+type NumClasses = int
+
+
 @dataclass
 class BoundingBoxes[L: AnyBoxShape, F: BoxFormat, R: BoxRange, O: Origin](
     TensorData[L]
@@ -272,8 +252,67 @@ class BoundingBoxes[L: AnyBoxShape, F: BoxFormat, R: BoxRange, O: Origin](
 
 
 @dataclass
-class ClassLabels[L: AnyLabelShape](TensorData[L]):
+class ClassLabels[L: AnyLabelShape, C: NumClasses](TensorData[L]):
     pass
+
+
+# --- Detection Output Types ---
+
+type NumShapes = int
+type NumQueries = int  # NumQueries = NumPatches * NumShapes
+type NumBins = int
+type CoordDim = int
+
+type LogitsShape = tuple[NumQueries, NumClasses]
+type BatchedLogitsShape = tuple[Batch, NumQueries, NumClasses]
+type AnyLogitsShape = LogitsShape | BatchedLogitsShape
+
+@dataclass
+class ClassLogits[L: AnyLogitsShape](TensorData[L]):
+    pass
+
+type EdgeLogitsShape = tuple[NumQueries, BoxDim, NumBins]
+type BatchedEdgeLogitsShape = tuple[Batch, NumQueries, BoxDim, NumBins]
+type AnyEdgeLogitsShape = EdgeLogitsShape | BatchedEdgeLogitsShape
+
+@dataclass
+class EdgeLogits[L: AnyEdgeLogitsShape](TensorData[L]):
+    pass
+
+type CoordShape = tuple[NumQueries, CoordDim]
+type BatchedCoordShape = tuple[Batch, NumQueries, CoordDim]
+type AnyCoordShape = CoordShape | BatchedCoordShape
+
+@dataclass
+class Coordinates[L: AnyCoordShape, R: Range](TensorData[L]):
+    pass
+
+@dataclass
+class Dimensions[L: AnyCoordShape, R: Range](TensorData[L]):
+    pass
+
+
+@dataclass
+class DetectionTarget[Bx, Lbl]:
+    """
+    Holds the ground truth bounding boxes and labels for an image.
+    """
+
+    labels: Lbl
+    boxes: Bx
+
+
+@dataclass
+class DetectionOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim]:
+    """
+    Holds the predictions from the OMRDetector.
+    """
+
+    pred_logits: ClassLogits[tuple[B, Q, NumClasses]]
+    pred_boxes: BoundingBoxes[tuple[B, Q, BD], XYXY, Float1, TopLeft]
+    pred_edge_logits: EdgeLogits[tuple[B, Q, BD, NumBins]]
+    absolute_centers: Coordinates[tuple[B, Q, CD], Float1]
+    learnable_shapes: Dimensions[tuple[B, Q, CD], Float1]
 
 
 # --- Task-Specific Samples ---

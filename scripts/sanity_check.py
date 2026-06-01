@@ -30,6 +30,10 @@ from music_types import (
     Mode,
     BoundingBoxes,
     ClassLabels,
+    Batch,
+    NumQueries,
+    BoxDim,
+    CoordDim,
 )
 
 
@@ -72,7 +76,7 @@ def update_plot(
     ax,
     image_tensor,
     targets: list[DetectionTarget],
-    outputs: DetectionOutput,
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
     img_w,
     img_h,
     epoch,
@@ -119,8 +123,8 @@ def update_plot(
         )
 
     # Plot Predicted boxes (Red)
-    pred_logits = outputs.pred_logits[0].detach().cpu()  # (P*K, C)
-    pred_boxes = outputs.pred_boxes[0].detach().cpu().numpy() * np.array(
+    pred_logits = outputs.pred_logits.data[0].detach().cpu()  # (P*K, C)
+    pred_boxes = outputs.pred_boxes.data[0].detach().cpu().numpy() * np.array(
         [img_w, img_h, img_w, img_h]
     )
 

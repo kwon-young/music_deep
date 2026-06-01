@@ -14,6 +14,7 @@ from music_types import (
     BoundingBoxes,
     ClassLabels,
     NumBoxes,
+    NumClasses,
     BoxDim,
     XYXY,
     Float1,
@@ -45,7 +46,7 @@ def load_sample(
     DetectionSample[
         PILImage[HWC, RGB, Int255],
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Float1, TopLeft],
-        ClassLabels[tuple[NumBoxes]],
+        ClassLabels[tuple[NumBoxes], NumClasses],
     ],
 ]:
     pil_img = (

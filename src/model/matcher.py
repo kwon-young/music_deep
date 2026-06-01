@@ -14,6 +14,11 @@ from music_types import (
     XYXY,
     Float1,
     TopLeft,
+    Batch,
+    NumQueries,
+    BoxDim,
+    CoordDim,
+    NumClasses,
 )
 
 
@@ -43,11 +48,11 @@ class HungarianMatcher(nn.Module):
     @torch.no_grad()
     def forward(
         self,
-        outputs: DetectionOutput,
+        outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
         targets: list[
             DetectionTarget[
                 BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
-                ClassLabels[LabelShape],
+                ClassLabels[LabelShape, NumClasses],
             ]
         ],
     ) -> list[MatchIndices]:
@@ -61,14 +66,14 @@ class HungarianMatcher(nn.Module):
                 - pred_indices is the indices of the selected predictions (in order)
                 - target_indices is the indices of the corresponding selected targets (in order)
         """
-        bs, num_queries = outputs.pred_logits.shape[:2]
+        bs, num_queries = outputs.pred_logits.data.shape[:2]
 
         # We flatten to compute the cost matrices in a batch
         # Using Focal Loss approximation for probabilities
         out_prob = F.sigmoid(
-            outputs.pred_logits.flatten(0, 1)
+            outputs.pred_logits.data.flatten(0, 1)
         )  # [batch_size * num_queries, num_classes]
-        out_bbox = outputs.pred_boxes.flatten(
+        out_bbox = outputs.pred_boxes.data.flatten(
             0, 1
         )  # [batch_size * num_queries, 4]
 
