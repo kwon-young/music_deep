@@ -160,13 +160,13 @@ type ViewPatches[B: Batch, V: View, N: NumPatches, P: PatchDim] = (
 
 
 @dataclass
-class DetectionTarget:
+class DetectionTarget[Bx, Lbl]:
     """
     Holds the ground truth bounding boxes and labels for an image.
     """
 
-    labels: torch.Tensor  # 1D tensor of shape (N,), dtype: torch.int64
-    boxes: torch.Tensor  # 2D tensor of shape (N, 4), dtype: torch.float32
+    labels: Lbl
+    boxes: Bx
 
 
 @dataclass

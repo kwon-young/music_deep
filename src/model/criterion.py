@@ -202,7 +202,7 @@ class DFINECriterion(nn.Module):
         indices = self.matcher(outputs, targets)
 
         # 2. Compute normalization factor (number of ground truth boxes)
-        num_boxes = max(1, sum(len(t.labels) for t in targets))
+        num_boxes = max(1, sum(len(t.labels.data) for t in targets))
 
         # 3. Pre-extract matched targets and flatten indices ONCE
         flat_idx = flatten_indices(indices)
@@ -210,8 +210,8 @@ class DFINECriterion(nn.Module):
         labels = []
         boxes = []
         for t, match in zip(targets, indices):
-            labels.append(t.labels[match.target_indices])
-            boxes.append(t.boxes[match.target_indices])
+            labels.append(t.labels.data[match.target_indices])
+            boxes.append(t.boxes.data[match.target_indices])
         matched_targets = MatchedTargets(
             labels=torch.cat(labels),
             boxes=torch.cat(boxes, dim=0),

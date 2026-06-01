@@ -92,10 +92,10 @@ def update_plot(
     ax.imshow(img)
 
     # Plot Ground Truth boxes (Green)
-    gt_boxes = targets[0].boxes.cpu().numpy() * np.array(
+    gt_boxes = targets[0].boxes.data.cpu().numpy() * np.array(
         [img_w, img_h, img_w, img_h]
     )
-    gt_labels = targets[0].labels.cpu().numpy()
+    gt_labels = targets[0].labels.data.cpu().numpy()
 
     for box, label in zip(gt_boxes, gt_labels):
         x1, y1, x2, y2 = box
@@ -232,14 +232,14 @@ def train(params: TrainParams):
     reveal_type(patches_obj_batched)
     # Reconstruct DetectionTarget for the criterion
     targets = [
-        DetectionTarget(labels=l.data, boxes=b.data)
+        DetectionTarget(labels=l, boxes=b)
         for b, l in zip(
             patches_obj_batched.data.boxes, patches_obj_batched.data.labels
         )
     ]
     reveal_type(targets)
 
-    print(f"Found {len(targets[0].labels)} objects in the image.")
+    print(f"Found {len(targets[0].labels.data)} objects in the image.")
 
     # 5. Setup Interactive Plotting
     plt.ion()  # Turn on interactive mode

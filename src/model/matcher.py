@@ -55,8 +55,8 @@ class HungarianMatcher(nn.Module):
         )  # [batch_size * num_queries, 4]
 
         # Also concat the target labels and boxes
-        tgt_ids = torch.cat([v.labels for v in targets])
-        tgt_bbox = torch.cat([v.boxes for v in targets])
+        tgt_ids = torch.cat([v.labels.data for v in targets])
+        tgt_bbox = torch.cat([v.boxes.data for v in targets])
 
         # 1. Compute the classification cost (Focal Loss approximation)
         out_prob = out_prob[:, tgt_ids]
@@ -92,7 +92,7 @@ class HungarianMatcher(nn.Module):
         # Handle potential NaNs
         C = torch.nan_to_num(C, nan=1e6)
 
-        sizes = [len(v.boxes) for v in targets]
+        sizes = [len(v.boxes.data) for v in targets]
 
         # Run Hungarian Matching (linear_sum_assignment)
         indices = [
