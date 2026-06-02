@@ -74,16 +74,16 @@ def update_plot(
             edgecolor="g",
             facecolor="none",
         )
-        ax.add_patch(rect)
+        # ax.add_patch(rect)
         # Add GT label text
-        ax.text(
-            x1,
-            y1 - 2,
-            f"GT:{label}",
-            color="g",
-            fontsize=8,
-            bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
-        )
+        # ax.text(
+        #     x1,
+        #     y1 - 2,
+        #     f"GT:{label}",
+        #     color="g",
+        #     fontsize=8,
+        #     bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
+        # )
 
     # Plot Predicted boxes (Red)
     pred_logits = outputs.pred_logits.data[0].detach().cpu()  # (P*K, C)
@@ -121,16 +121,16 @@ def update_plot(
             facecolor="none",
             linestyle="--",
         )
-        ax.add_patch(rect)
+        # ax.add_patch(rect)
         # Add Pred label and confidence text
-        ax.text(
-            x1,
-            y2 + 2,
-            f"P:{label} {prob:.2f}",
-            color="r",
-            fontsize=8,
-            verticalalignment="top",
-            bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
-        )
+        # ax.text(
+        #     x1,
+        #     y2 + 2,
+        #     f"P:{label} {prob:.2f}",
+        #     color="r",
+        #     fontsize=8,
+        #     verticalalignment="top",
+        #     bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
+        # )
 
     ax.axis("off")
