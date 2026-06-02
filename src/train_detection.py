@@ -71,7 +71,9 @@ def transform_image(
     item_t = det_tf.to_tensor(item_np)
     item_t = det_tf.to(item_t, device=device)
     item_tf = det_tf.to_float1(item_t)
-    item_padded = det_tf.pad_to_patch_size(item_tf, patch_size=(patch_size, patch_size))
+    item_padded = det_tf.pad_to_patch_size(
+        item_tf, patch_size=(patch_size, patch_size)
+    )
     return item_padded
 
 
@@ -92,10 +94,13 @@ def create_detection_iterator(
     """Creates a plain Python generator pipeline for detection data."""
     # 1. Load raw data
     raw_gen = load_coco(params.anno_path, params.img_dir)
-    
+
     # 2. Apply transformations
-    transformed_gen = (transform_image(item, params.device, params.patch_size) for item in raw_gen)
-    
+    transformed_gen = (
+        transform_image(item, params.device, params.patch_size)
+        for item in raw_gen
+    )
+
     # 3. Collate into batches of size 1 and extract patches
     for item in transformed_gen:
         batched_item = det_tf.collate((item,))
@@ -139,7 +144,7 @@ def train(params: TrainParams):
 
     for epoch in range(params.epochs):
         model.train()
-        
+
         # Re-initialize the generator for each epoch
         iterator = create_detection_iterator(params)
 
@@ -188,16 +193,24 @@ def train(params: TrainParams):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train OMR Detector on Trompa-COCO")
+    parser = argparse.ArgumentParser(
+        description="Train OMR Detector on Trompa-COCO"
+    )
     parser.add_argument(
-        "--anno_path", type=Path, default=Path("data/trompa-coco/annotations/instances_trainval2017.json")
+        "--anno_path",
+        type=Path,
+        default=Path(
+            "data/trompa-coco/annotations/instances_trainval2017.json"
+        ),
     )
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
     parser.add_argument("--patch_size", type=int, default=16)
     parser.add_argument("--channels", type=int, default=3)
-    parser.add_argument("--num_classes", type=int, default=80) # Adjust based on trompa-coco classes
+    parser.add_argument(
+        "--num_classes", type=int, default=80
+    )  # Adjust based on trompa-coco classes
     parser.add_argument("--num_shapes", type=int, default=5)
 
     # Matcher costs

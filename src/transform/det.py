@@ -85,7 +85,15 @@ def to[I: TensorImage, B: BoundingBoxes, L: ClassLabels](
 
 
 @transform
-def pad_to_patch_size[C: Channel, H: Height, W: Width, M: Mode, R: Range, Bx, Lbl](
+def pad_to_patch_size[
+    C: Channel,
+    H: Height,
+    W: Width,
+    M: Mode,
+    R: Range,
+    Bx,
+    Lbl,
+](
     sample: DetectionSample[TensorImage[tuple[C, H, W], M, R], Bx, Lbl],
     patch_size: tuple[int, int],
 ) -> DetectionSample[TensorImage[tuple[C, Height, Width], M, R], Bx, Lbl]:
