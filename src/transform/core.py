@@ -274,6 +274,35 @@ def random_patch_drop_indices(
     return ids_keep
 
 
+def variance_patch_drop_indices(
+    patches_data: torch.Tensor, var_threshold: float
+) -> torch.Tensor:
+    b, n, d = patches_data.shape
+    # For data in [0, 1], the maximum possible variance is 0.25.
+    # We normalize the variance to [0, 1] for clean threshold bounds.
+    normalized_vars = patches_data.var(dim=-1) / 0.25
+
+    ids_keep_list = []
+    max_keep = 0
+    for i in range(b):
+        keep = torch.where(normalized_vars[i] > var_threshold)[0]
+        if len(keep) == 0:
+            # Fallback to keep at least one patch to avoid empty tensors
+            keep = torch.tensor([0], device=patches_data.device)
+        ids_keep_list.append(keep)
+        max_keep = max(max_keep, len(keep))
+
+    # Pad with the last valid index if lengths differ across the batch
+    padded_ids = []
+    for keep in ids_keep_list:
+        if len(keep) < max_keep:
+            pad = keep[-1:].expand(max_keep - len(keep))
+            keep = torch.cat([keep, pad])
+        padded_ids.append(keep)
+
+    return torch.stack(padded_ids)
+
+
 def patch_drop_img[
     B: Batch,
     N: NumPatches,

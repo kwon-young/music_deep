@@ -52,6 +52,7 @@ class TrainParams:
     lr: float
     epochs: int
     log_interval: int
+    var_threshold: float
     device: torch.device
 
 
@@ -107,7 +108,10 @@ def create_detection_iterator(
         patched_item = det_tf.extract_patches(
             batched_item, patch_size=(params.patch_size, params.patch_size)
         )
-        yield patched_item
+        dropped_item = det_tf.variance_patch_drop(
+            patched_item, var_threshold=params.var_threshold
+        )
+        yield dropped_item
 
 
 def train(params: TrainParams):
@@ -228,6 +232,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--log_interval", type=int, default=10)
+    parser.add_argument("--var_threshold", type=float, default=0.001)
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -249,6 +254,7 @@ if __name__ == "__main__":
         lr=args.lr,
         epochs=args.epochs,
         log_interval=args.log_interval,
+        var_threshold=args.var_threshold,
         device=device,
     )
 

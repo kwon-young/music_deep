@@ -9,6 +9,7 @@ from .core import (
     to_device,
     extract_patches_img,
     random_patch_drop_indices,
+    variance_patch_drop_indices,
     patch_drop_img,
     stack_tensor_img,
     pad_to_patch_size_img,
@@ -124,6 +125,28 @@ def random_patch_drop[I: Patches, B, L](
     b, n, _ = sample.image.data.shape
     ids_keep = random_patch_drop_indices(
         b, n, drop_rate, sample.image.data.device
+    )
+
+    new_img_base = patch_drop_img(sample.image, ids_keep)
+
+    new_img = replace(
+        sample.image,
+        data=new_img_base.data,
+        indices=new_img_base.indices,
+    )
+
+    return DetectionSample(
+        image=new_img, boxes=sample.boxes, labels=sample.labels
+    )
+
+
+@batched_transform
+def variance_patch_drop[I: Patches, B, L](
+    sample: DetectionSample[I, B, L],
+    var_threshold: float,
+) -> DetectionSample[I, B, L]:
+    ids_keep = variance_patch_drop_indices(
+        sample.image.data, var_threshold
     )
 
     new_img_base = patch_drop_img(sample.image, ids_keep)
