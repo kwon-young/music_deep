@@ -70,13 +70,12 @@ def transform_image(
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Float1 -> Crop -> Pad (ALL ON CPU)."""
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
+    item_t = det_tf.random_crop(item_t, crop_size=crop_size)
     item_tf = det_tf.to_float1(item_t)
-    item_cropped = det_tf.random_crop(item_tf, crop_size=crop_size)
     item_padded = det_tf.pad_to_patch_size(
-        item_cropped, patch_size=(patch_size, patch_size)
+        item_tf, patch_size=(patch_size, patch_size)
     )
     return item_padded
 
