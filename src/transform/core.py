@@ -42,6 +42,8 @@ from music_types import (
     ViewEmbeddings,
     BatchView,
     EmbedDim,
+    BoundingBoxes,
+    ClassLabels,
 )
 
 
