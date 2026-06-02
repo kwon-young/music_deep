@@ -1,0 +1,240 @@
+import argparse
+import time
+from pathlib import Path
+from typing import Generator
+from dataclasses import dataclass
+import torch
+import torch.optim as optim
+
+from model.vit import vit_nano
+from model.detector import OMRDetector
+from model.matcher import HungarianMatcher
+from model.criterion import DFINECriterion
+from dataset.coco import load_coco, CocoMetadata
+import transform.det as det_tf
+from music_types import (
+    DetectionTarget,
+    DetectionLossWeights,
+    Data,
+    DetectionSample,
+    PILImage,
+    TensorImage,
+    HWC,
+    CHW,
+    RGB,
+    Int255,
+    Float1,
+    BoundingBoxes,
+    ClassLabels,
+    BatchedData,
+    Patches,
+    Batch,
+    NumPatches,
+    PatchDim,
+)
+
+
+@dataclass
+class TrainParams:
+    anno_path: Path
+    img_dir: Path
+    patch_size: int
+    channels: int
+    num_classes: int
+    num_shapes: int
+    cost_class: float
+    cost_bbox: float
+    cost_giou: float
+    loss_ce: float
+    loss_bbox: float
+    loss_giou: float
+    loss_fgl: float
+    lr: float
+    epochs: int
+    log_interval: int
+    device: torch.device
+
+
+def transform_image(
+    item: Data[
+        CocoMetadata,
+        DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
+    ],
+    device: torch.device,
+) -> Data[
+    CocoMetadata,
+    DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
+]:
+    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Device -> Float1."""
+    item_np = det_tf.to_numpy(item)
+    item_t = det_tf.to_tensor(item_np)
+    item_t = det_tf.to(item_t, device=device)
+    item_tf = det_tf.to_float1(item_t)
+    return item_tf
+
+
+def create_detection_iterator(
+    params: TrainParams,
+) -> Generator[
+    BatchedData[
+        CocoMetadata,
+        DetectionSample[
+            Patches[Batch, NumPatches, PatchDim],
+            list[BoundingBoxes],
+            list[ClassLabels],
+        ],
+    ],
+    None,
+    None,
+]:
+    """Creates a plain Python generator pipeline for detection data."""
+    # 1. Load raw data
+    raw_gen = load_coco(params.anno_path, params.img_dir)
+    
+    # 2. Apply transformations
+    transformed_gen = (transform_image(item, params.device) for item in raw_gen)
+    
+    # 3. Collate into batches of size 1 and extract patches
+    for item in transformed_gen:
+        batched_item = det_tf.collate((item,))
+        patched_item = det_tf.extract_patches(
+            batched_item, patch_size=(params.patch_size, params.patch_size)
+        )
+        yield patched_item
+
+
+def train(params: TrainParams):
+    print(f"Using device: {params.device}")
+
+    # 1. Setup Model
+    backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
+    model = OMRDetector(
+        backbone, num_classes=params.num_classes, num_shapes=params.num_shapes
+    ).to(params.device)
+
+    # 2. Setup Matcher and Criterion
+    matcher = HungarianMatcher(
+        cost_class=params.cost_class,
+        cost_bbox=params.cost_bbox,
+        cost_giou=params.cost_giou,
+    )
+    weights = DetectionLossWeights(
+        loss_ce=params.loss_ce,
+        loss_bbox=params.loss_bbox,
+        loss_giou=params.loss_giou,
+        loss_fgl=params.loss_fgl,
+    )
+    criterion = DFINECriterion(
+        matcher, num_classes=params.num_classes, weights=weights
+    ).to(params.device)
+
+    optimizer = optim.AdamW(model.parameters(), lr=params.lr)
+
+    # 3. Training Loop
+    start_time = time.time()
+    samples = 0
+    running_loss = None
+
+    for epoch in range(params.epochs):
+        model.train()
+        
+        # Re-initialize the generator for each epoch
+        iterator = create_detection_iterator(params)
+
+        for step, batch in enumerate(iterator):
+            # Reconstruct DetectionTarget for the criterion
+            targets = [
+                DetectionTarget(labels=l, boxes=b)
+                for b, l in zip(batch.sample.boxes, batch.sample.labels)
+            ]
+
+            optimizer.zero_grad()
+
+            # Forward pass
+            outputs = model(batch.sample.image)
+
+            # Compute loss
+            losses = criterion(outputs, targets)
+            total_loss = (
+                losses.loss_ce
+                + losses.loss_bbox
+                + losses.loss_giou
+                + losses.loss_fgl
+            )
+
+            # Backward pass
+            total_loss.backward()
+            optimizer.step()
+
+            # Update metrics
+            samples += 1
+            if running_loss is None:
+                running_loss = total_loss.item()
+            else:
+                running_loss = 0.99 * running_loss + 0.01 * total_loss.item()
+
+            if step % params.log_interval == 0:
+                elapsed = time.time() - start_time
+                speed = samples / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
+                    f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
+                    f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
+                    f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
+                    f"Speed: {speed:.1f} sample/s"
+                )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train OMR Detector on Trompa-COCO")
+    parser.add_argument(
+        "--anno_path", type=Path, default=Path("data/trompa-coco/annotations/instances_trainval2017.json")
+    )
+    parser.add_argument(
+        "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
+    )
+    parser.add_argument("--patch_size", type=int, default=16)
+    parser.add_argument("--channels", type=int, default=3)
+    parser.add_argument("--num_classes", type=int, default=80) # Adjust based on trompa-coco classes
+    parser.add_argument("--num_shapes", type=int, default=5)
+
+    # Matcher costs
+    parser.add_argument("--cost_class", type=float, default=2.0)
+    parser.add_argument("--cost_bbox", type=float, default=5.0)
+    parser.add_argument("--cost_giou", type=float, default=2.0)
+
+    # Loss weights
+    parser.add_argument("--loss_ce", type=float, default=2.0)
+    parser.add_argument("--loss_bbox", type=float, default=5.0)
+    parser.add_argument("--loss_giou", type=float, default=2.0)
+    parser.add_argument("--loss_fgl", type=float, default=0.15)
+
+    # Training params
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--log_interval", type=int, default=10)
+
+    args = parser.parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    params = TrainParams(
+        anno_path=args.anno_path,
+        img_dir=args.img_dir,
+        patch_size=args.patch_size,
+        channels=args.channels,
+        num_classes=args.num_classes,
+        num_shapes=args.num_shapes,
+        cost_class=args.cost_class,
+        cost_bbox=args.cost_bbox,
+        cost_giou=args.cost_giou,
+        loss_ce=args.loss_ce,
+        loss_bbox=args.loss_bbox,
+        loss_giou=args.loss_giou,
+        loss_fgl=args.loss_fgl,
+        lr=args.lr,
+        epochs=args.epochs,
+        log_interval=args.log_interval,
+        device=device,
+    )
+
+    train(params)
