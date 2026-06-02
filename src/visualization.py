@@ -11,10 +11,14 @@ from music_types import (
     BoxDim,
     CoordDim,
     Patches,
+    NumPatches,
+    PatchDim,
 )
 
 
-def reconstruct_image_from_patches(patches_obj: Patches) -> torch.Tensor:
+def reconstruct_image_from_patches[B: Batch, N: NumPatches, P: PatchDim](
+    patches_obj: Patches[B, N, P]
+) -> torch.Tensor:
     """Reconstructs the image tensor from patches, leaving dropped patches as zeros."""
     b, n, d = patches_obj.data.shape
     c, h, w = patches_obj.image_shape
@@ -29,7 +33,8 @@ def reconstruct_image_from_patches(patches_obj: Patches) -> torch.Tensor:
             py = patch_idx // grid_w
             px = patch_idx % grid_w
 
-            patch_data = patches_obj.data[batch_idx, i].view(c, ph, pw)
+            # View as (ph, pw, c) then permute to (c, ph, pw) to avoid color mixing
+            patch_data = patches_obj.data[batch_idx, i].view(ph, pw, c).permute(2, 0, 1)
             img[batch_idx, :, py * ph : (py + 1) * ph, px * pw : (px + 1) * pw] = patch_data
 
     return img
