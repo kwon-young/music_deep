@@ -53,6 +53,7 @@ class TrainParams:
     epochs: int
     log_interval: int
     var_threshold: float
+    log_patches: bool
     device: torch.device
 
 
@@ -76,6 +77,15 @@ def transform_image(
         item_tf, patch_size=(patch_size, patch_size)
     )
     return item_padded
+
+
+def log_patch_count(iterator, enabled: bool):
+    """Pass-through generator that logs the number of patches if enabled."""
+    for item in iterator:
+        if enabled:
+            num_patches = item.sample.image.data.shape[1]
+            print(f"[Pipeline] Number of patches fed to model: {num_patches}")
+        yield item
 
 
 def create_detection_iterator(
@@ -103,15 +113,18 @@ def create_detection_iterator(
     )
 
     # 3. Collate into batches of size 1 and extract patches
-    for item in transformed_gen:
-        batched_item = det_tf.collate((item,))
-        patched_item = det_tf.extract_patches(
-            batched_item, patch_size=(params.patch_size, params.patch_size)
-        )
-        dropped_item = det_tf.variance_patch_drop(
-            patched_item, var_threshold=params.var_threshold
-        )
-        yield dropped_item
+    def _pipeline():
+        for item in transformed_gen:
+            batched_item = det_tf.collate((item,))
+            patched_item = det_tf.extract_patches(
+                batched_item, patch_size=(params.patch_size, params.patch_size)
+            )
+            dropped_item = det_tf.variance_patch_drop(
+                patched_item, var_threshold=params.var_threshold
+            )
+            yield dropped_item
+
+    return log_patch_count(_pipeline(), params.log_patches)
 
 
 def train(params: TrainParams):
@@ -233,6 +246,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--var_threshold", type=float, default=0.001)
+    parser.add_argument("--log_patches", action="store_true", help="Log patch count before forward pass")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -255,6 +269,7 @@ if __name__ == "__main__":
         epochs=args.epochs,
         log_interval=args.log_interval,
         var_threshold=args.var_threshold,
+        log_patches=args.log_patches,
         device=device,
     )
 
