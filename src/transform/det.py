@@ -11,6 +11,7 @@ from .core import (
     random_patch_drop_indices,
     patch_drop_img,
     stack_tensor_img,
+    pad_to_patch_size_img,
 )
 from music_types import (
     DetectionSample,
@@ -80,6 +81,18 @@ def to[I: TensorImage, B: BoundingBoxes, L: ClassLabels](
         image=to_device(sample.image, device),
         boxes=to_device(sample.boxes, device),
         labels=to_device(sample.labels, device),
+    )
+
+
+@transform
+def pad_to_patch_size[C: Channel, H: Height, W: Width, M: Mode, R: Range, Bx, Lbl](
+    sample: DetectionSample[TensorImage[tuple[C, H, W], M, R], Bx, Lbl],
+    patch_size: tuple[int, int],
+) -> DetectionSample[TensorImage[tuple[C, Height, Width], M, R], Bx, Lbl]:
+    return DetectionSample(
+        image=pad_to_patch_size_img(sample.image, patch_size),
+        boxes=sample.boxes,
+        labels=sample.labels,
     )
 
 

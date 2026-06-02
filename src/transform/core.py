@@ -102,6 +102,26 @@ def to_device[I: TensorImage | BoundingBoxes | ClassLabels](
     return replace(image, data=image.data.to(device))
 
 
+def pad_to_patch_size_img[C: Channel, M: Mode, R: Range](
+    image: TensorImage[tuple[C, Height, Width], M, R],
+    patch_size: tuple[int, int],
+) -> TensorImage[tuple[C, Height, Width], M, R]:
+    c, h, w = image.data.shape
+    ph, pw = patch_size
+
+    pad_h = (ph - h % ph) % ph
+    pad_w = (pw - w % pw) % pw
+
+    if pad_h > 0 or pad_w > 0:
+        # F.pad with mode="replicate" for 2D padding requires 4D input (N, C, H, W)
+        padded_data = F.pad(
+            image.data.unsqueeze(0), (0, pad_w, 0, pad_h), mode="replicate"
+        ).squeeze(0)
+        return replace(image, data=padded_data)
+
+    return image
+
+
 def extract_patches_img[B: Batch](
     image: TensorImage[tuple[B, *CHW], Mode, Range],
     patch_size: tuple[int, int],

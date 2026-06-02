@@ -61,16 +61,18 @@ def transform_image(
         DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
     ],
     device: torch.device,
+    patch_size: int,
 ) -> Data[
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Device -> Float1."""
+    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Device -> Float1 -> Pad."""
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
     item_t = det_tf.to(item_t, device=device)
     item_tf = det_tf.to_float1(item_t)
-    return item_tf
+    item_padded = det_tf.pad_to_patch_size(item_tf, patch_size=(patch_size, patch_size))
+    return item_padded
 
 
 def create_detection_iterator(
@@ -92,7 +94,7 @@ def create_detection_iterator(
     raw_gen = load_coco(params.anno_path, params.img_dir)
     
     # 2. Apply transformations
-    transformed_gen = (transform_image(item, params.device) for item in raw_gen)
+    transformed_gen = (transform_image(item, params.device, params.patch_size) for item in raw_gen)
     
     # 3. Collate into batches of size 1 and extract patches
     for item in transformed_gen:
