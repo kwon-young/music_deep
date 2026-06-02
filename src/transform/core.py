@@ -44,6 +44,12 @@ from music_types import (
     EmbedDim,
     BoundingBoxes,
     ClassLabels,
+    NumBoxes,
+    BoxDim,
+    BoxRange,
+    Origin,
+    NumClasses,
+    XYXY,
 )
 
 
@@ -222,8 +228,10 @@ def unflatten_views_img[
 def random_crop_params(
     h: int, w: int, crop_size: int, device: torch.device
 ) -> tuple[int, int]:
-    x = torch.randint(0, w - crop_size + 1, size=(1,), device=device).item()
-    y = torch.randint(0, h - crop_size + 1, size=(1,), device=device).item()
+    x_max = max(1, w - crop_size + 1)
+    y_max = max(1, h - crop_size + 1)
+    x = torch.randint(0, x_max, size=(1,), device=device).item()
+    y = torch.randint(0, y_max, size=(1,), device=device).item()
     return int(x), int(y)
 
 
@@ -234,6 +242,49 @@ def crop_img[C: Channel, M: Mode, R: Range](
     crop_size: int,
 ) -> TensorImage[tuple[C, Height, Width], M, R]:
     return TensorImage(image.data[:, y : y + crop_size, x : x + crop_size])
+
+
+def crop_boxes_xyxy[
+    B: NumBoxes,
+    D: BoxDim,
+    R: BoxRange,
+    O: Origin,
+    C: NumClasses,
+](
+    boxes: BoundingBoxes[tuple[B, D], XYXY, R, O],
+    labels: ClassLabels[tuple[B], C],
+    x: int,
+    y: int,
+    crop_size: int,
+) -> tuple[
+    BoundingBoxes[tuple[NumBoxes, D], XYXY, R, O],
+    ClassLabels[tuple[NumBoxes], C],
+]:
+    """Shifts boxes by (x, y), clips them to crop_size, and removes invalid ones."""
+    if len(boxes.data) == 0:
+        return boxes, labels
+
+    new_boxes_data = boxes.data.clone()
+    new_boxes_data[:, 0] -= x
+    new_boxes_data[:, 1] -= y
+    new_boxes_data[:, 2] -= x
+    new_boxes_data[:, 3] -= y
+
+    # Clip to crop boundaries
+    new_boxes_data[:, 0] = new_boxes_data[:, 0].clamp(min=0, max=crop_size)
+    new_boxes_data[:, 1] = new_boxes_data[:, 1].clamp(min=0, max=crop_size)
+    new_boxes_data[:, 2] = new_boxes_data[:, 2].clamp(min=0, max=crop_size)
+    new_boxes_data[:, 3] = new_boxes_data[:, 3].clamp(min=0, max=crop_size)
+
+    # Keep only boxes with positive area
+    valid = (new_boxes_data[:, 2] > new_boxes_data[:, 0]) & (
+        new_boxes_data[:, 3] > new_boxes_data[:, 1]
+    )
+
+    return (
+        replace(boxes, data=new_boxes_data[valid]),
+        replace(labels, data=labels.data[valid]),
+    )
 
 
 def affine_matrix_params(

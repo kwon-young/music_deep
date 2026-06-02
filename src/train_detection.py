@@ -40,6 +40,7 @@ class TrainParams:
     img_dir: Path
     dataset: CocoDataset
     patch_size: int
+    crop_size: int
     channels: int
     num_classes: int
     num_shapes: int
@@ -64,16 +65,18 @@ def transform_image(
         DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
     ],
     patch_size: int,
+    crop_size: int,
 ) -> Data[
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Float1 -> Pad (ALL ON CPU)."""
+    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Float1 -> Crop -> Pad (ALL ON CPU)."""
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
     item_tf = det_tf.to_float1(item_t)
+    item_cropped = det_tf.random_crop(item_tf, crop_size=crop_size)
     item_padded = det_tf.pad_to_patch_size(
-        item_tf, patch_size=(patch_size, patch_size)
+        item_cropped, patch_size=(patch_size, patch_size)
     )
     return item_padded
 
@@ -107,7 +110,7 @@ def create_detection_iterator(
 
     # 2. Apply transformations (on CPU)
     transformed_gen = (
-        transform_image(item, params.patch_size)
+        transform_image(item, params.patch_size, params.crop_size)
         for item in raw_gen
     )
 
@@ -224,6 +227,7 @@ if __name__ == "__main__":
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
     parser.add_argument("--patch_size", type=int, default=16)
+    parser.add_argument("--crop_size", type=int, default=4160)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
 
@@ -256,6 +260,7 @@ if __name__ == "__main__":
         img_dir=args.img_dir,
         dataset=dataset,
         patch_size=args.patch_size,
+        crop_size=args.crop_size,
         channels=args.channels,
         num_classes=dataset.num_classes,
         num_shapes=args.num_shapes,

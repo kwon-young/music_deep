@@ -14,6 +14,9 @@ from .core import (
     patch_drop_img,
     stack_tensor_img,
     pad_to_patch_size_img,
+    random_crop_params,
+    crop_img,
+    crop_boxes_xyxy,
 )
 from music_types import (
     DetectionSample,
@@ -39,6 +42,12 @@ from music_types import (
     Int255,
     Float1,
     RGB,
+    NumBoxes,
+    BoxDim,
+    BoxRange,
+    Origin,
+    NumClasses,
+    XYXY,
 )
 
 
@@ -98,6 +107,43 @@ def to_patches[E: Patches, Bx: BoundingBoxes, Lbl: ClassLabels](
         image=to_device_embeddings(sample.image, device),
         boxes=boxes,
         labels=labels,
+    )
+
+
+@transform
+def random_crop[
+    C: Channel,
+    M: Mode,
+    R: Range,
+    B: NumBoxes,
+    D: BoxDim,
+    BR: BoxRange,
+    O: Origin,
+    LC: NumClasses,
+](
+    sample: DetectionSample[
+        TensorImage[tuple[C, Height, Width], M, R],
+        BoundingBoxes[tuple[B, D], XYXY, BR, O],
+        ClassLabels[tuple[B], LC],
+    ],
+    crop_size: int,
+) -> DetectionSample[
+    TensorImage[tuple[C, Height, Width], M, R],
+    BoundingBoxes[tuple[NumBoxes, D], XYXY, BR, O],
+    ClassLabels[tuple[NumBoxes], LC],
+]:
+    c, h, w = sample.image.data.shape
+    x, y = random_crop_params(h, w, crop_size, sample.image.data.device)
+
+    new_img = crop_img(sample.image, x, y, crop_size)
+    new_boxes, new_labels = crop_boxes_xyxy(
+        sample.boxes, sample.labels, x, y, crop_size
+    )
+
+    return DetectionSample(
+        image=new_img,
+        boxes=new_boxes,
+        labels=new_labels,
     )
 
 
