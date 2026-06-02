@@ -5,6 +5,7 @@ from typing import Generator
 from dataclasses import dataclass
 import torch
 import torch.optim as optim
+import matplotlib.pyplot as plt
 
 from model.vit import vit_nano
 from model.detector import OMRDetector
@@ -12,6 +13,8 @@ from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, iter_coco, CocoMetadata, CocoDataset
 import transform.det as det_tf
+from metric import compute_map_50
+from visualization import update_plot, reconstruct_image_from_patches
 from music_types import (
     DetectionTarget,
     DetectionLossWeights,
@@ -173,6 +176,13 @@ def train(params: TrainParams):
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
+    # Setup Interactive Plotting
+    plt.ion()
+    fig, ax = plt.subplots(1, figsize=(8, 8))
+    manager = fig.canvas.manager
+    if manager:
+        manager.set_window_title("OMR Detector Training")
+
     # 3. Training Loop
     start_time = time.time()
     samples = 0
@@ -217,6 +227,10 @@ def train(params: TrainParams):
                 running_loss = 0.99 * running_loss + 0.01 * total_loss.item()
 
             if step % params.log_interval == 0:
+                with torch.no_grad():
+                    indices_match = matcher(outputs, targets)
+                    map50 = compute_map_50(outputs, targets, params.num_classes)
+
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
                 print(
@@ -224,8 +238,23 @@ def train(params: TrainParams):
                     f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
                     f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
                     f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
+                    f"mAP@0.5: {map50:.4f} | "
                     f"Speed: {speed:.1f} sample/s"
                 )
+
+                # Reconstruct image from patches and update plot
+                img_tensor = reconstruct_image_from_patches(batch.sample.image)
+                update_plot(
+                    ax,
+                    img_tensor,
+                    targets,
+                    outputs,
+                    epoch,
+                    indices=indices_match,
+                )
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
 
 
 if __name__ == "__main__":

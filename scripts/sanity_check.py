@@ -11,10 +11,11 @@ from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
-from model.box_ops import box_iou
 from dataset.yolo import load_yolo_metadata, load_sample
 import transform.det as det_tf
 from transform.det import collate
+from metric import compute_map_50
+from visualization import update_plot
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -76,205 +77,6 @@ def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
     item_t = det_tf.to(item_t, device=device)
     item_tf = det_tf.to_float1(item_t)
     return item_tf
-
-
-@torch.no_grad()
-def compute_map_50(
-    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
-    targets: list[
-        DetectionTarget[
-            BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
-            ClassLabels[LabelShape, NumClasses],
-        ]
-    ],
-    num_classes: int,
-) -> float:
-    """Computes the Mean Average Precision at IoU threshold 0.5."""
-    pred_logits = outputs.pred_logits.data
-    pred_boxes = outputs.pred_boxes.data
-    probs = torch.sigmoid(pred_logits)
-    max_probs, pred_labels = probs.max(dim=-1)
-
-    aps: list[float] = []
-
-    for c in range(num_classes):
-        # Gather all predictions for class c across the batch
-        class_preds: list[tuple[float, int, torch.Tensor]] = []
-        for b in range(len(targets)):
-            mask = pred_labels[b] == c
-            if not mask.any():
-                continue
-            b_probs = max_probs[b][mask]
-            b_boxes = pred_boxes[b][mask]
-            for p, box in zip(b_probs, b_boxes):
-                class_preds.append((p.item(), b, box))
-
-        # Sort predictions by confidence descending
-        class_preds.sort(key=lambda x: x[0], reverse=True)
-
-        total_gt = 0
-        gt_matched: list[torch.Tensor] = []
-        gt_boxes_per_img: dict[int, torch.Tensor] = {}
-
-        # Gather all ground truth boxes for class c
-        for b, target in enumerate(targets):
-            gt_labels = target.labels.data
-            gt_boxes = target.boxes.data
-            mask = gt_labels == c
-            c_gt_boxes = gt_boxes[mask]
-            total_gt += len(c_gt_boxes)
-            gt_boxes_per_img[b] = c_gt_boxes
-            gt_matched.append(torch.zeros(len(c_gt_boxes), dtype=torch.bool))
-
-        if total_gt == 0:
-            continue
-        if len(class_preds) == 0:
-            aps.append(0.0)
-            continue
-
-        tps = torch.zeros(len(class_preds))
-        fps = torch.zeros(len(class_preds))
-
-        # Match predictions to ground truth
-        for i, (prob, b, pred_box) in enumerate(class_preds):
-            c_gt_boxes = gt_boxes_per_img[b]
-            if len(c_gt_boxes) == 0:
-                fps[i] = 1
-                continue
-
-            ious, _ = box_iou(pred_box.unsqueeze(0), c_gt_boxes)
-            max_iou, max_idx = ious.squeeze(0).max(dim=0)
-
-            if max_iou >= 0.5 and not gt_matched[b][max_idx]:
-                tps[i] = 1
-                gt_matched[b][max_idx] = True
-            else:
-                fps[i] = 1
-
-        # Compute Precision-Recall curve
-        tps_cum = torch.cumsum(tps, dim=0)
-        fps_cum = torch.cumsum(fps, dim=0)
-        recalls = tps_cum / total_gt
-        precisions = tps_cum / (tps_cum + fps_cum)
-
-        # Compute exact Area Under Curve (all-point interpolation)
-        precisions = torch.cat(
-            [torch.tensor([0.0]), precisions, torch.tensor([0.0])]
-        )
-        recalls = torch.cat([torch.tensor([0.0]), recalls, torch.tensor([1.0])])
-        for i in range(len(precisions) - 1, 0, -1):
-            precisions[i - 1] = torch.max(precisions[i - 1], precisions[i])
-
-        indices = torch.where(recalls[1:] != recalls[:-1])[0]
-        ap = torch.sum(
-            (recalls[indices + 1] - recalls[indices]) * precisions[indices + 1]
-        )
-        aps.append(ap.item())
-
-    if len(aps) == 0:
-        return 0.0
-    return sum(aps) / len(aps)
-
-
-def update_plot(
-    ax,
-    image_tensor,
-    targets: list[DetectionTarget],
-    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
-    img_w,
-    img_h,
-    epoch,
-    conf_thresh=0.5,
-    indices: list[MatchIndices] | None = None,
-):
-    """Clears and redraws the plot with GT and Predictions."""
-    ax.clear()
-    if isinstance(epoch, int):
-        ax.set_title(f"Training Epoch: {epoch:03d}")
-    else:
-        ax.set_title(f"{epoch}")
-
-    # Convert image tensor to numpy HWC
-    img = image_tensor[0].cpu().permute(1, 2, 0).numpy()
-    img = np.clip(img, 0, 1)
-    ax.imshow(img)
-
-    # Plot Ground Truth boxes (Green)
-    gt_boxes = targets[0].boxes.data.cpu().numpy() * np.array(
-        [img_w, img_h, img_w, img_h]
-    )
-    gt_labels = targets[0].labels.data.cpu().numpy()
-
-    for box, label in zip(gt_boxes, gt_labels):
-        x1, y1, x2, y2 = box
-        rect = patches.Rectangle(
-            (x1, y1),
-            x2 - x1,
-            y2 - y1,
-            linewidth=2,
-            edgecolor="g",
-            facecolor="none",
-        )
-        ax.add_patch(rect)
-        # Add GT label text
-        ax.text(
-            x1,
-            y1 - 2,
-            f"GT:{label}",
-            color="g",
-            fontsize=8,
-            bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
-        )
-
-    # Plot Predicted boxes (Red)
-    pred_logits = outputs.pred_logits.data[0].detach().cpu()  # (P*K, C)
-    pred_boxes = outputs.pred_boxes.data[0].detach().cpu().numpy() * np.array(
-        [img_w, img_h, img_w, img_h]
-    )
-
-    # Apply sigmoid to get probabilities and find max class prob
-    probs = torch.sigmoid(pred_logits)
-    max_probs, pred_labels = probs.max(dim=-1)
-
-    if indices is not None:
-        # Use Hungarian matched indices (batch size is 1, so we take indices[0])
-        src_idx = indices[0].pred_indices.cpu().numpy()
-        pred_boxes_kept = pred_boxes[src_idx]
-        pred_probs_kept = max_probs[src_idx].numpy()
-        pred_labels_kept = pred_labels[src_idx].numpy()
-    else:
-        # Filter by confidence threshold
-        keep = (max_probs > conf_thresh).numpy()
-        pred_boxes_kept = pred_boxes[keep]
-        pred_probs_kept = max_probs[keep].numpy()
-        pred_labels_kept = pred_labels[keep].numpy()
-
-    for box, prob, label in zip(
-        pred_boxes_kept, pred_probs_kept, pred_labels_kept
-    ):
-        x1, y1, x2, y2 = box
-        rect = patches.Rectangle(
-            (x1, y1),
-            x2 - x1,
-            y2 - y1,
-            linewidth=2,
-            edgecolor="r",
-            facecolor="none",
-            linestyle="--",
-        )
-        ax.add_patch(rect)
-        # Add Pred label and confidence text
-        ax.text(
-            x1,
-            y2 + 2,
-            f"P:{label} {prob:.2f}",
-            color="r",
-            fontsize=8,
-            verticalalignment="top",
-            bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
-        )
-
-    ax.axis("off")
 
 
 def train(params: TrainParams):
@@ -350,8 +152,8 @@ def train(params: TrainParams):
     plt.ion()  # Turn on interactive mode
     fig, ax = plt.subplots(1, figsize=(8, 8))
     manager = fig.canvas.manager
-    assert manager
-    manager.set_window_title("OMR Detector Sanity Check")
+    if manager:
+        manager.set_window_title("OMR Detector Sanity Check")
 
     # 6. Overfit Loop
     print("Starting sanity check (overfitting a single batch)...")
@@ -396,8 +198,6 @@ def train(params: TrainParams):
                 image_tensor,
                 targets,
                 outputs,
-                params.img_w,
-                params.img_h,
                 epoch,
                 indices=indices_match,
             )
@@ -419,8 +219,6 @@ def train(params: TrainParams):
             image_tensor,
             targets,
             outputs,
-            params.img_w,
-            params.img_h,
             epoch=f"Final (Threshold > {params.conf_thresh})",
             conf_thresh=params.conf_thresh,
             indices=None,
