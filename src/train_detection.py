@@ -10,7 +10,7 @@ from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
-from dataset.coco import load_coco, CocoMetadata
+from dataset.coco import parse_coco, iter_coco, CocoMetadata, CocoDataset
 import transform.det as det_tf
 from music_types import (
     DetectionTarget,
@@ -38,6 +38,7 @@ from music_types import (
 class TrainParams:
     anno_path: Path
     img_dir: Path
+    dataset: CocoDataset
     patch_size: int
     channels: int
     num_classes: int
@@ -101,8 +102,8 @@ def create_detection_iterator(
     None,
 ]:
     """Creates a plain Python generator pipeline for detection data."""
-    # 1. Load raw data
-    raw_gen = load_coco(params.anno_path, params.img_dir)
+    # 1. Load raw data using the pre-parsed dataset
+    raw_gen = iter_coco(params.dataset, params.img_dir)
 
     # 2. Apply transformations (on CPU)
     transformed_gen = (
@@ -224,9 +225,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--patch_size", type=int, default=16)
     parser.add_argument("--channels", type=int, default=3)
-    parser.add_argument(
-        "--num_classes", type=int, default=80
-    )  # Adjust based on trompa-coco classes
     parser.add_argument("--num_shapes", type=int, default=5)
 
     # Matcher costs
@@ -250,12 +248,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Parse and cache the dataset before starting training
+    dataset = parse_coco(args.anno_path)
+
     params = TrainParams(
         anno_path=args.anno_path,
         img_dir=args.img_dir,
+        dataset=dataset,
         patch_size=args.patch_size,
         channels=args.channels,
-        num_classes=args.num_classes,
+        num_classes=dataset.num_classes,
         num_shapes=args.num_shapes,
         cost_class=args.cost_class,
         cost_bbox=args.cost_bbox,
