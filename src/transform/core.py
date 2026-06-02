@@ -50,6 +50,7 @@ from music_types import (
     Origin,
     NumClasses,
     XYXY,
+    Absolute,
 )
 
 
@@ -380,3 +381,16 @@ def patch_drop_img[
     )
     kept_indices = torch.gather(patches.indices, 1, ids_keep)
     return replace(patches, data=kept_data, indices=kept_indices)
+
+
+def normalize_boxes_img[B: NumBoxes, D: BoxDim, O: Origin](
+    boxes: BoundingBoxes[tuple[B, D], XYXY, Absolute, O],
+    image_shape: tuple[int, int],
+) -> BoundingBoxes[tuple[B, D], XYXY, Float1, O]:
+    """Normalizes absolute pixel coordinates to [0, 1] based on image shape."""
+    h, w = image_shape
+    new_data = boxes.data.clone()
+    if len(new_data) > 0:
+        new_data[:, [0, 2]] /= w
+        new_data[:, [1, 3]] /= h
+    return replace(boxes, data=new_data)

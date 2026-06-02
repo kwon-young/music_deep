@@ -31,6 +31,11 @@ from music_types import (
     Batch,
     NumPatches,
     PatchDim,
+    Absolute,
+    NumBoxes,
+    BoxDim,
+    XYXY,
+    TopLeft,
 )
 
 
@@ -62,7 +67,11 @@ class TrainParams:
 def transform_image(
     item: Data[
         CocoMetadata,
-        DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
+        DetectionSample[
+            PILImage[HWC, RGB, Int255],
+            BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
+            ClassLabels
+        ],
     ],
     patch_size: int,
     crop_size: int,
@@ -71,22 +80,22 @@ def transform_image(
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Preprocessing: PIL -> Numpy -> Tensor -> Crop (CPU) -> Device (GPU) -> Float1 -> Pad."""
+    """Preprocessing: PIL -> Numpy -> Tensor -> Crop -> Device -> Float1 -> Pad -> Normalize."""
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
     
-    # Crop on CPU while it's still uint8 to save memory
     item_cropped = det_tf.random_crop(item_t, crop_size=crop_size)
-    
-    # Move the smaller cropped image to GPU
     item_gpu = det_tf.to(item_cropped, device=device)
     
-    # Convert to float32 and pad on GPU for speed
     item_tf = det_tf.to_float1(item_gpu)
     item_padded = det_tf.pad_to_patch_size(
         item_tf, patch_size=(patch_size, patch_size)
     )
-    return item_padded
+    
+    # Normalize boxes using the final padded image dimensions
+    item_normalized = det_tf.normalize_boxes(item_padded)
+    
+    return item_normalized
 
 
 def log_patch_count(iterator, enabled: bool):

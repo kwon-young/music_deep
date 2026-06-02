@@ -20,6 +20,7 @@ from music_types import (
     BoxDim,
     XYXY,
     Float1,
+    Absolute,
     TopLeft,
 )
 
@@ -106,7 +107,7 @@ def iter_coco(
         CocoMetadata,
         DetectionSample[
             PILImage[HWC, RGB, Int255],
-            BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Float1, TopLeft],
+            BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
             ClassLabels[tuple[NumBoxes], NumClasses],
         ],
     ],

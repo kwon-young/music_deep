@@ -17,6 +17,7 @@ from .core import (
     random_crop_params,
     crop_img,
     crop_boxes_xyxy,
+    normalize_boxes_img,
 )
 from music_types import (
     DetectionSample,
@@ -48,6 +49,7 @@ from music_types import (
     Origin,
     NumClasses,
     XYXY,
+    Absolute,
 )
 
 
@@ -163,6 +165,32 @@ def pad_to_patch_size[
     return DetectionSample(
         image=pad_to_patch_size_img(sample.image, patch_size),
         boxes=sample.boxes,
+        labels=sample.labels,
+    )
+
+
+@transform
+def normalize_boxes[
+    I: TensorImage,
+    B: NumBoxes,
+    D: BoxDim,
+    O: Origin,
+    Lbl,
+](
+    sample: DetectionSample[
+        I,
+        BoundingBoxes[tuple[B, D], XYXY, Absolute, O],
+        Lbl,
+    ]
+) -> DetectionSample[
+    I,
+    BoundingBoxes[tuple[B, D], XYXY, Float1, O],
+    Lbl,
+]:
+    h, w = sample.image.data.shape[-2:]
+    return DetectionSample(
+        image=sample.image,
+        boxes=normalize_boxes_img(sample.boxes, (h, w)),
         labels=sample.labels,
     )
 
