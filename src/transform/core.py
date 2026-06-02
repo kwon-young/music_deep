@@ -104,6 +104,17 @@ def to_device[I: TensorImage | BoundingBoxes | ClassLabels](
     return replace(image, data=image.data.to(device))
 
 
+def to_device_embeddings[E: Embeddings](
+    embeddings: E, device: torch.device
+) -> E:
+    """Specialized device move for Embeddings/Patches."""
+    return replace(
+        embeddings,
+        data=embeddings.data.to(device),
+        indices=embeddings.indices.to(device),
+    )
+
+
 def pad_to_patch_size_img[C: Channel, M: Mode, R: Range](
     image: TensorImage[tuple[C, Height, Width], M, R],
     patch_size: tuple[int, int],

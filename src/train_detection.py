@@ -62,16 +62,14 @@ def transform_image(
         CocoMetadata,
         DetectionSample[PILImage[HWC, RGB, Int255], BoundingBoxes, ClassLabels],
     ],
-    device: torch.device,
     patch_size: int,
 ) -> Data[
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Device -> Float1 -> Pad."""
+    """Minimal preprocessing: PIL -> Numpy -> Tensor -> Float1 -> Pad (ALL ON CPU)."""
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
-    item_t = det_tf.to(item_t, device=device)
     item_tf = det_tf.to_float1(item_t)
     item_padded = det_tf.pad_to_patch_size(
         item_tf, patch_size=(patch_size, patch_size)
@@ -106,9 +104,9 @@ def create_detection_iterator(
     # 1. Load raw data
     raw_gen = load_coco(params.anno_path, params.img_dir)
 
-    # 2. Apply transformations
+    # 2. Apply transformations (on CPU)
     transformed_gen = (
-        transform_image(item, params.device, params.patch_size)
+        transform_image(item, params.patch_size)
         for item in raw_gen
     )
 
@@ -122,7 +120,8 @@ def create_detection_iterator(
             dropped_item = det_tf.variance_patch_drop(
                 patched_item, var_threshold=params.var_threshold
             )
-            yield dropped_item
+            device_item = det_tf.to_patches(dropped_item, device=params.device)
+            yield device_item
 
     return log_patch_count(_pipeline(), params.log_patches)
 

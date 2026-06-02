@@ -7,6 +7,7 @@ from .core import (
     to_tensor_img,
     to_float1_img,
     to_device,
+    to_device_embeddings,
     extract_patches_img,
     random_patch_drop_indices,
     variance_patch_drop_indices,
@@ -82,6 +83,21 @@ def to[I: TensorImage, B: BoundingBoxes, L: ClassLabels](
         image=to_device(sample.image, device),
         boxes=to_device(sample.boxes, device),
         labels=to_device(sample.labels, device),
+    )
+
+
+@transform
+def to_patches[E: Patches, Bx: BoundingBoxes, Lbl: ClassLabels](
+    sample: DetectionSample[E, list[Bx], list[Lbl]], 
+    device: torch.device
+) -> DetectionSample[E, list[Bx], list[Lbl]]:
+    """Specialized device move for batched patches and lists of boxes/labels."""
+    boxes = [to_device(b, device) for b in sample.boxes]
+    labels = [to_device(l, device) for l in sample.labels]
+    return DetectionSample(
+        image=to_device_embeddings(sample.image, device),
+        boxes=boxes,
+        labels=labels,
     )
 
 
