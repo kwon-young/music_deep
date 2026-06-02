@@ -158,13 +158,17 @@ def compute_map_50(
         precisions = tps_cum / (tps_cum + fps_cum)
 
         # Compute exact Area Under Curve (all-point interpolation)
-        precisions = torch.cat([torch.tensor([0.0]), precisions, torch.tensor([0.0])])
+        precisions = torch.cat(
+            [torch.tensor([0.0]), precisions, torch.tensor([0.0])]
+        )
         recalls = torch.cat([torch.tensor([0.0]), recalls, torch.tensor([1.0])])
         for i in range(len(precisions) - 1, 0, -1):
             precisions[i - 1] = torch.max(precisions[i - 1], precisions[i])
 
         indices = torch.where(recalls[1:] != recalls[:-1])[0]
-        ap = torch.sum((recalls[indices + 1] - recalls[indices]) * precisions[indices + 1])
+        ap = torch.sum(
+            (recalls[indices + 1] - recalls[indices]) * precisions[indices + 1]
+        )
         aps.append(ap.item())
 
     if len(aps) == 0:
