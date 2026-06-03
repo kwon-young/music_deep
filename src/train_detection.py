@@ -65,6 +65,8 @@ class TrainParams:
     var_threshold: float
     log_patches: bool
     device: torch.device
+    backbone_checkpoint: Path | None
+    freeze_backbone: bool
 
 
 def transform_image(
@@ -156,6 +158,23 @@ def train(params: TrainParams):
 
     # 1. Setup Model
     backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
+
+    if params.backbone_checkpoint and params.backbone_checkpoint.exists():
+        print(f"Loading backbone weights from {params.backbone_checkpoint}")
+        checkpoint = torch.load(
+            params.backbone_checkpoint, map_location=params.device, weights_only=True
+        )
+        backbone.load_state_dict(checkpoint["backbone"], strict=True)
+    elif params.backbone_checkpoint:
+        print(f"Warning: Checkpoint {params.backbone_checkpoint} not found. Training from scratch.")
+
+    if params.freeze_backbone:
+        print("Freezing backbone parameters (no fine-tuning).")
+        for param in backbone.parameters():
+            param.requires_grad = False
+    else:
+        print("Fine-tuning backbone parameters.")
+
     model = OMRDetector(
         backbone, num_classes=params.num_classes, num_shapes=params.num_shapes
     ).to(params.device)
@@ -299,6 +318,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Log patch count before forward pass",
     )
+    parser.add_argument(
+        "--backbone_checkpoint",
+        type=Path,
+        default=None,
+        help="Path to the pre-trained LeJEPA backbone checkpoint",
+    )
+    parser.add_argument(
+        "--freeze_backbone",
+        action="store_true",
+        help="If set, the backbone weights will be frozen and only the detection head will be trained.",
+    )
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -328,6 +358,8 @@ if __name__ == "__main__":
         var_threshold=args.var_threshold,
         log_patches=args.log_patches,
         device=device,
+        backbone_checkpoint=args.backbone_checkpoint,
+        freeze_backbone=args.freeze_backbone,
     )
 
     train(params)
