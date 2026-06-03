@@ -73,7 +73,7 @@ def transform_image(
         DetectionSample[
             PILImage[HWC, RGB, Int255],
             BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
-            ClassLabels
+            ClassLabels,
         ],
     ],
     patch_size: int,
@@ -86,18 +86,18 @@ def transform_image(
     """Preprocessing: PIL -> Numpy -> Tensor -> Crop -> Device -> Float1 -> Pad -> Normalize."""
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
-    
+
     item_cropped = det_tf.random_crop(item_t, crop_size=crop_size)
     item_gpu = det_tf.to(item_cropped, device=device)
-    
+
     item_tf = det_tf.to_float1(item_gpu)
     item_padded = det_tf.pad_to_patch_size(
         item_tf, patch_size=(patch_size, patch_size)
     )
-    
+
     # Normalize boxes using the final padded image dimensions
     item_normalized = det_tf.normalize_boxes(item_padded)
-    
+
     return item_normalized
 
 
@@ -130,7 +130,9 @@ def create_detection_iterator(
 
     # 2. Apply transformations (Crop on CPU, rest on GPU)
     transformed_gen = (
-        transform_image(item, params.patch_size, params.crop_size, params.device)
+        transform_image(
+            item, params.patch_size, params.crop_size, params.device
+        )
         for item in raw_gen
     )
 
@@ -292,7 +294,11 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--var_threshold", type=float, default=0.001)
-    parser.add_argument("--log_patches", action="store_true", help="Log patch count before forward pass")
+    parser.add_argument(
+        "--log_patches",
+        action="store_true",
+        help="Log patch count before forward pass",
+    )
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
