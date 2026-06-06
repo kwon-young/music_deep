@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from typing import Generator
 from dataclasses import dataclass
+from itertools import repeat
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
@@ -214,8 +215,9 @@ def train(params: TrainParams):
 
         # Re-initialize the generator for each epoch
         iterator = create_detection_iterator(params)
+        batch = next(iter(iterator))
 
-        for step, batch in enumerate(iterator):
+        for step, batch in enumerate(repeat(batch)):
             # Reconstruct DetectionTarget for the criterion
             targets = [
                 DetectionTarget(labels=l, boxes=b)
