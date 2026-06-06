@@ -30,5 +30,16 @@
   * Crop Size: 224x224
   * Data: A single image batch repeated infinitely (`repeat(batch)`).
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/003_single_image_overfit_patch_units --base_anchor_size 1.0`
+* **Results**: The model successfully learned to classify objects (`loss_ce` dropped to ~1.28) and the regression losses improved significantly compared to Experiment 002 (`loss_bbox` dropped to ~0.39, `loss_giou` to ~1.5). However, `mAP@0.5` remained very low (peaking around 0.16 and ending at ~0.017). Visualizations revealed that the predicted boxes perfectly hugged the short dimension (thickness) of the staff lines but failed to extend along the long dimension.
+* **Conclusion**: The Patch Units conversion successfully stabilized the gradients, allowing the network to learn local offsets. However, a mathematical bottleneck was discovered: the FGL bins are limited to `[-0.5, 0.5]` of the anchor size. With a base anchor of 1.0 patch, the maximum predicted box size is 2.0 patches. Since staff lines span the entire 14-patch width of the image, the network hit a hard mathematical wall and could not stretch the boxes enough.
+
+## Experiment 004: Single Image Overfit (Dynamic Shapes)
+* **Experiment Name/ID**: `experiments/004_single_image_overfit_dynamic_shapes`
+* **Hypothesis/Goal**: Verify that dynamically predicting the base shapes (width and height) per patch using the MLP, rather than relying on static global anchors, will allow the network to bypass the FGL expansion limits and successfully regress highly elongated bounding boxes (like staff lines), leading to a high mAP@0.5.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=16) with dynamic shape prediction in `DFINEDenseHead`.
+  * Crop Size: 224x224
+  * Data: A single image batch repeated infinitely (`repeat(batch)`).
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/004_single_image_overfit_dynamic_shapes --base_anchor_size 1.0`
 * **Results**: TBD
 * **Conclusion**: TBD
