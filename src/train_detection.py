@@ -66,6 +66,7 @@ class TrainParams:
     channels: int
     num_classes: int
     num_shapes: int
+    base_anchor_size: float
     cost_class: float
     cost_bbox: float
     cost_giou: float
@@ -198,7 +199,10 @@ def train(params: TrainParams):
         print("Fine-tuning backbone parameters.")
 
     model = OMRDetector(
-        backbone, num_classes=params.num_classes, num_shapes=params.num_shapes
+        backbone, 
+        num_classes=params.num_classes, 
+        num_shapes=params.num_shapes,
+        base_anchor_size=params.base_anchor_size,
     ).to(params.device)
 
     # 2. Setup Matcher and Criterion
@@ -342,6 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--crop_size", type=int, default=224)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
+    parser.add_argument("--base_anchor_size", type=float, default=0.0125, help="Normalized base anchor size")
 
     # Matcher costs
     parser.add_argument("--cost_class", type=float, default=2.0)
@@ -395,6 +400,7 @@ if __name__ == "__main__":
         channels=args.channels,
         num_classes=dataset.num_classes,
         num_shapes=args.num_shapes,
+        base_anchor_size=args.base_anchor_size,
         cost_class=args.cost_class,
         cost_bbox=args.cost_bbox,
         cost_giou=args.cost_giou,

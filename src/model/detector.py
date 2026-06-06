@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -105,6 +106,7 @@ class DFINEDenseHead(nn.Module):
         num_classes: int,
         num_shapes: int = 5,
         reg_max: int = 32,
+        base_anchor_size: float = 0.0125,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -117,9 +119,10 @@ class DFINEDenseHead(nn.Module):
         self.out_dim = num_shapes * self.preds_per_shape
 
         # Shared Learnable Shapes (Dynamic Anchors): [K, 2] for (width, height)
-        # Initialize to a reasonable base scale (e.g., 0.125 for normalized coords)
+        # Initialize using inverse softplus so that softplus(param) == base_anchor_size
+        init_val = math.log(math.exp(base_anchor_size) - 1)
         self.learnable_shapes = nn.Parameter(
-            torch.full((num_shapes, 2), 0.0125)
+            torch.full((num_shapes, 2), init_val)
         )
 
         # The Dense MLP applied to each patch token
@@ -184,7 +187,11 @@ class DFINEDenseHead(nn.Module):
 
 class OMRDetector(nn.Module):
     def __init__(
-        self, vit_backbone: nn.Module, num_classes: int, num_shapes: int = 5
+        self, 
+        vit_backbone: nn.Module, 
+        num_classes: int, 
+        num_shapes: int = 5,
+        base_anchor_size: float = 0.0125,
     ):
         super().__init__()
         self.backbone = vit_backbone
@@ -192,7 +199,10 @@ class OMRDetector(nn.Module):
         in_dim = self.backbone.patch_embed[1].out_features
 
         self.head = DFINEDenseHead(
-            in_dim=in_dim, num_classes=num_classes, num_shapes=num_shapes
+            in_dim=in_dim, 
+            num_classes=num_classes, 
+            num_shapes=num_shapes,
+            base_anchor_size=base_anchor_size,
         )
 
     def forward[B: Batch](
