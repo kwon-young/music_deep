@@ -3,6 +3,7 @@ from model.box_ops import box_iou
 from music_types import (
     DetectionTarget,
     DetectionOutput,
+    MatchIndices,
     BoundingBoxes,
     ClassLabels,
     Batch,
@@ -114,3 +115,32 @@ def compute_map_50(
     if len(aps) == 0:
         return 0.0
     return sum(aps) / len(aps)
+
+
+@torch.no_grad()
+def compute_mean_iou(
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
+    targets: list[
+        DetectionTarget[
+            BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+            ClassLabels[LabelShape, NumClasses],
+        ]
+    ],
+    indices: list[MatchIndices],
+) -> float:
+    """Computes the average IoU of the Hungarian-matched boxes."""
+    ious = []
+    pred_boxes = outputs.pred_boxes.data
+
+    for b, (target, match) in enumerate(zip(targets, indices)):
+        if len(match.pred_indices) == 0:
+            continue
+
+        matched_preds = pred_boxes[b][match.pred_indices]
+        matched_gts = target.boxes.data[match.target_indices]
+
+        # Compute pairwise IoU and extract the diagonal (matched pairs)
+        iou_matrix, _ = box_iou(matched_preds, matched_gts)
+        ious.append(torch.diag(iou_matrix).mean().item())
+
+    return sum(ious) / len(ious) if ious else 0.0

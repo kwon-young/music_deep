@@ -14,7 +14,7 @@ from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, iter_coco, CocoMetadata, CocoDataset
 import transform.det as det_tf
-from metric import compute_map_50
+from metric import compute_map_50, compute_mean_iou
 from visualization import update_plot, reconstruct_image_from_patches
 from logger import ExperimentLogger, BaseMetrics
 from music_types import (
@@ -53,6 +53,7 @@ class DetectionMetrics(BaseMetrics):
     loss_giou: float
     loss_fgl: float
     map50: float
+    miou: float
     speed: float
 
 
@@ -280,6 +281,7 @@ def train(params: TrainParams):
                 with torch.no_grad():
                     indices_match = matcher(outputs, targets)
                     map50 = compute_map_50(outputs, targets, params.num_classes)
+                    miou = compute_mean_iou(outputs, targets, indices_match)
 
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
@@ -293,6 +295,7 @@ def train(params: TrainParams):
                     loss_giou=losses.loss_giou.item(),
                     loss_fgl=losses.loss_fgl.item(),
                     map50=map50,
+                    miou=miou,
                     speed=speed,
                 )
                 logger.log_metrics(metrics)
@@ -302,7 +305,7 @@ def train(params: TrainParams):
                     f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
                     f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
                     f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
-                    f"mAP@0.5: {map50:.4f} | "
+                    f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
                     f"Speed: {speed:.1f} sample/s"
                 )
 

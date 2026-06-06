@@ -17,7 +17,7 @@ from model.criterion import DFINECriterion
 from dataset.yolo import load_yolo_metadata, load_sample
 import transform.det as det_tf
 from transform.det import collate
-from metric import compute_map_50
+from metric import compute_map_50, compute_mean_iou
 from visualization import update_plot
 from logger import ExperimentLogger, BaseMetrics
 from music_types import (
@@ -57,6 +57,7 @@ class SanityCheckMetrics(BaseMetrics):
     loss_giou: float
     loss_fgl: float
     map50: float
+    miou: float
 
 
 @dataclass
@@ -205,6 +206,7 @@ def train(params: TrainParams):
             with torch.no_grad():
                 indices_match = matcher(outputs, targets)
                 map50 = compute_map_50(outputs, targets, params.num_classes)
+                miou = compute_mean_iou(outputs, targets, indices_match)
 
             metrics = SanityCheckMetrics(
                 step=epoch,
@@ -215,6 +217,7 @@ def train(params: TrainParams):
                 loss_giou=losses.loss_giou.item(),
                 loss_fgl=losses.loss_fgl.item(),
                 map50=map50,
+                miou=miou,
             )
             logger.log_metrics(metrics)
 
@@ -224,7 +227,7 @@ def train(params: TrainParams):
                 f"BBox: {losses.loss_bbox.item():.4f} | "
                 f"GIoU: {losses.loss_giou.item():.4f} | "
                 f"FGL: {losses.loss_fgl.item():.4f} | "
-                f"mAP@0.5: {map50:.4f}"
+                f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f}"
             )
 
             # Update the plot dynamically using matched indices
