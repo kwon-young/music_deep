@@ -114,16 +114,9 @@ class DFINEDenseHead(nn.Module):
         self.reg_max = reg_max
         self.num_bins = reg_max + 1
 
-        # C (classes) + 2 (center offsets) + 4*N (edge bins)
-        self.preds_per_shape = num_classes + 2 + (4 * self.num_bins)
+        # C (classes) + 4 (cx, cy, w, h) + 4*N (edge bins)
+        self.preds_per_shape = num_classes + 4 + (4 * self.num_bins)
         self.out_dim = num_shapes * self.preds_per_shape
-
-        # Shared Learnable Shapes (Dynamic Anchors): [K, 2] for (width, height)
-        # Initialize using inverse softplus so that softplus(param) == base_anchor_size
-        init_val = math.log(math.exp(base_anchor_size) - 1)
-        self.learnable_shapes = nn.Parameter(
-            torch.full((num_shapes, 2), init_val)
-        )
 
         # The Dense MLP applied to each patch token
         self.mlp = nn.Sequential(
@@ -133,11 +126,16 @@ class DFINEDenseHead(nn.Module):
             nn.Linear(in_dim, self.out_dim),
         )
 
+        # Initialize the bias for the width/height predictions so they start at base_anchor_size
+        init_val = math.log(math.exp(base_anchor_size) - 1)
+        bias_view = self.mlp[-1].bias.view(num_shapes, self.preds_per_shape)
+        nn.init.constant_(bias_view[:, num_classes + 2 : num_classes + 4], init_val)
+
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
     def forward(
         self, patch_tokens: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, P, _ = patch_tokens.shape
 
         raw_preds = self.mlp(patch_tokens)
@@ -145,19 +143,19 @@ class DFINEDenseHead(nn.Module):
 
         classes = preds[..., : self.num_classes]
         center_offsets = preds[..., self.num_classes : self.num_classes + 2]
-        edge_logits = preds[..., -4 * self.num_bins :]
+        
+        # --- Dynamically predict shapes ---
+        shapes_raw = preds[..., self.num_classes + 2 : self.num_classes + 4]
+        shapes = F.softplus(shapes_raw) # Ensure strictly positive
+        w_k, h_k = shapes[..., 0], shapes[..., 1]
+        # ---------------------------------------
 
+        edge_logits = preds[..., -4 * self.num_bins :]
         edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
         edge_probs = F.softmax(edge_logits, dim=-1)
 
         # Shape: (B, P, K, 4) - Residuals in range [-a, a]
         relative_edge_offsets = self.weighting_fn(edge_probs)
-
-        # Constrain shapes to be strictly positive
-        shapes = F.softplus(self.learnable_shapes).view(
-            1, 1, self.num_shapes, 2
-        )
-        w_k, h_k = shapes[..., 0], shapes[..., 1]
 
         # 1. Scale residuals by anchor dimensions
         L_res = relative_edge_offsets[..., 0] * w_k
@@ -182,7 +180,7 @@ class DFINEDenseHead(nn.Module):
 
         boxes = torch.stack([x1, y1, x2, y2], dim=-1)
 
-        return classes, center_offsets, boxes, edge_logits
+        return classes, center_offsets, shapes, boxes, edge_logits
 
 
 class OMRDetector(nn.Module):
@@ -219,11 +217,11 @@ class OMRDetector(nn.Module):
 
         # Pass the actual tensor data to the dense head
         patch_tokens = features.data
-        classes, center_offsets, boxes, edge_logits = self.head(patch_tokens)
+        classes, center_offsets, shapes, boxes, edge_logits = self.head(patch_tokens)
 
         B, P, K, _ = boxes.shape
 
-        # --- NEW: Scale from Patch Units to Image Units [0, 1] ---
+        # --- Scale from Patch Units to Image Units [0, 1] ---
         _, h, w = features.image_shape
         ph, pw = features.patch_size
         grid_h, grid_w = h // ph, w // pw
@@ -236,6 +234,9 @@ class OMRDetector(nn.Module):
         
         scale_xyxy = scale_xy.repeat(1, 1, 1, 2)
         boxes = boxes * scale_xyxy
+        
+        # Scale dynamic shapes to Image Units for the FGL loss
+        expanded_shapes = shapes * scale_xy
         # ---------------------------------------------------------
 
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
@@ -249,15 +250,6 @@ class OMRDetector(nn.Module):
         boxes[..., 1] += patch_centers_expanded[..., 1]  # y1
         boxes[..., 2] += patch_centers_expanded[..., 0]  # x2
         boxes[..., 3] += patch_centers_expanded[..., 1]  # y2
-
-        # Expand learnable shapes to match (B, P, K, 2)
-        # Apply softplus here as well to ensure consistency with the head
-        raw_shapes = F.softplus(self.head.learnable_shapes)
-        expanded_shapes = raw_shapes.view(1, 1, K, 2).expand(B, P, K, 2)
-
-        # --- NEW: Scale shapes to Image Units for the FGL loss ---
-        expanded_shapes = expanded_shapes * scale_xy
-        # ---------------------------------------------------------
 
         # Flatten P and K dimensions into a single "num_queries" dimension
         # and return the dataclass expected by the criterion
