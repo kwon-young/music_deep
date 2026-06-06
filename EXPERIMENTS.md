@@ -19,5 +19,16 @@
   * Crop Size: 224x224
   * Data: A single image batch repeated infinitely (`repeat(batch)`).
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/002_single_image_overfit_fixed_anchors --base_anchor_size 0.0125`
+* **Results**: The model successfully learned to classify objects (`loss_ce` dropped from ~4694 to ~1.28), but bounding box regression completely stalled. `loss_bbox` and `loss_giou` remained stuck around 2.7-2.9, and `mAP@0.5` stayed flat at 0.0000.
+* **Conclusion**: Fixing the initialization revealed a deeper numerical instability. Because the network was predicting in Image Units (IU), it struggled to output the microscopic values needed to adjust the tiny 1.25% anchors. Furthermore, the FGL target residuals became massive and were heavily clamped to the extreme edge bins, providing poor learning signals. The network needs to operate in a normalized reference frame (Patch Units) to maintain healthy gradients.
+
+## Experiment 003: Single Image Overfit (Patch Units)
+* **Experiment Name/ID**: `experiments/003_single_image_overfit_patch_units`
+* **Hypothesis/Goal**: Verify that predicting bounding box coordinates and shapes in Patch Units (PU) instead of Image Units (IU) resolves the numerical instability, allowing the model to successfully regress bounding boxes and achieve a high mAP@0.5.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=16)
+  * Crop Size: 224x224
+  * Data: A single image batch repeated infinitely (`repeat(batch)`).
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/003_single_image_overfit_patch_units --base_anchor_size 1.0`
 * **Results**: TBD
 * **Conclusion**: TBD
