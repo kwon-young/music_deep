@@ -346,7 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--crop_size", type=int, default=224)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
-    parser.add_argument("--base_anchor_size", type=float, default=0.0125, help="Normalized base anchor size")
+    parser.add_argument("--base_anchor_size", type=float, default=1.0, help="Base anchor size in Patch Units")
 
     # Matcher costs
     parser.add_argument("--cost_class", type=float, default=2.0)

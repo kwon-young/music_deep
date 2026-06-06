@@ -106,7 +106,7 @@ class DFINEDenseHead(nn.Module):
         num_classes: int,
         num_shapes: int = 5,
         reg_max: int = 32,
-        base_anchor_size: float = 0.0125,
+        base_anchor_size: float = 1.0,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -191,7 +191,7 @@ class OMRDetector(nn.Module):
         vit_backbone: nn.Module, 
         num_classes: int, 
         num_shapes: int = 5,
-        base_anchor_size: float = 0.0125,
+        base_anchor_size: float = 1.0,
     ):
         super().__init__()
         self.backbone = vit_backbone
@@ -223,6 +223,21 @@ class OMRDetector(nn.Module):
 
         B, P, K, _ = boxes.shape
 
+        # --- NEW: Scale from Patch Units to Image Units [0, 1] ---
+        _, h, w = features.image_shape
+        ph, pw = features.patch_size
+        grid_h, grid_w = h // ph, w // pw
+        
+        scale_xy = torch.tensor(
+            [1.0 / grid_w, 1.0 / grid_h], dtype=boxes.dtype, device=boxes.device
+        ).view(1, 1, 1, 2)
+        
+        center_offsets = center_offsets * scale_xy
+        
+        scale_xyxy = scale_xy.repeat(1, 1, 1, 2)
+        boxes = boxes * scale_xyxy
+        # ---------------------------------------------------------
+
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
         patch_centers_expanded = patch_centers.unsqueeze(2)
 
@@ -239,6 +254,10 @@ class OMRDetector(nn.Module):
         # Apply softplus here as well to ensure consistency with the head
         raw_shapes = F.softplus(self.head.learnable_shapes)
         expanded_shapes = raw_shapes.view(1, 1, K, 2).expand(B, P, K, 2)
+
+        # --- NEW: Scale shapes to Image Units for the FGL loss ---
+        expanded_shapes = expanded_shapes * scale_xy
+        # ---------------------------------------------------------
 
         # Flatten P and K dimensions into a single "num_queries" dimension
         # and return the dataclass expected by the criterion
