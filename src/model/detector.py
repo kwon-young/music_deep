@@ -118,7 +118,9 @@ class DFINEDenseHead(nn.Module):
 
         # Shared Learnable Shapes (Dynamic Anchors): [K, 2] for (width, height)
         # Initialize to a reasonable base scale (e.g., 0.125 for normalized coords)
-        self.learnable_shapes = nn.Parameter(torch.full((num_shapes, 2), 0.0125))
+        self.learnable_shapes = nn.Parameter(
+            torch.full((num_shapes, 2), 0.0125)
+        )
 
         # The Dense MLP applied to each patch token
         self.mlp = nn.Sequential(

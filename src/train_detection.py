@@ -171,7 +171,7 @@ def create_detection_iterator(
 
 def train(params: TrainParams):
     print(f"Using device: {params.device}")
-    
+
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
     # 1. Setup Model
@@ -180,11 +180,15 @@ def train(params: TrainParams):
     if params.backbone_checkpoint and params.backbone_checkpoint.exists():
         print(f"Loading backbone weights from {params.backbone_checkpoint}")
         checkpoint = torch.load(
-            params.backbone_checkpoint, map_location=params.device, weights_only=True
+            params.backbone_checkpoint,
+            map_location=params.device,
+            weights_only=True,
         )
         backbone.load_state_dict(checkpoint["backbone"], strict=True)
     elif params.backbone_checkpoint:
-        print(f"Warning: Checkpoint {params.backbone_checkpoint} not found. Training from scratch.")
+        print(
+            f"Warning: Checkpoint {params.backbone_checkpoint} not found. Training from scratch."
+        )
 
     if params.freeze_backbone:
         print("Freezing backbone parameters (no fine-tuning).")
@@ -275,7 +279,7 @@ def train(params: TrainParams):
 
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
-                
+
                 metrics = DetectionMetrics(
                     step=global_step,
                     epoch=epoch,
@@ -285,10 +289,10 @@ def train(params: TrainParams):
                     loss_giou=losses.loss_giou.item(),
                     loss_fgl=losses.loss_fgl.item(),
                     map50=map50,
-                    speed=speed
+                    speed=speed,
                 )
                 logger.log_metrics(metrics)
-                
+
                 print(
                     f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
                     f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
@@ -308,10 +312,13 @@ def train(params: TrainParams):
                     epoch,
                     indices=indices_match,
                 )
-                
-                vis_path = logger.get_visualizations_dir() / f"epoch_{epoch:03d}_step_{step:05d}.png"
+
+                vis_path = (
+                    logger.get_visualizations_dir()
+                    / f"epoch_{epoch:03d}_step_{step:05d}.png"
+                )
                 plt.savefig(vis_path, dpi=150)
-                
+
                 fig.canvas.draw()
                 fig.canvas.flush_events()
                 plt.pause(0.001)
@@ -332,7 +339,7 @@ if __name__ == "__main__":
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
     parser.add_argument("--patch_size", type=int, default=16)
-    parser.add_argument("--crop_size", type=int, default=4160)
+    parser.add_argument("--crop_size", type=int, default=224)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
 
@@ -368,7 +375,9 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, the backbone weights will be frozen and only the detection head will be trained.",
     )
-    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument(
+        "--exp_dir", type=Path, default=Path("experiments/default_exp")
+    )
     parser.add_argument("--stage_name", type=str, default="train_detection")
 
     args = parser.parse_args()

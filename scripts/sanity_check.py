@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from dataclasses import dataclass
 import sys
+
 sys.path.append("src")
 
 from model.vit import vit_nano
@@ -98,7 +99,7 @@ def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
 def train(params: TrainParams):
     device = params.device
     print(f"Using device: {device}")
-    
+
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
     # 1. Setup Model (using vit_nano for speed)
@@ -200,7 +201,7 @@ def train(params: TrainParams):
             with torch.no_grad():
                 indices_match = matcher(outputs, targets)
                 map50 = compute_map_50(outputs, targets, params.num_classes)
-                
+
             metrics = SanityCheckMetrics(
                 step=epoch,
                 epoch=epoch,
@@ -209,7 +210,7 @@ def train(params: TrainParams):
                 loss_bbox=losses.loss_bbox.item(),
                 loss_giou=losses.loss_giou.item(),
                 loss_fgl=losses.loss_fgl.item(),
-                map50=map50
+                map50=map50,
             )
             logger.log_metrics(metrics)
 
@@ -293,7 +294,9 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=3001)
     parser.add_argument("--log_interval", type=int, default=50)
     parser.add_argument("--conf_thresh", type=float, default=0.5)
-    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument(
+        "--exp_dir", type=Path, default=Path("experiments/default_exp")
+    )
     parser.add_argument("--stage_name", type=str, default="sanity_check")
 
     args = parser.parse_args()
