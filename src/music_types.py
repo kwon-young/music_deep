@@ -1,4 +1,4 @@
-from typing import Literal, Any
+from typing import Literal
 from dataclasses import dataclass
 from PIL import Image as Image_
 import numpy as np

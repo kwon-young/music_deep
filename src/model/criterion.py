@@ -239,14 +239,19 @@ class DFINECriterion(nn.Module):
         # 4. Pre-extract matched predictions for box and fgl losses
         matched_outputs = MatchedOutputs(
             boxes=outputs.pred_boxes.data[flat_idx.batch, flat_idx.src],
-            edge_logits=outputs.pred_edge_logits.data[flat_idx.batch, flat_idx.src],
+            edge_logits=outputs.pred_edge_logits.data[
+                flat_idx.batch, flat_idx.src
+            ],
             centers=outputs.absolute_centers.data[flat_idx.batch, flat_idx.src],
             shapes=outputs.learnable_shapes.data[flat_idx.batch, flat_idx.src],
         )
 
         # 5. Compute all raw losses
         raw_loss_ce = self.loss_labels(
-            outputs.pred_logits.data, flat_idx, matched_targets.labels, num_boxes
+            outputs.pred_logits.data,
+            flat_idx,
+            matched_targets.labels,
+            num_boxes,
         )
         raw_loss_bbox, raw_loss_giou = self.loss_boxes(
             matched_outputs.boxes, matched_targets.boxes, num_boxes

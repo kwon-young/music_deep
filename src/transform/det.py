@@ -99,8 +99,7 @@ def to[I: TensorImage, B: BoundingBoxes, L: ClassLabels](
 
 @transform
 def to_patches[E: Patches, Bx: BoundingBoxes, Lbl: ClassLabels](
-    sample: DetectionSample[E, list[Bx], list[Lbl]], 
-    device: torch.device
+    sample: DetectionSample[E, list[Bx], list[Lbl]], device: torch.device
 ) -> DetectionSample[E, list[Bx], list[Lbl]]:
     """Specialized device move for batched patches and lists of boxes/labels."""
     boxes = [to_device(b, device) for b in sample.boxes]
@@ -181,7 +180,7 @@ def normalize_boxes[
         I,
         BoundingBoxes[tuple[B, D], XYXY, Absolute, O],
         Lbl,
-    ]
+    ],
 ) -> DetectionSample[
     I,
     BoundingBoxes[tuple[B, D], XYXY, Float1, O],
@@ -235,9 +234,7 @@ def variance_patch_drop[I: Patches, B, L](
     sample: DetectionSample[I, B, L],
     var_threshold: float,
 ) -> DetectionSample[I, B, L]:
-    ids_keep = variance_patch_drop_indices(
-        sample.image.data, var_threshold
-    )
+    ids_keep = variance_patch_drop_indices(sample.image.data, var_threshold)
 
     new_img_base = patch_drop_img(sample.image, ids_keep)
 

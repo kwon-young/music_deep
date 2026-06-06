@@ -50,9 +50,12 @@ class CocoDataset:
 def parse_coco(anno_path: Path) -> CocoDataset:
     """Parses the COCO JSON, builds class mappings, and caches the result."""
     cache_path = anno_path.with_suffix(".pkl")
-    
+
     # Load from cache if it exists and is newer than the JSON file
-    if cache_path.exists() and cache_path.stat().st_mtime > anno_path.stat().st_mtime:
+    if (
+        cache_path.exists()
+        and cache_path.stat().st_mtime > anno_path.stat().st_mtime
+    ):
         print(f"Loading cached COCO dataset from {cache_path}")
         with open(cache_path, "rb") as f:
             return pickle.load(f)
@@ -81,8 +84,7 @@ def parse_coco(anno_path: Path) -> CocoDataset:
     for ann in coco_data["annotations"]:
         img_id = ann["image_id"]
         parsed_ann = CocoParsedAnnotation(
-            bbox=ann["bbox"],
-            category_id=ann["category_id"]
+            bbox=ann["bbox"], category_id=ann["category_id"]
         )
         annotations.setdefault(img_id, []).append(parsed_ann)
 

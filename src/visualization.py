@@ -17,7 +17,7 @@ from music_types import (
 
 
 def reconstruct_image_from_patches[B: Batch, N: NumPatches, P: PatchDim](
-    patches_obj: Patches[B, N, P]
+    patches_obj: Patches[B, N, P],
 ) -> torch.Tensor:
     """Reconstructs the image tensor from patches, leaving dropped patches as zeros."""
     b, n, d = patches_obj.data.shape
@@ -34,8 +34,12 @@ def reconstruct_image_from_patches[B: Batch, N: NumPatches, P: PatchDim](
             px = patch_idx % grid_w
 
             # View as (ph, pw, c) then permute to (c, ph, pw) to avoid color mixing
-            patch_data = patches_obj.data[batch_idx, i].view(ph, pw, c).permute(2, 0, 1)
-            img[batch_idx, :, py * ph : (py + 1) * ph, px * pw : (px + 1) * pw] = patch_data
+            patch_data = (
+                patches_obj.data[batch_idx, i].view(ph, pw, c).permute(2, 0, 1)
+            )
+            img[
+                batch_idx, :, py * ph : (py + 1) * ph, px * pw : (px + 1) * pw
+            ] = patch_data
 
     return img
 
@@ -126,7 +130,7 @@ def update_plot(
             facecolor="none",
             linestyle="--",
         )
-        # ax.add_patch(rect)
+        ax.add_patch(rect)
         # Add Pred label and confidence text
         # ax.text(
         #     x1,

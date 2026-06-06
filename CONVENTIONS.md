@@ -12,6 +12,10 @@
     - latest pillow for image loading
 - no other dependencies are allowed
 - everything should be thoroughly type checked using the latest type hint expressions
+    - this repo is an experiment on how far I can push the type checker to fit my domain
+    - therefore, when hitting a problem, the solution I want is **never** a `type: ignore` but a proper solution
+    - when something cannot be express with the current state of python type hinting, I will always prefer solutions that will specialize types over solution that will loose type hints accuracy
+    - never use `Any`, always specify the most constraining types
 - commands should be run using mamba in the pytorch environment: `mamba run -n pytorch python ...`
 - no multiprocessing allowed, everything should be done through threads
 - no pytorch Dataset or DataLoader allowed, everything should be done through standard python iterator/generator + Thread + Queue

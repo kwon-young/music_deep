@@ -39,7 +39,7 @@ def get_2d_patch_centers(grid_h: int, grid_w: int, device: str) -> torch.Tensor:
 
 
 def compute_centers(
-    embeddings: Embeddings[Batch, NumPatches, EmbedDim]
+    embeddings: Embeddings[Batch, NumPatches, EmbedDim],
 ) -> torch.Tensor:
     """
     Computes and gathers normalized (x, y) centers for the given patches.
@@ -118,7 +118,7 @@ class DFINEDenseHead(nn.Module):
 
         # Shared Learnable Shapes (Dynamic Anchors): [K, 2] for (width, height)
         # Initialize to a reasonable base scale (e.g., 0.125 for normalized coords)
-        self.learnable_shapes = nn.Parameter(torch.full((num_shapes, 2), 0.125))
+        self.learnable_shapes = nn.Parameter(torch.full((num_shapes, 2), 0.0125))
 
         # The Dense MLP applied to each patch token
         self.mlp = nn.Sequential(
@@ -193,10 +193,10 @@ class OMRDetector(nn.Module):
             in_dim=in_dim, num_classes=num_classes, num_shapes=num_shapes
         )
 
-    def forward(
+    def forward[B: Batch](
         self,
-        patches: Patches[Batch, NumPatches, PatchDim],
-    ) -> DetectionOutput[Batch, NumQueries, BoxDim, CoordDim]:
+        patches: Patches[B, NumPatches, PatchDim],
+    ) -> DetectionOutput[B, NumQueries, BoxDim, CoordDim]:
         """
         Returns a DetectionOutput ready for DFINECriterion.
         """
