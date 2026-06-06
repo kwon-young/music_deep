@@ -23,6 +23,7 @@ from dataset.imslp import (
     load_image,
     Metadata,
 )
+from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     CHW,
     Batch,
@@ -40,6 +41,15 @@ from music_types import (
     FlatViewPatches,
     SSLSample,
 )
+
+
+@dataclass
+class LeJEPAMetrics(BaseMetrics):
+    epoch: int
+    loss_total: float
+    loss_sigreg: float
+    loss_inv: float
+    speed: float
 
 
 @dataclass
@@ -69,7 +79,8 @@ class TrainParams:
     log_interval: int
     checkpoint_window_size: int
     device: torch.device
-    checkpoint_dir: Path
+    exp_dir: Path
+    stage_name: str
 
 
 def transform_image(
@@ -147,6 +158,8 @@ def transform_batch[Meta, V: View](
 
 
 def train(params: TrainParams):
+    logger = ExperimentLogger(params.exp_dir, params.stage_name)
+    
     backbone = ViewViT(
         patch_size=params.patch_size,
         dim=params.dim,
@@ -171,13 +184,13 @@ def train(params: TrainParams):
         weight_decay=params.weight_decay,
     )
 
-    params.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     best_loss = float("inf")
 
     running_loss = None
     samples = 0
     checkpoint_number = 0
     start_time = time.time()
+    global_step = 0
 
     for epoch in range(params.epochs):
         backbone.train()
@@ -190,6 +203,7 @@ def train(params: TrainParams):
         )
 
         for step, batch in enumerate(iterator):
+            global_step += 1
             N = len(batch.metadata)
 
             emb = backbone(batch.sample.image)
@@ -217,6 +231,17 @@ def train(params: TrainParams):
             if step % params.log_interval == 0:
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
+                
+                metrics = LeJEPAMetrics(
+                    step=global_step,
+                    epoch=epoch,
+                    loss_total=loss.item(),
+                    loss_sigreg=sigreg_loss.item(),
+                    loss_inv=inv_loss.item(),
+                    speed=speed
+                )
+                logger.log_metrics(metrics)
+                
                 print(
                     f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
                     f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
@@ -243,7 +268,7 @@ def train(params: TrainParams):
 
                     torch.save(
                         checkpoint,
-                        params.checkpoint_dir / "best_model.pt",
+                        logger.get_checkpoint_dir() / "best_model.pt",
                     )
                     print(f"Saved new best model with loss {best_loss:.4f}")
 
@@ -278,9 +303,8 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0.05)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--checkpoint_window_size", type=int, default=10000)
-    parser.add_argument(
-        "--checkpoint_dir", type=Path, default=Path("data/train_lejepa/")
-    )
+    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument("--stage_name", type=str, default="pretrain_lejepa")
 
     args = parser.parse_args()
 
@@ -312,7 +336,8 @@ if __name__ == "__main__":
         log_interval=args.log_interval,
         checkpoint_window_size=args.checkpoint_window_size,
         device=device,
-        checkpoint_dir=args.checkpoint_dir,
+        exp_dir=args.exp_dir,
+        stage_name=args.stage_name,
     )
 
     train(params)

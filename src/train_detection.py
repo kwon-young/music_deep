@@ -16,6 +16,7 @@ from dataset.coco import parse_coco, iter_coco, CocoMetadata, CocoDataset
 import transform.det as det_tf
 from metric import compute_map_50
 from visualization import update_plot, reconstruct_image_from_patches
+from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     DetectionTarget,
     DetectionLossWeights,
@@ -44,6 +45,18 @@ from music_types import (
 
 
 @dataclass
+class DetectionMetrics(BaseMetrics):
+    epoch: int
+    loss_total: float
+    loss_ce: float
+    loss_bbox: float
+    loss_giou: float
+    loss_fgl: float
+    map50: float
+    speed: float
+
+
+@dataclass
 class TrainParams:
     anno_path: Path
     img_dir: Path
@@ -68,6 +81,8 @@ class TrainParams:
     device: torch.device
     backbone_checkpoint: Path | None
     freeze_backbone: bool
+    exp_dir: Path
+    stage_name: str
 
 
 def transform_image(
@@ -156,6 +171,8 @@ def create_detection_iterator(
 
 def train(params: TrainParams):
     print(f"Using device: {params.device}")
+    
+    logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
     # 1. Setup Model
     backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
@@ -209,6 +226,7 @@ def train(params: TrainParams):
     start_time = time.time()
     samples = 0
     running_loss = None
+    global_step = 0
 
     for epoch in range(params.epochs):
         model.train()
@@ -218,6 +236,7 @@ def train(params: TrainParams):
         batch = next(iter(iterator))
 
         for step, batch in enumerate(repeat(batch)):
+            global_step += 1
             # Reconstruct DetectionTarget for the criterion
             targets = [
                 DetectionTarget(labels=l, boxes=b)
@@ -256,6 +275,20 @@ def train(params: TrainParams):
 
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
+                
+                metrics = DetectionMetrics(
+                    step=global_step,
+                    epoch=epoch,
+                    loss_total=total_loss.item(),
+                    loss_ce=losses.loss_ce.item(),
+                    loss_bbox=losses.loss_bbox.item(),
+                    loss_giou=losses.loss_giou.item(),
+                    loss_fgl=losses.loss_fgl.item(),
+                    map50=map50,
+                    speed=speed
+                )
+                logger.log_metrics(metrics)
+                
                 print(
                     f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
                     f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
@@ -275,6 +308,10 @@ def train(params: TrainParams):
                     epoch,
                     indices=indices_match,
                 )
+                
+                vis_path = logger.get_visualizations_dir() / f"epoch_{epoch:03d}_step_{step:05d}.png"
+                plt.savefig(vis_path, dpi=150)
+                
                 fig.canvas.draw()
                 fig.canvas.flush_events()
                 plt.pause(0.001)
@@ -331,6 +368,8 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, the backbone weights will be frozen and only the detection head will be trained.",
     )
+    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument("--stage_name", type=str, default="train_detection")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -362,6 +401,8 @@ if __name__ == "__main__":
         device=device,
         backbone_checkpoint=args.backbone_checkpoint,
         freeze_backbone=args.freeze_backbone,
+        exp_dir=args.exp_dir,
+        stage_name=args.stage_name,
     )
 
     train(params)

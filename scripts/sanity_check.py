@@ -6,6 +6,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from dataclasses import dataclass
+import sys
+sys.path.append("src")
 
 from model.vit import vit_nano
 from model.detector import OMRDetector
@@ -16,6 +18,7 @@ import transform.det as det_tf
 from transform.det import collate
 from metric import compute_map_50
 from visualization import update_plot
+from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -45,6 +48,17 @@ from music_types import (
 
 
 @dataclass
+class SanityCheckMetrics(BaseMetrics):
+    epoch: int
+    loss_total: float
+    loss_ce: float
+    loss_bbox: float
+    loss_giou: float
+    loss_fgl: float
+    map50: float
+
+
+@dataclass
 class TrainParams:
     img_dir: Path
     lbl_dir: Path
@@ -66,6 +80,8 @@ class TrainParams:
     log_interval: int
     conf_thresh: float
     device: torch.device
+    exp_dir: Path
+    stage_name: str
 
 
 def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
@@ -82,6 +98,8 @@ def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
 def train(params: TrainParams):
     device = params.device
     print(f"Using device: {device}")
+    
+    logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
     # 1. Setup Model (using vit_nano for speed)
     backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
@@ -182,6 +200,18 @@ def train(params: TrainParams):
             with torch.no_grad():
                 indices_match = matcher(outputs, targets)
                 map50 = compute_map_50(outputs, targets, params.num_classes)
+                
+            metrics = SanityCheckMetrics(
+                step=epoch,
+                epoch=epoch,
+                loss_total=total_loss.item(),
+                loss_ce=losses.loss_ce.item(),
+                loss_bbox=losses.loss_bbox.item(),
+                loss_giou=losses.loss_giou.item(),
+                loss_fgl=losses.loss_fgl.item(),
+                map50=map50
+            )
+            logger.log_metrics(metrics)
 
             print(
                 f"Epoch {epoch:03d} | Total Loss: {total_loss.item():.4f} | "
@@ -224,8 +254,9 @@ def train(params: TrainParams):
             indices=None,
         )
 
-    plt.savefig("sanity_check_output.png", dpi=150)
-    print("Final visualization saved to sanity_check_output.png")
+    vis_path = logger.get_visualizations_dir() / "sanity_check_output.png"
+    plt.savefig(vis_path, dpi=150)
+    print(f"Final visualization saved to {vis_path}")
     plt.show()
 
 
@@ -262,6 +293,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=3001)
     parser.add_argument("--log_interval", type=int, default=50)
     parser.add_argument("--conf_thresh", type=float, default=0.5)
+    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument("--stage_name", type=str, default="sanity_check")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -287,6 +320,8 @@ if __name__ == "__main__":
         log_interval=args.log_interval,
         conf_thresh=args.conf_thresh,
         device=device,
+        exp_dir=args.exp_dir,
+        stage_name=args.stage_name,
     )
 
     train(params)

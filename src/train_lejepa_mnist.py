@@ -22,7 +22,17 @@ import transform.ssl as ssl_tf
 from dataset.mnist import load_mnist, load_image, MNISTMetadata
 from dataset.imslp import Data
 from dataset.imslp import TensorImage, VCHW, RGB, Float1
+from logger import ExperimentLogger, BaseMetrics
 from music_types import FlatViewEmbeddings, BatchedData, SSLSample
+
+
+@dataclass
+class LeJEPAMNISTMetrics(BaseMetrics):
+    epoch: int
+    loss_ssl: float
+    loss_probe: float
+    probe_acc: float
+    speed: float
 
 
 @dataclass
@@ -50,6 +60,8 @@ class TrainParams:
     weight_decay: float
     log_interval: int
     device: torch.device
+    exp_dir: Path
+    stage_name: str
 
 
 def transform_image(
@@ -106,6 +118,8 @@ def create_lejepa_mnist_iterator(
 
 
 def train(params: TrainParams):
+    logger = ExperimentLogger(params.exp_dir, params.stage_name)
+    
     backbone = ViewViT(
         patch_size=params.patch_size,
         dim=params.dim,
@@ -141,6 +155,7 @@ def train(params: TrainParams):
     running_acc: float | None = None
     samples = 0
     start_time = time.time()
+    global_step = 0
 
     for epoch in range(params.epochs):
         backbone.train()
@@ -153,6 +168,7 @@ def train(params: TrainParams):
         )
 
         for step, batch in enumerate(iterator):
+            global_step += 1
             N = len(batch.metadata)
             V = params.n_views
 
@@ -210,6 +226,17 @@ def train(params: TrainParams):
             if step % params.log_interval == 0:
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
+                
+                metrics = LeJEPAMNISTMetrics(
+                    step=global_step,
+                    epoch=epoch,
+                    loss_ssl=ssl_loss.item(),
+                    loss_probe=probe_loss.item(),
+                    probe_acc=acc,
+                    speed=speed
+                )
+                logger.log_metrics(metrics)
+                
                 print(
                     f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
                     f"SSL Loss: {ssl_loss.item():.4f} (Run: {running_loss_ssl:.4f}) | "
@@ -247,6 +274,8 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=0.04)
     parser.add_argument("--log_interval", type=int, default=50)
+    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument("--stage_name", type=str, default="pretrain_lejepa_mnist")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -275,6 +304,8 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         log_interval=args.log_interval,
         device=device,
+        exp_dir=args.exp_dir,
+        stage_name=args.stage_name,
     )
 
     train(params)
