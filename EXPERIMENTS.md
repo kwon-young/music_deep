@@ -63,5 +63,16 @@
   * Crop Size: 896x896
   * Data: A single image batch repeated infinitely (`repeat(batch)`).
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/006_single_image_overfit_scale_896 --crop_size 896 --base_anchor_size 1.0`
+* **Results**: The model successfully overfit the 896x896 image, though it struggled slightly with ties, the middle of a barline, and a cut bargroup. VRAM usage was extremely low (~650MB) due to variance-based patch dropping, which dropped ~85-90% of patches, reducing self-attention memory by ~97.7%. Convergence was noticeably slower than previous experiments.
+* **Conclusion**: The architecture scales exceptionally well in terms of memory thanks to patch dropping. The slower convergence is due to the effective batch size increasing (more ground truth boxes per crop), which dilutes the gradient per box. This necessitates scaling the learning rate linearly with the crop area.
+
+## Experiment 007: Single Image Overfit (Scale Up - 1792x1792)
+* **Experiment Name/ID**: `experiments/007_single_image_overfit_scale_1792`
+* **Hypothesis/Goal**: Verify that the model can scale to 1792x1792. Test the new `base_lr` scaling rule to see if it restores the convergence speed observed at smaller crop sizes by dynamically adjusting the learning rate based on the crop area.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=16)
+  * Crop Size: 1792x1792
+  * Data: A single image batch repeated infinitely (`repeat(batch)`).
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/007_single_image_overfit_scale_1792 --crop_size 1792 --base_anchor_size 1.0 --base_lr 1e-4`
 * **Results**: TBD
 * **Conclusion**: TBD

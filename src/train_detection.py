@@ -173,6 +173,7 @@ def create_detection_iterator(
 
 def train(params: TrainParams):
     print(f"Using device: {params.device}")
+    print(f"Effective Learning Rate: {params.lr:.2e}")
 
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
@@ -363,7 +364,7 @@ if __name__ == "__main__":
     parser.add_argument("--loss_fgl", type=float, default=0.15)
 
     # Training params
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--base_lr", type=float, default=1e-4, help="Base LR for a 224x224 crop")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--var_threshold", type=float, default=0.001)
@@ -394,6 +395,10 @@ if __name__ == "__main__":
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path)
 
+    # Scale LR by the area ratio compared to a 224x224 baseline
+    area_ratio = (args.crop_size / 224.0) ** 2
+    actual_lr = args.base_lr * area_ratio
+
     params = TrainParams(
         anno_path=args.anno_path,
         img_dir=args.img_dir,
@@ -411,7 +416,7 @@ if __name__ == "__main__":
         loss_bbox=args.loss_bbox,
         loss_giou=args.loss_giou,
         loss_fgl=args.loss_fgl,
-        lr=args.lr,
+        lr=actual_lr,
         epochs=args.epochs,
         log_interval=args.log_interval,
         var_threshold=args.var_threshold,
