@@ -1,5 +1,6 @@
 import argparse
 import time
+import math
 from pathlib import Path
 from typing import Generator
 from dataclasses import dataclass
@@ -173,7 +174,7 @@ def create_detection_iterator(
 
 def train(params: TrainParams):
     print(f"Using device: {params.device}")
-    print(f"Effective Learning Rate: {params.lr:.2e}")
+    print(f"Base Learning Rate: {params.lr:.2e}")
 
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
@@ -238,98 +239,135 @@ def train(params: TrainParams):
     running_loss = None
     global_step = 0
 
-    for epoch in range(params.epochs):
-        model.train()
+    dataset_symbols = sum(len(anns) for anns in params.dataset.annotations.values())
+    print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
 
-        # Re-initialize the generator for each epoch
-        iterator = create_detection_iterator(params)
-        batch = next(iter(iterator))
+    model.train()
+    iterator = create_detection_iterator(params)
+    batch = next(iter(iterator))
 
-        for step, batch in enumerate(repeat(batch)):
-            global_step += 1
-            # Reconstruct DetectionTarget for the criterion
-            targets = [
-                DetectionTarget(labels=l, boxes=b)
-                for b, l in zip(batch.sample.boxes, batch.sample.labels)
-            ]
+    # Since we are overfitting a single batch, we define the budget based on the batch
+    symbols_in_batch = sum(len(l) for l in batch.sample.labels)
+    total_symbol_budget = symbols_in_batch * params.epochs
+    print(f"Overfitting single batch with {symbols_in_batch} symbols.")
+    print(f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}")
 
-            optimizer.zero_grad()
+    cumulative_symbols = 0
+    step = 0
 
-            # Forward pass
-            outputs = model(batch.sample.image)
+    for batch in repeat(batch):
+        if cumulative_symbols >= total_symbol_budget:
+            print("Symbol budget reached. Training complete.")
+            break
 
-            # Compute loss
-            losses = criterion(outputs, targets)
-            total_loss = (
-                losses.loss_ce
-                + losses.loss_bbox
-                + losses.loss_giou
-                + losses.loss_fgl
+        global_step += 1
+        current_epoch = cumulative_symbols // symbols_in_batch
+
+        # Reconstruct DetectionTarget for the criterion
+        targets = [
+            DetectionTarget(labels=l, boxes=b)
+            for b, l in zip(batch.sample.boxes, batch.sample.labels)
+        ]
+
+        optimizer.zero_grad()
+
+        # Forward pass
+        outputs = model(batch.sample.image)
+
+        # Compute loss
+        losses = criterion(outputs, targets)
+        total_loss = (
+            losses.loss_ce
+            + losses.loss_bbox
+            + losses.loss_giou
+            + losses.loss_fgl
+        )
+
+        # Backward pass
+        total_loss.backward()
+
+        # --- Symbol Budget LR Scheduler ---
+        current_batch_symbols = sum(len(l) for l in batch.sample.labels)
+        cumulative_symbols += current_batch_symbols
+        progress = min(1.0, cumulative_symbols / total_symbol_budget)
+
+        warmup_ratio = 0.05
+        if progress < warmup_ratio:
+            # Linear Warmup (prevent exactly 0 LR at step 0)
+            current_lr = params.lr * max(1e-4, (progress / warmup_ratio))
+        else:
+            # Cosine Decay
+            cosine_progress = (progress - warmup_ratio) / (1.0 - warmup_ratio)
+            current_lr = params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
+
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = current_lr
+        # ----------------------------------
+
+        optimizer.step()
+
+        # Update metrics
+        samples += 1
+        if running_loss is None:
+            running_loss = total_loss.item()
+        else:
+            running_loss = 0.99 * running_loss + 0.01 * total_loss.item()
+
+        if step % params.log_interval == 0:
+            with torch.no_grad():
+                indices_match = matcher(outputs, targets)
+                map50 = compute_map_50(outputs, targets, params.num_classes)
+                miou = compute_mean_iou(outputs, targets, indices_match)
+
+            elapsed = time.time() - start_time
+            speed = samples / elapsed if elapsed > 0 else 0.0
+
+            metrics = DetectionMetrics(
+                step=global_step,
+                epoch=current_epoch,
+                loss_total=total_loss.item(),
+                loss_ce=losses.loss_ce.item(),
+                loss_bbox=losses.loss_bbox.item(),
+                loss_giou=losses.loss_giou.item(),
+                loss_fgl=losses.loss_fgl.item(),
+                map50=map50,
+                miou=miou,
+                speed=speed,
+            )
+            logger.log_metrics(metrics)
+
+            print(
+                f"Epoch [{current_epoch}/{params.epochs}] Step [{step}] "
+                f"LR: {current_lr:.2e} | "
+                f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
+                f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
+                f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
+                f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
+                f"Speed: {speed:.1f} sample/s"
             )
 
-            # Backward pass
-            total_loss.backward()
-            optimizer.step()
+            # Reconstruct image from patches and update plot
+            img_tensor = reconstruct_image_from_patches(batch.sample.image)
+            update_plot(
+                ax,
+                img_tensor,
+                targets,
+                outputs,
+                current_epoch,
+                indices=indices_match,
+            )
 
-            # Update metrics
-            samples += 1
-            if running_loss is None:
-                running_loss = total_loss.item()
-            else:
-                running_loss = 0.99 * running_loss + 0.01 * total_loss.item()
+            vis_path = (
+                logger.get_visualizations_dir()
+                / f"epoch_{current_epoch:03d}_step_{step:05d}.png"
+            )
+            plt.savefig(vis_path, dpi=150)
 
-            if step % params.log_interval == 0:
-                with torch.no_grad():
-                    indices_match = matcher(outputs, targets)
-                    map50 = compute_map_50(outputs, targets, params.num_classes)
-                    miou = compute_mean_iou(outputs, targets, indices_match)
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            plt.pause(0.001)
 
-                elapsed = time.time() - start_time
-                speed = samples / elapsed if elapsed > 0 else 0.0
-
-                metrics = DetectionMetrics(
-                    step=global_step,
-                    epoch=epoch,
-                    loss_total=total_loss.item(),
-                    loss_ce=losses.loss_ce.item(),
-                    loss_bbox=losses.loss_bbox.item(),
-                    loss_giou=losses.loss_giou.item(),
-                    loss_fgl=losses.loss_fgl.item(),
-                    map50=map50,
-                    miou=miou,
-                    speed=speed,
-                )
-                logger.log_metrics(metrics)
-
-                print(
-                    f"Epoch [{epoch}/{params.epochs}] Step [{step}] "
-                    f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
-                    f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
-                    f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
-                    f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
-                    f"Speed: {speed:.1f} sample/s"
-                )
-
-                # Reconstruct image from patches and update plot
-                img_tensor = reconstruct_image_from_patches(batch.sample.image)
-                update_plot(
-                    ax,
-                    img_tensor,
-                    targets,
-                    outputs,
-                    epoch,
-                    indices=indices_match,
-                )
-
-                vis_path = (
-                    logger.get_visualizations_dir()
-                    / f"epoch_{epoch:03d}_step_{step:05d}.png"
-                )
-                plt.savefig(vis_path, dpi=150)
-
-                fig.canvas.draw()
-                fig.canvas.flush_events()
-                plt.pause(0.001)
+        step += 1
 
 
 if __name__ == "__main__":
@@ -364,7 +402,7 @@ if __name__ == "__main__":
     parser.add_argument("--loss_fgl", type=float, default=0.15)
 
     # Training params
-    parser.add_argument("--base_lr", type=float, default=1e-4, help="Base LR for a 224x224 crop")
+    parser.add_argument("--base_lr", type=float, default=1e-4, help="Base LR for the Symbol Budget Scheduler")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--var_threshold", type=float, default=0.001)
@@ -395,9 +433,6 @@ if __name__ == "__main__":
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path)
 
-    # AdamW is scale-invariant, so we do not apply the linear scaling rule based on crop area.
-    actual_lr = args.base_lr
-
     params = TrainParams(
         anno_path=args.anno_path,
         img_dir=args.img_dir,
@@ -415,7 +450,7 @@ if __name__ == "__main__":
         loss_bbox=args.loss_bbox,
         loss_giou=args.loss_giou,
         loss_fgl=args.loss_fgl,
-        lr=actual_lr,
+        lr=args.base_lr,
         epochs=args.epochs,
         log_interval=args.log_interval,
         var_threshold=args.var_threshold,

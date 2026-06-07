@@ -88,13 +88,13 @@
 * **Results**: The model failed to converge properly. While the total loss dropped initially, it plateaued around 3.4, and the `mAP@0.5` remained at exactly 0.0000 throughout the run. The effective learning rate was scaled to 2.56e-02 due to the linear scaling rule.
 * **Conclusion**: The linear scaling rule (multiplying LR by area ratio) is designed for SGD, not AdamW. AdamW normalizes gradients by their variance, making it naturally scale-invariant. Manually scaling the LR by 256x caused the optimizer to take massive, destructive steps, preventing the network from learning the fine-grained offsets required for the coarse 64x64 patch grid.
 
-## Experiment 009: Single Image Overfit (Scale Up - 3584x3584, Patch 64, Fixed LR)
-* **Experiment Name/ID**: `experiments/009_single_image_overfit_scale_3584_patch_64_fixed_lr`
-* **Hypothesis/Goal**: Verify that removing the linear learning rate scaling rule allows the model to successfully overfit the 3584x3584 crop with a 64x64 patch size using AdamW.
+## Experiment 009: Single Image Overfit (Scale Up - 3584x3584, Patch 64, Symbol Budget LR)
+* **Experiment Name/ID**: `experiments/009_single_image_overfit_scale_3584_patch_64_symbol_budget`
+* **Hypothesis/Goal**: Verify that the new "Symbol Budget" LR scheduler (Linear Warmup + Cosine Decay based on the exact number of ground truth symbols processed) allows the model to successfully overfit the 3584x3584 crop with a 64x64 patch size using AdamW.
 * **Setup**: 
   * Model: `vit_nano` (patch_size=64)
   * Crop Size: 3584x3584
   * Data: A single image batch repeated infinitely (`repeat(batch)`).
-  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/009_single_image_overfit_scale_3584_patch_64_fixed_lr --crop_size 3584 --patch_size 64 --base_anchor_size 1.0 --base_lr 1e-4`
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/009_single_image_overfit_scale_3584_patch_64_symbol_budget --crop_size 3584 --patch_size 64 --base_anchor_size 1.0 --base_lr 1e-4`
 * **Results**: TBD
 * **Conclusion**: TBD
