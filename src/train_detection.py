@@ -395,9 +395,8 @@ if __name__ == "__main__":
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path)
 
-    # Scale LR by the area ratio compared to a 224x224 baseline
-    area_ratio = (args.crop_size / 224.0) ** 2
-    actual_lr = args.base_lr * area_ratio
+    # AdamW is scale-invariant, so we do not apply the linear scaling rule based on crop area.
+    actual_lr = args.base_lr
 
     params = TrainParams(
         anno_path=args.anno_path,
