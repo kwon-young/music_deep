@@ -52,5 +52,16 @@
   * Crop Size: 448x448
   * Data: A single image batch repeated infinitely (`repeat(batch)`).
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/005_single_image_overfit_scale_448 --crop_size 448 --base_anchor_size 1.0`
+* **Results**: The model successfully overfit the 448x448 image. The training dynamics were interesting: it initially fit symbols and lines at their centers, but quickly shared boxes for the same symbol label (e.g., cut staff lines shared boxes, keeping them too short). It then plateaued on box fitting to focus on lowering the classification loss. Finally, after some time, it resumed fine-tuning the boxes to match the ground truth exactly.
+* **Conclusion**: The architecture scales well to 448x448 without memory or gradient issues. The two-phase learning dynamic (center/class grouping first, fine-grained boundary regression later) suggests the matcher and loss functions are prioritizing classification and rough localization before committing to exact shape refinement.
+
+## Experiment 006: Single Image Overfit (Scale Up - 896x896)
+* **Experiment Name/ID**: `experiments/006_single_image_overfit_scale_896`
+* **Hypothesis/Goal**: Verify that the `vit_nano` OMRDetector can scale to an 896x896 crop size and still successfully overfit a single image. This will further test the memory limits and ensure the two-phase learning dynamics observed in Experiment 005 still converge at higher resolutions.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=16)
+  * Crop Size: 896x896
+  * Data: A single image batch repeated infinitely (`repeat(batch)`).
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/006_single_image_overfit_scale_896 --crop_size 896 --base_anchor_size 1.0`
 * **Results**: TBD
 * **Conclusion**: TBD
