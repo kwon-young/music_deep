@@ -1,7 +1,6 @@
 import json
 import pickle
 from pathlib import Path
-from typing import Generator
 from dataclasses import dataclass
 import torch
 from PIL import Image as Image_
@@ -106,47 +105,45 @@ def parse_coco(anno_path: Path) -> CocoDataset:
     return dataset
 
 
-def iter_coco(
-    dataset: CocoDataset, img_dir: Path
-) -> Generator[
-    Data[
-        CocoMetadata,
-        DetectionSample[
-            PILImage[HWC, RGB, Int255],
-            BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
-            ClassLabels[tuple[NumBoxes], NumClasses],
-        ],
+def load_coco_sample(
+    dataset: CocoDataset, img_dir: Path, index: int
+) -> Data[
+    CocoMetadata,
+    DetectionSample[
+        PILImage[HWC, RGB, Int255],
+        BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
+        ClassLabels[tuple[NumBoxes], NumClasses],
     ],
-    None,
-    None,
 ]:
-    """Yields metadata and detection samples using the pre-parsed dataset."""
-    for img_meta in dataset.images:
-        img_path = img_dir / img_meta.file_name
-        if not img_path.exists():
-            continue
+    """Loads a single COCO sample by its index in the dataset."""
+    img_meta = dataset.images[index]
+    img_path = img_dir / img_meta.file_name
+    
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image not found: {img_path}")
 
-        pil_img = Image_.open(img_path).convert("RGB")
-        anns = dataset.annotations.get(img_meta.img_id, [])
+    pil_img = Image_.open(img_path).convert("RGB")
+    anns = dataset.annotations.get(img_meta.img_id, [])
 
-        labels: list[int] = []
-        boxes: list[list[float]] = []
-        for ann in anns:
-            x, y, w, h = ann.bbox
-            # Map the raw category_id to the 0-indexed contiguous ID
-            mapped_label = dataset.cat_id_to_idx[ann.category_id]
-            labels.append(mapped_label)
-            # Convert COCO [x, y, w, h] to [x1, y1, x2, y2]
-            boxes.append([x, y, x + w, y + h])
+    labels: list[int] = []
+    boxes: list[list[float]] = []
+    for ann in anns:
+        x, y, w, h = ann.bbox
+        # Map the raw category_id to the 0-indexed contiguous ID
+        mapped_label = dataset.cat_id_to_idx[ann.category_id]
+        labels.append(mapped_label)
+        # Convert COCO [x, y, w, h] to [x1, y1, x2, y2]
+        boxes.append([x, y, x + w, y + h])
 
-        boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
-        labels_tensor = torch.tensor(labels, dtype=torch.int64)
+    # Use reshape to ensure correct dimensions even if empty
+    boxes_tensor = torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4)
+    labels_tensor = torch.tensor(labels, dtype=torch.int64)
 
-        yield Data(
-            metadata=img_meta,
-            sample=DetectionSample(
-                image=PILImage(pil_img),
-                boxes=BoundingBoxes(boxes_tensor),
-                labels=ClassLabels(labels_tensor),
-            ),
-        )
+    return Data(
+        metadata=img_meta,
+        sample=DetectionSample(
+            image=PILImage(pil_img),
+            boxes=BoundingBoxes(boxes_tensor),
+            labels=ClassLabels(labels_tensor),
+        ),
+    )

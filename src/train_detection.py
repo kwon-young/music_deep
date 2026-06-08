@@ -1,6 +1,7 @@
 import argparse
 import time
 import math
+import random
 from pathlib import Path
 from typing import Generator
 from dataclasses import dataclass
@@ -12,9 +13,8 @@ from model.vit import vit_nano
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
-from dataset.coco import parse_coco, iter_coco, CocoMetadata, CocoDataset
+from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
 import transform.det as det_tf
-from transform.core import shuffle
 from threaded_generator import ThreadedGenerator
 from metric import compute_map_50, compute_mean_iou
 from visualization import update_plot, reconstruct_image_from_patches
@@ -94,14 +94,9 @@ class TrainParams:
 
 
 def transform_image(
-    item: Data[
-        CocoMetadata,
-        DetectionSample[
-            PILImage[HWC, RGB, Int255],
-            BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
-            ClassLabels,
-        ],
-    ],
+    index: int,
+    dataset: CocoDataset,
+    img_dir: Path,
     patch_size: int,
     crop_size: int,
     device: torch.device,
@@ -109,7 +104,11 @@ def transform_image(
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Preprocessing: PIL -> Numpy -> Tensor -> Crop -> Device -> Float1 -> Pad -> Normalize."""
+    """Preprocessing: Load -> PIL -> Numpy -> Tensor -> Crop -> Device -> Float1 -> Pad -> Normalize."""
+    # 1. Load the image from disk
+    item = load_coco_sample(dataset, img_dir, index)
+    
+    # 2. Apply transformations
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
 
@@ -151,21 +150,20 @@ def create_detection_iterator(
     None,
 ]:
     """Creates a plain Python generator pipeline for detection data."""
-    # 1. Load raw data using the pre-parsed dataset
-    raw_gen = iter_coco(params.dataset, params.img_dir)
+    # 1. Create a shuffled list of indices
+    num_images = len(params.dataset.images)
+    indices = list(range(num_images))
+    random.shuffle(indices)
 
-    # 2. Shuffle the raw data stream
-    shuffled_gen = shuffle(raw_gen, buffer_size=1000)
-
-    # 3. Apply transformations (Crop on CPU, rest on GPU)
+    # 2. Map the combined load+transform function over the indices
     transformed_gen = (
         transform_image(
-            item, params.patch_size, params.crop_size, params.device
+            idx, params.dataset, params.img_dir, params.patch_size, params.crop_size, params.device
         )
-        for item in shuffled_gen
+        for idx in indices
     )
 
-    # 4. Collate into batches of size 1 and extract patches
+    # 3. Collate into batches of size 1 and extract patches
     def _pipeline():
         for item in transformed_gen:
             batched_item = det_tf.collate((item,))
