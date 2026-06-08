@@ -98,3 +98,14 @@
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/009_single_image_overfit_scale_3584_patch_64_symbol_budget --crop_size 3584 --patch_size 64 --base_anchor_size 1.0 --lr 1e-4 --epochs 1000`
 * **Results**: The Symbol Budget LR scheduler worked perfectly, smoothly warming up to 1e-4 and decaying to ~2e-8 over the 1000 epochs (365,000 symbols). Total loss dropped from ~2603 to ~12.7, and CE loss dropped significantly, showing the model learned to classify objects. However, localization metrics plateaued: mIoU reached ~0.28 and mAP@0.5 ended at ~0.0093. Visually, the bounding boxes were reasonable, but the strict 0.5 IoU threshold is highly unforgiving for thin objects (4px staff lines, 5px stems) when predicted from a coarse 64x64 patch grid.
 * **Conclusion**: The engineering components (patch dropping, dynamic shapes, symbol budget scheduler) are fully validated and working as intended. The poor mAP at patch size 64 is a spatial resolution limitation—predicting pixel-perfect boundaries for thin objects from massive 64x64 patches requires longer training and careful LR tuning. Since the primary goal of the overfitting track (sanity checking the architecture and scaling mechanisms) has been achieved, we will conclude this track here rather than over-optimizing hyperparameters for a single image.
+
+## Experiment 010: Full Dataset Training Baseline
+* **Experiment Name/ID**: `experiments/010_full_dataset_baseline`
+* **Hypothesis/Goal**: Transition from single-image overfitting to training on the entire Trompa-COCO dataset. Establish a baseline for full-dataset training, verifying that the data pipeline, symbol budget scheduler, and model scale correctly to diverse images and generalize across the dataset.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=16)
+  * Crop Size: 224x224 (Default)
+  * Data: Full Trompa-COCO dataset, iterating over all images with a shuffle buffer.
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/010_full_dataset_baseline`
+* **Results**: TBD
+* **Conclusion**: TBD

@@ -4,7 +4,6 @@ import math
 from pathlib import Path
 from typing import Generator
 from dataclasses import dataclass
-from itertools import repeat
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
@@ -15,6 +14,8 @@ from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, iter_coco, CocoMetadata, CocoDataset
 import transform.det as det_tf
+from transform.core import shuffle
+from threaded_generator import ThreadedGenerator
 from metric import compute_map_50, compute_mean_iou
 from visualization import update_plot, reconstruct_image_from_patches
 from logger import ExperimentLogger, BaseMetrics
@@ -153,15 +154,18 @@ def create_detection_iterator(
     # 1. Load raw data using the pre-parsed dataset
     raw_gen = iter_coco(params.dataset, params.img_dir)
 
-    # 2. Apply transformations (Crop on CPU, rest on GPU)
+    # 2. Shuffle the raw data stream
+    shuffled_gen = shuffle(raw_gen, buffer_size=1000)
+
+    # 3. Apply transformations (Crop on CPU, rest on GPU)
     transformed_gen = (
         transform_image(
             item, params.patch_size, params.crop_size, params.device
         )
-        for item in raw_gen
+        for item in shuffled_gen
     )
 
-    # 3. Collate into batches of size 1 and extract patches
+    # 4. Collate into batches of size 1 and extract patches
     def _pipeline():
         for item in transformed_gen:
             batched_item = det_tf.collate((item,))
@@ -247,146 +251,146 @@ def train(params: TrainParams):
     print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
 
     model.train()
-    iterator = create_detection_iterator(params)
-    batch = next(iter(iterator))
 
-    # Since we are overfitting a single batch, we define the budget based on the batch
-    symbols_in_batch = batch.sample.num_symbols
-    total_symbol_budget = symbols_in_batch * params.epochs
-    print(f"Overfitting single batch with {symbols_in_batch} symbols.")
+    total_symbol_budget = dataset_symbols * params.epochs
+    print(f"Training on full dataset.")
     print(
         f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
     )
 
     cumulative_symbols = 0
-    step = 0
 
-    for batch in repeat(batch):
-        if cumulative_symbols >= total_symbol_budget:
-            print("Symbol budget reached. Training complete.")
-            break
-
-        global_step += 1
-        current_epoch = cumulative_symbols / symbols_in_batch
-
-        # Reconstruct DetectionTarget for the criterion
-        targets = [
-            DetectionTarget(labels=l, boxes=b)
-            for b, l in zip(batch.sample.boxes, batch.sample.labels)
-        ]
-
-        optimizer.zero_grad()
-
-        # Forward pass
-        outputs = model(batch.sample.image)
-
-        # Compute loss
-        losses = criterion(outputs, targets)
-        total_loss = (
-            losses.loss_ce
-            + losses.loss_bbox
-            + losses.loss_giou
-            + losses.loss_fgl
+    for epoch in range(params.epochs):
+        iterator = ThreadedGenerator(
+            create_detection_iterator(params), 
+            maxsize=4, 
+            name="det_pipeline"
         )
 
-        # Backward pass
-        total_loss.backward()
+        for step, batch in enumerate(iterator):
+            if cumulative_symbols >= total_symbol_budget:
+                print("Symbol budget reached. Training complete.")
+                break
 
-        # --- Symbol Budget LR Scheduler ---
-        current_batch_symbols = batch.sample.num_symbols
-        cumulative_symbols += current_batch_symbols
-        progress = min(1.0, cumulative_symbols / total_symbol_budget)
+            global_step += 1
+            current_epoch = cumulative_symbols / dataset_symbols
 
-        if progress < params.warmup_ratio:
-            # Linear Warmup
-            current_lr = params.lr * max(
-                params.min_lr_ratio, (progress / params.warmup_ratio)
-            )
-        else:
-            # Cosine Decay
-            cosine_progress = (progress - params.warmup_ratio) / (
-                1.0 - params.warmup_ratio
-            )
-            current_lr = (
-                params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
-            )
+            # Reconstruct DetectionTarget for the criterion
+            targets = [
+                DetectionTarget(labels=l, boxes=b)
+                for b, l in zip(batch.sample.boxes, batch.sample.labels)
+            ]
 
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = current_lr
-        # ----------------------------------
+            optimizer.zero_grad()
 
-        optimizer.step()
+            # Forward pass
+            outputs = model(batch.sample.image)
 
-        # Update metrics
-        samples += 1
-
-        # Half-life decay based on symbols processed
-        smoothing = 0.5 ** (
-            current_batch_symbols / params.running_loss_half_life
-        )
-        if running_loss is None:
-            running_loss = total_loss.item()
-        else:
-            running_loss = (
-                smoothing * running_loss + (1.0 - smoothing) * total_loss.item()
+            # Compute loss
+            losses = criterion(outputs, targets)
+            total_loss = (
+                losses.loss_ce
+                + losses.loss_bbox
+                + losses.loss_giou
+                + losses.loss_fgl
             )
 
-        if step % params.log_interval == 0:
-            with torch.no_grad():
-                indices_match = matcher(outputs, targets)
-                map50 = compute_map_50(outputs, targets, params.num_classes)
-                miou = compute_mean_iou(outputs, targets, indices_match)
+            # Backward pass
+            total_loss.backward()
 
-            elapsed = time.time() - start_time
-            speed = samples / elapsed if elapsed > 0 else 0.0
+            # --- Symbol Budget LR Scheduler ---
+            current_batch_symbols = batch.sample.num_symbols
+            cumulative_symbols += current_batch_symbols
+            progress = min(1.0, cumulative_symbols / total_symbol_budget)
 
-            metrics = DetectionMetrics(
-                step=global_step,
-                epoch=current_epoch,
-                lr=current_lr,
-                loss_total=total_loss.item(),
-                loss_ce=losses.loss_ce.item(),
-                loss_bbox=losses.loss_bbox.item(),
-                loss_giou=losses.loss_giou.item(),
-                loss_fgl=losses.loss_fgl.item(),
-                map50=map50,
-                miou=miou,
-                speed=speed,
+            if progress < params.warmup_ratio:
+                # Linear Warmup
+                current_lr = params.lr * max(
+                    params.min_lr_ratio, (progress / params.warmup_ratio)
+                )
+            else:
+                # Cosine Decay
+                cosine_progress = (progress - params.warmup_ratio) / (
+                    1.0 - params.warmup_ratio
+                )
+                current_lr = (
+                    params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
+                )
+
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = current_lr
+            # ----------------------------------
+
+            optimizer.step()
+
+            # Update metrics
+            samples += 1
+
+            # Half-life decay based on symbols processed
+            smoothing = 0.5 ** (
+                current_batch_symbols / params.running_loss_half_life
             )
-            logger.log_metrics(metrics)
+            if running_loss is None:
+                running_loss = total_loss.item()
+            else:
+                running_loss = (
+                    smoothing * running_loss + (1.0 - smoothing) * total_loss.item()
+                )
 
-            print(
-                f"Epoch [{current_epoch:.2f}/{params.epochs}] Step [{step}] "
-                f"LR: {current_lr:.2e} | "
-                f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
-                f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
-                f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
-                f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
-                f"Speed: {speed:.1f} sample/s"
-            )
+            if global_step % params.log_interval == 0:
+                with torch.no_grad():
+                    indices_match = matcher(outputs, targets)
+                    map50 = compute_map_50(outputs, targets, params.num_classes)
+                    miou = compute_mean_iou(outputs, targets, indices_match)
 
-            # Reconstruct image from patches and update plot
-            img_tensor = reconstruct_image_from_patches(batch.sample.image)
-            update_plot(
-                ax,
-                img_tensor,
-                targets,
-                outputs,
-                f"Epoch: {current_epoch:.2f}",
-                indices=indices_match,
-            )
+                elapsed = time.time() - start_time
+                speed = samples / elapsed if elapsed > 0 else 0.0
 
-            vis_path = (
-                logger.get_visualizations_dir()
-                / f"epoch_{int(current_epoch):03d}_step_{step:05d}.png"
-            )
-            plt.savefig(vis_path, dpi=150)
+                metrics = DetectionMetrics(
+                    step=global_step,
+                    epoch=current_epoch,
+                    lr=current_lr,
+                    loss_total=total_loss.item(),
+                    loss_ce=losses.loss_ce.item(),
+                    loss_bbox=losses.loss_bbox.item(),
+                    loss_giou=losses.loss_giou.item(),
+                    loss_fgl=losses.loss_fgl.item(),
+                    map50=map50,
+                    miou=miou,
+                    speed=speed,
+                )
+                logger.log_metrics(metrics)
 
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-            plt.pause(0.001)
+                print(
+                    f"Epoch [{current_epoch:.2f}/{params.epochs}] Step [{global_step}] "
+                    f"LR: {current_lr:.2e} | "
+                    f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
+                    f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
+                    f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
+                    f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
+                    f"Speed: {speed:.1f} sample/s"
+                )
 
-        step += 1
+                # Reconstruct image from patches and update plot
+                img_tensor = reconstruct_image_from_patches(batch.sample.image)
+                update_plot(
+                    ax,
+                    img_tensor,
+                    targets,
+                    outputs,
+                    f"Epoch: {current_epoch:.2f}",
+                    indices=indices_match,
+                )
+
+                vis_path = (
+                    logger.get_visualizations_dir()
+                    / f"epoch_{int(current_epoch):03d}_step_{global_step:05d}.png"
+                )
+                plt.savefig(vis_path, dpi=150)
+
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
 
 
 if __name__ == "__main__":
