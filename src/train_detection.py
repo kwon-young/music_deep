@@ -109,7 +109,7 @@ def transform_image(
     """Preprocessing: Load -> PIL -> Numpy -> Tensor -> Crop -> Device -> Float1 -> Pad -> Normalize."""
     # 1. Load the image from disk
     item = load_coco_sample(dataset, img_dir, index)
-    
+
     # 2. Apply transformations
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
@@ -163,7 +163,12 @@ def create_detection_iterator(
             # 2. Map the combined load+transform function over the indices
             transformed_gen = (
                 transform_image(
-                    idx, params.dataset, params.img_dir, params.patch_size, params.crop_size, params.device
+                    idx,
+                    params.dataset,
+                    params.img_dir,
+                    params.patch_size,
+                    params.crop_size,
+                    params.device,
                 )
                 for idx in indices
             )
@@ -172,7 +177,8 @@ def create_detection_iterator(
             for batch_items in batched(transformed_gen, params.batch_size):
                 batched_item = det_tf.collate(batch_items)
                 patched_item = det_tf.extract_patches(
-                    batched_item, patch_size=(params.patch_size, params.patch_size)
+                    batched_item,
+                    patch_size=(params.patch_size, params.patch_size),
                 )
                 dropped_item = det_tf.variance_patch_drop(
                     patched_item, var_threshold=params.var_threshold
@@ -263,9 +269,7 @@ def train(params: TrainParams):
     cumulative_symbols = 0
 
     iterator = ThreadedGenerator(
-        create_detection_iterator(params), 
-        maxsize=4, 
-        name="det_pipeline"
+        create_detection_iterator(params), maxsize=4, name="det_pipeline"
     )
 
     for step, batch in enumerate(iterator):

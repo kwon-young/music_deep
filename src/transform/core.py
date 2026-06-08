@@ -349,7 +349,7 @@ def variance_patch_drop_indices(
 
     # Find how many patches pass the threshold for each image
     passing_counts = (normalized_vars > var_threshold).sum(dim=-1)
-    
+
     # The number of patches to keep is the max passing across the batch (at least 1)
     max_keep = max(1, passing_counts.max().item())
 

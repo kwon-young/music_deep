@@ -118,7 +118,7 @@ def load_coco_sample(
     """Loads a single COCO sample by its index in the dataset."""
     img_meta = dataset.images[index]
     img_path = img_dir / img_meta.file_name
-    
+
     if not img_path.exists():
         raise FileNotFoundError(f"Image not found: {img_path}")
 
