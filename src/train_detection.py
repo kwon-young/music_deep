@@ -5,6 +5,7 @@ import random
 from pathlib import Path
 from typing import Generator
 from dataclasses import dataclass
+from itertools import batched
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
@@ -65,6 +66,7 @@ class TrainParams:
     anno_path: Path
     img_dir: Path
     dataset: CocoDataset
+    batch_size: int
     patch_size: int
     crop_size: int
     channels: int
@@ -166,9 +168,9 @@ def create_detection_iterator(
                 for idx in indices
             )
 
-            # 3. Collate into batches of size 1 and extract patches
-            for item in transformed_gen:
-                batched_item = det_tf.collate((item,))
+            # 3. Chunk into batches, collate, and extract patches
+            for batch_items in batched(transformed_gen, params.batch_size):
+                batched_item = det_tf.collate(batch_items)
                 patched_item = det_tf.extract_patches(
                     batched_item, patch_size=(params.patch_size, params.patch_size)
                 )
@@ -323,7 +325,7 @@ def train(params: TrainParams):
         optimizer.step()
 
         # Update metrics
-        samples += 1
+        samples += len(batch.metadata)
 
         # Half-life decay based on symbols processed
         smoothing = 0.5 ** (
@@ -406,6 +408,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument("--crop_size", type=int, default=3584)
     parser.add_argument("--channels", type=int, default=3)
@@ -487,6 +490,7 @@ if __name__ == "__main__":
         anno_path=args.anno_path,
         img_dir=args.img_dir,
         dataset=dataset,
+        batch_size=args.batch_size,
         patch_size=args.patch_size,
         crop_size=args.crop_size,
         channels=args.channels,

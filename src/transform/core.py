@@ -347,25 +347,19 @@ def variance_patch_drop_indices(
     # We normalize the variance to [0, 1] for clean threshold bounds.
     normalized_vars = patches_data.var(dim=-1) / 0.25
 
-    ids_keep_list = []
-    max_keep = 0
-    for i in range(b):
-        keep = torch.where(normalized_vars[i] > var_threshold)[0]
-        if len(keep) == 0:
-            # Fallback to keep at least one patch to avoid empty tensors
-            keep = torch.tensor([0], device=patches_data.device)
-        ids_keep_list.append(keep)
-        max_keep = max(max_keep, len(keep))
+    # Find how many patches pass the threshold for each image
+    passing_counts = (normalized_vars > var_threshold).sum(dim=-1)
+    
+    # The number of patches to keep is the max passing across the batch (at least 1)
+    max_keep = max(1, passing_counts.max().item())
 
-    # Pad with the last valid index if lengths differ across the batch
-    padded_ids = []
-    for keep in ids_keep_list:
-        if len(keep) < max_keep:
-            pad = keep[-1:].expand(max_keep - len(keep))
-            keep = torch.cat([keep, pad])
-        padded_ids.append(keep)
+    # Get the indices of the top `max_keep` patches with the highest variance
+    _, topk_indices = torch.topk(normalized_vars, k=max_keep, dim=-1)
 
-    return torch.stack(padded_ids)
+    # Sort the indices so they remain in their original spatial order
+    sorted_indices, _ = torch.sort(topk_indices, dim=-1)
+
+    return sorted_indices
 
 
 def patch_drop_img[
