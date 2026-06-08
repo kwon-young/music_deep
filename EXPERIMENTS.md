@@ -107,5 +107,5 @@
   * Crop Size: 3584x3584
   * Data: Full Trompa-COCO dataset, iterating over all images with a shuffle buffer.
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/010_full_dataset_baseline --crop_size 3584 --patch_size 64 --epochs 10`
-* **Results**: TBD
-* **Conclusion**: TBD
+* **Results**: The pipeline successfully processed the full dataset without OOM errors, validating the lazy-loading index strategy. The Symbol Budget LR scheduler worked perfectly, warming up to 1e-4 at exactly 5% of the budget. The model learned effectively, with total loss dropping from ~2423 to ~10 (driven mostly by CE loss dropping to ~7). Localization improved, with mIoU climbing to ~0.37. However, `mAP@0.5` remained near 0.0000. Processing speed was ~0.7 samples/s.
+* **Conclusion**: The full-dataset pipeline, dynamic shapes, patch dropping, and custom LR scheduler work seamlessly at scale. However, `patch_size=64` is too coarse for the strict 0.5 IoU threshold required for thin music symbols (staff lines, stems). To achieve high mAP, a smaller patch size (16 or 32) is required, which will necessitate a smaller crop size (896 or 1792) to maintain memory/speed efficiency. This concludes the detection scaling and baseline track.
