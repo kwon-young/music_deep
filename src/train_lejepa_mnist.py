@@ -119,7 +119,7 @@ def create_lejepa_mnist_iterator(
 
 def train(params: TrainParams):
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
-    
+
     backbone = ViewViT(
         patch_size=params.patch_size,
         dim=params.dim,
@@ -226,17 +226,17 @@ def train(params: TrainParams):
             if step % params.log_interval == 0:
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
-                
+
                 metrics = LeJEPAMNISTMetrics(
                     step=global_step,
                     epoch=epoch,
                     loss_ssl=ssl_loss.item(),
                     loss_probe=probe_loss.item(),
                     probe_acc=acc,
-                    speed=speed
+                    speed=speed,
                 )
                 logger.log_metrics(metrics)
-                
+
                 print(
                     f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
                     f"SSL Loss: {ssl_loss.item():.4f} (Run: {running_loss_ssl:.4f}) | "
@@ -274,8 +274,12 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=0.04)
     parser.add_argument("--log_interval", type=int, default=50)
-    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
-    parser.add_argument("--stage_name", type=str, default="pretrain_lejepa_mnist")
+    parser.add_argument(
+        "--exp_dir", type=Path, default=Path("experiments/default_exp")
+    )
+    parser.add_argument(
+        "--stage_name", type=str, default="pretrain_lejepa_mnist"
+    )
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

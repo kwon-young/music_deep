@@ -22,3 +22,13 @@
 - test should be written only with the builtin unittest module
 - your response should always be motivated and pedagogical. never answer with just a code dump but make sure to explain what you are doing
     - therefore, you don't need to litter your code with comments. use comments for code that absolutely needs it
+
+
+- maintain a global `EXPERIMENTS.md` file at the root of the repository to track the history of all experiments
+- for each experiment, the log entry must include:
+    - **Experiment Name/ID**: matching the `--exp_dir` folder name
+    - **Hypothesis/Goal**: what are we trying to achieve or test?
+    - **Setup**: key parameters, model changes, or the exact command run
+    - **Results**: a summary of the final metrics (the AI should read the corresponding `metrics.jsonl` to generate this)
+    - **Conclusion**: what did we learn, and what are the next steps?
+- the AI should always read `EXPERIMENTS.md` before proposing new architectures or hyperparameters to avoid repeating failed experiments

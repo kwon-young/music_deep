@@ -129,13 +129,17 @@ class DFINEDenseHead(nn.Module):
         # Initialize the bias for the width/height predictions so they start at base_anchor_size
         init_val = math.log(math.exp(base_anchor_size) - 1)
         bias_view = self.mlp[-1].bias.view(num_shapes, self.preds_per_shape)
-        nn.init.constant_(bias_view[:, num_classes + 2 : num_classes + 4], init_val)
+        nn.init.constant_(
+            bias_view[:, num_classes + 2 : num_classes + 4], init_val
+        )
 
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
     def forward(
         self, patch_tokens: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
         B, P, _ = patch_tokens.shape
 
         raw_preds = self.mlp(patch_tokens)
@@ -143,10 +147,10 @@ class DFINEDenseHead(nn.Module):
 
         classes = preds[..., : self.num_classes]
         center_offsets = preds[..., self.num_classes : self.num_classes + 2]
-        
+
         # --- Dynamically predict shapes ---
         shapes_raw = preds[..., self.num_classes + 2 : self.num_classes + 4]
-        shapes = F.softplus(shapes_raw) # Ensure strictly positive
+        shapes = F.softplus(shapes_raw)  # Ensure strictly positive
         w_k, h_k = shapes[..., 0], shapes[..., 1]
         # ---------------------------------------
 
@@ -185,9 +189,9 @@ class DFINEDenseHead(nn.Module):
 
 class OMRDetector(nn.Module):
     def __init__(
-        self, 
-        vit_backbone: nn.Module, 
-        num_classes: int, 
+        self,
+        vit_backbone: nn.Module,
+        num_classes: int,
         num_shapes: int = 5,
         base_anchor_size: float = 1.0,
     ):
@@ -197,8 +201,8 @@ class OMRDetector(nn.Module):
         in_dim = self.backbone.patch_embed[1].out_features
 
         self.head = DFINEDenseHead(
-            in_dim=in_dim, 
-            num_classes=num_classes, 
+            in_dim=in_dim,
+            num_classes=num_classes,
             num_shapes=num_shapes,
             base_anchor_size=base_anchor_size,
         )
@@ -217,7 +221,9 @@ class OMRDetector(nn.Module):
 
         # Pass the actual tensor data to the dense head
         patch_tokens = features.data
-        classes, center_offsets, shapes, boxes, edge_logits = self.head(patch_tokens)
+        classes, center_offsets, shapes, boxes, edge_logits = self.head(
+            patch_tokens
+        )
 
         B, P, K, _ = boxes.shape
 
@@ -225,16 +231,16 @@ class OMRDetector(nn.Module):
         _, h, w = features.image_shape
         ph, pw = features.patch_size
         grid_h, grid_w = h // ph, w // pw
-        
+
         scale_xy = torch.tensor(
             [1.0 / grid_w, 1.0 / grid_h], dtype=boxes.dtype, device=boxes.device
         ).view(1, 1, 1, 2)
-        
+
         center_offsets = center_offsets * scale_xy
-        
+
         scale_xyxy = scale_xy.repeat(1, 1, 1, 2)
         boxes = boxes * scale_xyxy
-        
+
         # Scale dynamic shapes to Image Units for the FGL loss
         expanded_shapes = shapes * scale_xy
         # ---------------------------------------------------------

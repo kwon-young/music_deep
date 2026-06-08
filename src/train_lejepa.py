@@ -159,7 +159,7 @@ def transform_batch[Meta, V: View](
 
 def train(params: TrainParams):
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
-    
+
     backbone = ViewViT(
         patch_size=params.patch_size,
         dim=params.dim,
@@ -231,17 +231,17 @@ def train(params: TrainParams):
             if step % params.log_interval == 0:
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
-                
+
                 metrics = LeJEPAMetrics(
                     step=global_step,
                     epoch=epoch,
                     loss_total=loss.item(),
                     loss_sigreg=sigreg_loss.item(),
                     loss_inv=inv_loss.item(),
-                    speed=speed
+                    speed=speed,
                 )
                 logger.log_metrics(metrics)
-                
+
                 print(
                     f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
                     f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
@@ -303,7 +303,9 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0.05)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--checkpoint_window_size", type=int, default=10000)
-    parser.add_argument("--exp_dir", type=Path, default=Path("experiments/default_exp"))
+    parser.add_argument(
+        "--exp_dir", type=Path, default=Path("experiments/default_exp")
+    )
     parser.add_argument("--stage_name", type=str, default="pretrain_lejepa")
 
     args = parser.parse_args()

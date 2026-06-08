@@ -340,7 +340,9 @@ class DetectionSample[I, B, L]:
     @property
     def num_symbols(self) -> int:
         if isinstance(self.labels, list):
-            return sum(len(l.data) for l in self.labels if isinstance(l, TensorData))
+            return sum(
+                len(l.data) for l in self.labels if isinstance(l, TensorData)
+            )
         if isinstance(self.labels, TensorData):
             return len(self.labels.data)
         return 0

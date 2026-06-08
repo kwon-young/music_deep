@@ -107,8 +107,8 @@ def train(params: TrainParams):
     # 1. Setup Model (using vit_nano for speed)
     backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
     model = OMRDetector(
-        backbone, 
-        num_classes=params.num_classes, 
+        backbone,
+        num_classes=params.num_classes,
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
     ).to(device)
@@ -284,7 +284,12 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_classes", type=int, default=80)
     parser.add_argument("--num_shapes", type=int, default=5)
-    parser.add_argument("--base_anchor_size", type=float, default=1.0, help="Base anchor size in Patch Units")
+    parser.add_argument(
+        "--base_anchor_size",
+        type=float,
+        default=1.0,
+        help="Base anchor size in Patch Units",
+    )
 
     # Matcher costs
     parser.add_argument("--cost_class", type=float, default=2.0)

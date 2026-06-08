@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, asdict
 @dataclass
 class BaseMetrics:
     """Base class for all experiment metrics."""
+
     step: int
     timestamp: float = field(default_factory=time.time, init=False)
 
@@ -18,11 +19,11 @@ class ExperimentLogger:
         """
         self.exp_dir = exp_dir
         self.stage_dir = self.exp_dir / stage_name
-        
+
         self.metrics_file = self.stage_dir / "metrics.jsonl"
         self.checkpoint_dir = self.stage_dir / "checkpoints"
         self.vis_dir = self.stage_dir / "visualizations"
-        
+
         self.stage_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.vis_dir.mkdir(parents=True, exist_ok=True)
