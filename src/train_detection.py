@@ -47,7 +47,8 @@ from music_types import (
 
 @dataclass
 class DetectionMetrics(BaseMetrics):
-    epoch: int
+    epoch: float
+    lr: float
     loss_total: float
     loss_ce: float
     loss_bbox: float
@@ -77,6 +78,9 @@ class TrainParams:
     loss_giou: float
     loss_fgl: float
     lr: float
+    warmup_ratio: float
+    min_lr_ratio: float
+    running_loss_half_life: float
     epochs: int
     log_interval: int
     var_threshold: float
@@ -174,7 +178,7 @@ def create_detection_iterator(
 
 def train(params: TrainParams):
     print(f"Using device: {params.device}")
-    print(f"Base Learning Rate: {params.lr:.2e}")
+    print(f"Learning Rate: {params.lr:.2e}")
 
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
@@ -239,7 +243,7 @@ def train(params: TrainParams):
     running_loss = None
     global_step = 0
 
-    dataset_symbols = sum(len(anns) for anns in params.dataset.annotations.values())
+    dataset_symbols = params.dataset.num_symbols
     print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
 
     model.train()
@@ -247,7 +251,7 @@ def train(params: TrainParams):
     batch = next(iter(iterator))
 
     # Since we are overfitting a single batch, we define the budget based on the batch
-    symbols_in_batch = sum(len(l) for l in batch.sample.labels)
+    symbols_in_batch = batch.sample.num_symbols
     total_symbol_budget = symbols_in_batch * params.epochs
     print(f"Overfitting single batch with {symbols_in_batch} symbols.")
     print(f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}")
@@ -261,7 +265,7 @@ def train(params: TrainParams):
             break
 
         global_step += 1
-        current_epoch = cumulative_symbols // symbols_in_batch
+        current_epoch = cumulative_symbols / symbols_in_batch
 
         # Reconstruct DetectionTarget for the criterion
         targets = [
@@ -287,17 +291,16 @@ def train(params: TrainParams):
         total_loss.backward()
 
         # --- Symbol Budget LR Scheduler ---
-        current_batch_symbols = sum(len(l) for l in batch.sample.labels)
+        current_batch_symbols = batch.sample.num_symbols
         cumulative_symbols += current_batch_symbols
         progress = min(1.0, cumulative_symbols / total_symbol_budget)
 
-        warmup_ratio = 0.05
-        if progress < warmup_ratio:
-            # Linear Warmup (prevent exactly 0 LR at step 0)
-            current_lr = params.lr * max(1e-4, (progress / warmup_ratio))
+        if progress < params.warmup_ratio:
+            # Linear Warmup
+            current_lr = params.lr * max(params.min_lr_ratio, (progress / params.warmup_ratio))
         else:
             # Cosine Decay
-            cosine_progress = (progress - warmup_ratio) / (1.0 - warmup_ratio)
+            cosine_progress = (progress - params.warmup_ratio) / (1.0 - params.warmup_ratio)
             current_lr = params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
 
         for param_group in optimizer.param_groups:
@@ -308,10 +311,13 @@ def train(params: TrainParams):
 
         # Update metrics
         samples += 1
+        
+        # Half-life decay based on symbols processed
+        smoothing = 0.5 ** (current_batch_symbols / params.running_loss_half_life)
         if running_loss is None:
             running_loss = total_loss.item()
         else:
-            running_loss = 0.99 * running_loss + 0.01 * total_loss.item()
+            running_loss = smoothing * running_loss + (1.0 - smoothing) * total_loss.item()
 
         if step % params.log_interval == 0:
             with torch.no_grad():
@@ -325,6 +331,7 @@ def train(params: TrainParams):
             metrics = DetectionMetrics(
                 step=global_step,
                 epoch=current_epoch,
+                lr=current_lr,
                 loss_total=total_loss.item(),
                 loss_ce=losses.loss_ce.item(),
                 loss_bbox=losses.loss_bbox.item(),
@@ -337,7 +344,7 @@ def train(params: TrainParams):
             logger.log_metrics(metrics)
 
             print(
-                f"Epoch [{current_epoch}/{params.epochs}] Step [{step}] "
+                f"Epoch [{current_epoch:.2f}/{params.epochs}] Step [{step}] "
                 f"LR: {current_lr:.2e} | "
                 f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
                 f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
@@ -353,13 +360,13 @@ def train(params: TrainParams):
                 img_tensor,
                 targets,
                 outputs,
-                current_epoch,
+                f"Epoch: {current_epoch:.2f}",
                 indices=indices_match,
             )
 
             vis_path = (
                 logger.get_visualizations_dir()
-                / f"epoch_{current_epoch:03d}_step_{step:05d}.png"
+                / f"epoch_{int(current_epoch):03d}_step_{step:05d}.png"
             )
             plt.savefig(vis_path, dpi=150)
 
@@ -402,7 +409,10 @@ if __name__ == "__main__":
     parser.add_argument("--loss_fgl", type=float, default=0.15)
 
     # Training params
-    parser.add_argument("--base_lr", type=float, default=1e-4, help="Base LR for the Symbol Budget Scheduler")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Peak LR for the Symbol Budget Scheduler")
+    parser.add_argument("--warmup_ratio", type=float, default=0.05, help="Fraction of budget used for warmup")
+    parser.add_argument("--min_lr_ratio", type=float, default=1e-4, help="Minimum LR multiplier at start of warmup")
+    parser.add_argument("--running_loss_half_life", type=float, default=250.0, help="Half-life in symbols for running loss smoothing")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--var_threshold", type=float, default=0.001)
@@ -450,7 +460,10 @@ if __name__ == "__main__":
         loss_bbox=args.loss_bbox,
         loss_giou=args.loss_giou,
         loss_fgl=args.loss_fgl,
-        lr=args.base_lr,
+        lr=args.lr,
+        warmup_ratio=args.warmup_ratio,
+        min_lr_ratio=args.min_lr_ratio,
+        running_loss_half_life=args.running_loss_half_life,
         epochs=args.epochs,
         log_interval=args.log_interval,
         var_threshold=args.var_threshold,
