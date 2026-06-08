@@ -149,31 +149,33 @@ def create_detection_iterator(
     None,
     None,
 ]:
-    """Creates a plain Python generator pipeline for detection data."""
-    # 1. Create a shuffled list of indices
+    """Creates an infinite Python generator pipeline for detection data."""
     num_images = len(params.dataset.images)
     indices = list(range(num_images))
-    random.shuffle(indices)
 
-    # 2. Map the combined load+transform function over the indices
-    transformed_gen = (
-        transform_image(
-            idx, params.dataset, params.img_dir, params.patch_size, params.crop_size, params.device
-        )
-        for idx in indices
-    )
-
-    # 3. Collate into batches of size 1 and extract patches
     def _pipeline():
-        for item in transformed_gen:
-            batched_item = det_tf.collate((item,))
-            patched_item = det_tf.extract_patches(
-                batched_item, patch_size=(params.patch_size, params.patch_size)
+        while True:
+            # 1. Shuffle indices at the start of every epoch
+            random.shuffle(indices)
+
+            # 2. Map the combined load+transform function over the indices
+            transformed_gen = (
+                transform_image(
+                    idx, params.dataset, params.img_dir, params.patch_size, params.crop_size, params.device
+                )
+                for idx in indices
             )
-            dropped_item = det_tf.variance_patch_drop(
-                patched_item, var_threshold=params.var_threshold
-            )
-            yield dropped_item
+
+            # 3. Collate into batches of size 1 and extract patches
+            for item in transformed_gen:
+                batched_item = det_tf.collate((item,))
+                patched_item = det_tf.extract_patches(
+                    batched_item, patch_size=(params.patch_size, params.patch_size)
+                )
+                dropped_item = det_tf.variance_patch_drop(
+                    patched_item, var_threshold=params.var_threshold
+                )
+                yield dropped_item
 
     return log_patch_count(_pipeline(), params.log_patches)
 
@@ -258,137 +260,136 @@ def train(params: TrainParams):
 
     cumulative_symbols = 0
 
-    for epoch in range(params.epochs):
-        iterator = ThreadedGenerator(
-            create_detection_iterator(params), 
-            maxsize=4, 
-            name="det_pipeline"
+    iterator = ThreadedGenerator(
+        create_detection_iterator(params), 
+        maxsize=4, 
+        name="det_pipeline"
+    )
+
+    for step, batch in enumerate(iterator):
+        if cumulative_symbols >= total_symbol_budget:
+            print("Symbol budget reached. Training complete.")
+            break
+
+        global_step += 1
+        current_epoch = cumulative_symbols / dataset_symbols
+
+        # Reconstruct DetectionTarget for the criterion
+        targets = [
+            DetectionTarget(labels=l, boxes=b)
+            for b, l in zip(batch.sample.boxes, batch.sample.labels)
+        ]
+
+        optimizer.zero_grad()
+
+        # Forward pass
+        outputs = model(batch.sample.image)
+
+        # Compute loss
+        losses = criterion(outputs, targets)
+        total_loss = (
+            losses.loss_ce
+            + losses.loss_bbox
+            + losses.loss_giou
+            + losses.loss_fgl
         )
 
-        for step, batch in enumerate(iterator):
-            if cumulative_symbols >= total_symbol_budget:
-                print("Symbol budget reached. Training complete.")
-                break
+        # Backward pass
+        total_loss.backward()
 
-            global_step += 1
-            current_epoch = cumulative_symbols / dataset_symbols
+        # --- Symbol Budget LR Scheduler ---
+        current_batch_symbols = batch.sample.num_symbols
+        cumulative_symbols += current_batch_symbols
+        progress = min(1.0, cumulative_symbols / total_symbol_budget)
 
-            # Reconstruct DetectionTarget for the criterion
-            targets = [
-                DetectionTarget(labels=l, boxes=b)
-                for b, l in zip(batch.sample.boxes, batch.sample.labels)
-            ]
-
-            optimizer.zero_grad()
-
-            # Forward pass
-            outputs = model(batch.sample.image)
-
-            # Compute loss
-            losses = criterion(outputs, targets)
-            total_loss = (
-                losses.loss_ce
-                + losses.loss_bbox
-                + losses.loss_giou
-                + losses.loss_fgl
+        if progress < params.warmup_ratio:
+            # Linear Warmup
+            current_lr = params.lr * max(
+                params.min_lr_ratio, (progress / params.warmup_ratio)
+            )
+        else:
+            # Cosine Decay
+            cosine_progress = (progress - params.warmup_ratio) / (
+                1.0 - params.warmup_ratio
+            )
+            current_lr = (
+                params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
             )
 
-            # Backward pass
-            total_loss.backward()
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = current_lr
+        # ----------------------------------
 
-            # --- Symbol Budget LR Scheduler ---
-            current_batch_symbols = batch.sample.num_symbols
-            cumulative_symbols += current_batch_symbols
-            progress = min(1.0, cumulative_symbols / total_symbol_budget)
+        optimizer.step()
 
-            if progress < params.warmup_ratio:
-                # Linear Warmup
-                current_lr = params.lr * max(
-                    params.min_lr_ratio, (progress / params.warmup_ratio)
-                )
-            else:
-                # Cosine Decay
-                cosine_progress = (progress - params.warmup_ratio) / (
-                    1.0 - params.warmup_ratio
-                )
-                current_lr = (
-                    params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
-                )
+        # Update metrics
+        samples += 1
 
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = current_lr
-            # ----------------------------------
-
-            optimizer.step()
-
-            # Update metrics
-            samples += 1
-
-            # Half-life decay based on symbols processed
-            smoothing = 0.5 ** (
-                current_batch_symbols / params.running_loss_half_life
+        # Half-life decay based on symbols processed
+        smoothing = 0.5 ** (
+            current_batch_symbols / params.running_loss_half_life
+        )
+        if running_loss is None:
+            running_loss = total_loss.item()
+        else:
+            running_loss = (
+                smoothing * running_loss + (1.0 - smoothing) * total_loss.item()
             )
-            if running_loss is None:
-                running_loss = total_loss.item()
-            else:
-                running_loss = (
-                    smoothing * running_loss + (1.0 - smoothing) * total_loss.item()
-                )
 
-            if global_step % params.log_interval == 0:
-                with torch.no_grad():
-                    indices_match = matcher(outputs, targets)
-                    map50 = compute_map_50(outputs, targets, params.num_classes)
-                    miou = compute_mean_iou(outputs, targets, indices_match)
+        if global_step % params.log_interval == 0:
+            with torch.no_grad():
+                indices_match = matcher(outputs, targets)
+                map50 = compute_map_50(outputs, targets, params.num_classes)
+                miou = compute_mean_iou(outputs, targets, indices_match)
 
-                elapsed = time.time() - start_time
-                speed = samples / elapsed if elapsed > 0 else 0.0
+            elapsed = time.time() - start_time
+            speed = samples / elapsed if elapsed > 0 else 0.0
 
-                metrics = DetectionMetrics(
-                    step=global_step,
-                    epoch=current_epoch,
-                    lr=current_lr,
-                    loss_total=total_loss.item(),
-                    loss_ce=losses.loss_ce.item(),
-                    loss_bbox=losses.loss_bbox.item(),
-                    loss_giou=losses.loss_giou.item(),
-                    loss_fgl=losses.loss_fgl.item(),
-                    map50=map50,
-                    miou=miou,
-                    speed=speed,
-                )
-                logger.log_metrics(metrics)
+            metrics = DetectionMetrics(
+                step=global_step,
+                epoch=current_epoch,
+                lr=current_lr,
+                loss_total=total_loss.item(),
+                loss_ce=losses.loss_ce.item(),
+                loss_bbox=losses.loss_bbox.item(),
+                loss_giou=losses.loss_giou.item(),
+                loss_fgl=losses.loss_fgl.item(),
+                map50=map50,
+                miou=miou,
+                speed=speed,
+            )
+            logger.log_metrics(metrics)
 
-                print(
-                    f"Epoch [{current_epoch:.2f}/{params.epochs}] Step [{global_step}] "
-                    f"LR: {current_lr:.2e} | "
-                    f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
-                    f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
-                    f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
-                    f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
-                    f"Speed: {speed:.1f} sample/s"
-                )
+            print(
+                f"Epoch [{current_epoch:.2f}/{params.epochs}] Step [{global_step}] "
+                f"LR: {current_lr:.2e} | "
+                f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
+                f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
+                f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
+                f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
+                f"Speed: {speed:.1f} sample/s"
+            )
 
-                # Reconstruct image from patches and update plot
-                img_tensor = reconstruct_image_from_patches(batch.sample.image)
-                update_plot(
-                    ax,
-                    img_tensor,
-                    targets,
-                    outputs,
-                    f"Epoch: {current_epoch:.2f}",
-                    indices=indices_match,
-                )
+            # Reconstruct image from patches and update plot
+            img_tensor = reconstruct_image_from_patches(batch.sample.image)
+            update_plot(
+                ax,
+                img_tensor,
+                targets,
+                outputs,
+                f"Epoch: {current_epoch:.2f}",
+                indices=indices_match,
+            )
 
-                vis_path = (
-                    logger.get_visualizations_dir()
-                    / f"epoch_{int(current_epoch):03d}_step_{global_step:05d}.png"
-                )
-                plt.savefig(vis_path, dpi=150)
+            vis_path = (
+                logger.get_visualizations_dir()
+                / f"epoch_{int(current_epoch):03d}_step_{global_step:05d}.png"
+            )
+            plt.savefig(vis_path, dpi=150)
 
-                fig.canvas.draw()
-                fig.canvas.flush_events()
-                plt.pause(0.001)
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            plt.pause(0.001)
 
 
 if __name__ == "__main__":
