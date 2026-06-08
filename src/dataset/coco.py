@@ -46,6 +46,10 @@ class CocoDataset:
     images: list[CocoMetadata]
     annotations: dict[int, list[CocoParsedAnnotation]]
 
+    @property
+    def num_symbols(self) -> int:
+        return sum(len(anns) for anns in self.annotations.values())
+
 
 def parse_coco(anno_path: Path) -> CocoDataset:
     """Parses the COCO JSON, builds class mappings, and caches the result."""

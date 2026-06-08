@@ -336,3 +336,9 @@ class DetectionSample[I, B, L]:
     image: I
     boxes: B
     labels: L
+
+    @property
+    def num_symbols(self) -> int:
+        if isinstance(self.labels, list):
+            return sum(len(l.data) for l in self.labels)
+        return len(self.labels.data)
