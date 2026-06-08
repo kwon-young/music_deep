@@ -25,12 +25,9 @@ from music_types import (
     DetectionLossWeights,
     Data,
     DetectionSample,
-    PILImage,
     TensorImage,
-    HWC,
     CHW,
     RGB,
-    Int255,
     Float1,
     BoundingBoxes,
     ClassLabels,
@@ -39,11 +36,6 @@ from music_types import (
     Batch,
     NumPatches,
     PatchDim,
-    Absolute,
-    NumBoxes,
-    BoxDim,
-    XYXY,
-    TopLeft,
 )
 
 
