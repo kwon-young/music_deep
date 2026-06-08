@@ -80,6 +80,7 @@ class TrainParams:
     log_interval: int
     var_threshold: float
     log_patches: bool
+    compile: bool
     device: torch.device
     backbone_checkpoint: Path | None
     freeze_backbone: bool
@@ -215,6 +216,10 @@ def train(params: TrainParams):
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
     ).to(params.device)
+
+    if params.compile:
+        print("Compiling model with torch.compile(dynamic=True)...")
+        model = torch.compile(model, dynamic=True)
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(
@@ -461,6 +466,11 @@ if __name__ == "__main__":
         help="Log patch count before forward pass",
     )
     parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable torch.compile for the model (useful for Kaggle/modern GPUs)",
+    )
+    parser.add_argument(
         "--backbone_checkpoint",
         type=Path,
         default=None,
@@ -508,6 +518,7 @@ if __name__ == "__main__":
         log_interval=args.log_interval,
         var_threshold=args.var_threshold,
         log_patches=args.log_patches,
+        compile=args.compile,
         device=device,
         backbone_checkpoint=args.backbone_checkpoint,
         freeze_backbone=args.freeze_backbone,
