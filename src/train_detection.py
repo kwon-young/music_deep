@@ -407,8 +407,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
-    parser.add_argument("--patch_size", type=int, default=16)
-    parser.add_argument("--crop_size", type=int, default=224)
+    parser.add_argument("--patch_size", type=int, default=64)
+    parser.add_argument("--crop_size", type=int, default=3584)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument(
@@ -454,7 +454,7 @@ if __name__ == "__main__":
         default=250.0,
         help="Half-life in symbols for running loss smoothing",
     )
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument(

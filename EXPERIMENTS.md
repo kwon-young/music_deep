@@ -103,9 +103,9 @@
 * **Experiment Name/ID**: `experiments/010_full_dataset_baseline`
 * **Hypothesis/Goal**: Transition from single-image overfitting to training on the entire Trompa-COCO dataset. Establish a baseline for full-dataset training, verifying that the data pipeline, symbol budget scheduler, and model scale correctly to diverse images and generalize across the dataset.
 * **Setup**: 
-  * Model: `vit_nano` (patch_size=16)
-  * Crop Size: 224x224 (Default)
+  * Model: `vit_nano` (patch_size=64)
+  * Crop Size: 3584x3584
   * Data: Full Trompa-COCO dataset, iterating over all images with a shuffle buffer.
-  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/010_full_dataset_baseline`
+  * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/010_full_dataset_baseline --crop_size 3584 --patch_size 64 --epochs 10`
 * **Results**: TBD
 * **Conclusion**: TBD
