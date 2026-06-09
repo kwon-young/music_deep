@@ -1,7 +1,7 @@
+from __future__ import annotations
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+from typing import TYPE_CHECKING
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -14,6 +14,9 @@ from music_types import (
     NumPatches,
     PatchDim,
 )
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 
 def reconstruct_image_from_patches[B: Batch, N: NumPatches, P: PatchDim](
@@ -53,6 +56,8 @@ def update_plot(
     conf_thresh: float = 0.5,
     indices: list[MatchIndices] | None = None,
 ):
+    import matplotlib.patches as patches
+
     """Clears and redraws the plot with GT and Predictions."""
     ax.clear()
     if isinstance(epoch, int):

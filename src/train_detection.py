@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from itertools import batched
 import torch
 import torch.optim as optim
-import matplotlib.pyplot as plt
 
 from model.vit import vit_nano
 from model.detector import OMRDetector
@@ -86,6 +85,7 @@ class TrainParams:
     freeze_backbone: bool
     exp_dir: Path
     stage_name: str
+    headless: bool
 
 
 def transform_image(
@@ -182,6 +182,11 @@ def create_detection_iterator(
 
 
 def train(params: TrainParams):
+    import matplotlib
+    if params.headless:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     print(f"Using device: {params.device}")
     print(f"Learning Rate: {params.lr:.2e}")
 
@@ -240,11 +245,13 @@ def train(params: TrainParams):
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
     # Setup Interactive Plotting
-    plt.ion()
+    if not params.headless:
+        plt.ion()
     fig, ax = plt.subplots(1, figsize=(8, 8))
-    manager = fig.canvas.manager
-    if manager:
-        manager.set_window_title("OMR Detector Training")
+    if not params.headless:
+        manager = fig.canvas.manager
+        if manager:
+            manager.set_window_title("OMR Detector Training")
 
     # 3. Training Loop
     start_time = time.time()
@@ -390,9 +397,10 @@ def train(params: TrainParams):
             )
             plt.savefig(vis_path, dpi=150)
 
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-            plt.pause(0.001)
+            if not params.headless:
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
 
 
 if __name__ == "__main__":
@@ -485,6 +493,11 @@ if __name__ == "__main__":
         "--exp_dir", type=Path, default=Path("experiments/default_exp")
     )
     parser.add_argument("--stage_name", type=str, default="train_detection")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Disable interactive display and use Agg backend",
+    )
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -524,6 +537,7 @@ if __name__ == "__main__":
         freeze_backbone=args.freeze_backbone,
         exp_dir=args.exp_dir,
         stage_name=args.stage_name,
+        headless=args.headless,
     )
 
     train(params)
