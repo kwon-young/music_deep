@@ -50,9 +50,13 @@ class CocoDataset:
         return sum(len(anns) for anns in self.annotations.values())
 
 
-def parse_coco(anno_path: Path) -> CocoDataset:
+def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
     """Parses the COCO JSON, builds class mappings, and caches the result."""
-    cache_path = anno_path.with_suffix(".pkl")
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / anno_path.with_suffix(".pkl").name
+    else:
+        cache_path = anno_path.with_suffix(".pkl")
 
     # Load from cache if it exists and is newer than the JSON file
     if (

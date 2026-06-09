@@ -57,6 +57,7 @@ class DetectionMetrics(BaseMetrics):
 @dataclass
 class TrainParams:
     anno_path: Path
+    cache_dir: Path | None
     img_dir: Path
     dataset: CocoDataset
     batch_size: int
@@ -465,6 +466,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--cache_dir",
+        type=Path,
+        default=None,
+        help="Directory to store the cached dataset. If None, stores next to anno_path.",
+    )
+    parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
     parser.add_argument("--batch_size", type=int, default=1)
@@ -553,10 +560,11 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Parse and cache the dataset before starting training
-    dataset = parse_coco(args.anno_path)
+    dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
 
     params = TrainParams(
         anno_path=args.anno_path,
+        cache_dir=args.cache_dir,
         img_dir=args.img_dir,
         dataset=dataset,
         batch_size=args.batch_size,
