@@ -68,18 +68,23 @@ class HungarianMatcher(nn.Module):
         """
         bs, num_queries = outputs.pred_logits.data.shape[:2]
 
-        # We flatten to compute the cost matrices in a batch
-        # Using Focal Loss approximation for probabilities
-        out_prob = F.sigmoid(
-            outputs.pred_logits.data.flatten(0, 1)
-        )  # [batch_size * num_queries, num_classes]
-        out_bbox = outputs.pred_boxes.data.flatten(
-            0, 1
-        )  # [batch_size * num_queries, 4]
+        # Move to CPU to avoid VRAM OOM on large images with many symbols.
+        # The N x M pairwise cost matrix can easily exceed VRAM limits.
+        out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).cpu()
+        out_bbox = outputs.pred_boxes.data.flatten(0, 1).cpu()
 
-        # Also concat the target labels and boxes
-        tgt_ids = torch.cat([v.labels.data for v in targets])
-        tgt_bbox = torch.cat([v.boxes.data for v in targets])
+        tgt_ids = torch.cat([v.labels.data for v in targets]).cpu()
+        tgt_bbox = torch.cat([v.boxes.data for v in targets]).cpu()
+
+        # Handle edge case where there are no targets in the batch
+        if len(tgt_ids) == 0:
+            return [
+                MatchIndices(
+                    pred_indices=torch.empty(0, dtype=torch.int64),
+                    target_indices=torch.empty(0, dtype=torch.int64),
+                )
+                for _ in range(bs)
+            ]
 
         # 1. Compute the classification cost (Focal Loss approximation)
         out_prob = out_prob[:, tgt_ids]
@@ -110,7 +115,7 @@ class HungarianMatcher(nn.Module):
             + self.cost_class * cost_class
             + self.cost_giou * cost_giou
         )
-        C = C.view(bs, num_queries, -1).cpu()
+        C = C.view(bs, num_queries, -1)
 
         # Handle potential NaNs
         C = torch.nan_to_num(C, nan=1e6)
@@ -119,7 +124,7 @@ class HungarianMatcher(nn.Module):
 
         # Run Hungarian Matching (linear_sum_assignment)
         indices = [
-            linear_sum_assignment(c[i])
+            linear_sum_assignment(c[i].numpy())
             for i, c in enumerate(C.split(sizes, -1))
         ]
 
