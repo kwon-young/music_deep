@@ -15,7 +15,7 @@ from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
 import transform.det as det_tf
-from threaded_generator import ThreadedGenerator
+from threaded_generator import ThreadedGenerator, Monitor
 from metric import compute_map_50, compute_mean_iou
 from visualization import update_plot, reconstruct_image_from_patches
 from logger import ExperimentLogger, BaseMetrics
@@ -364,9 +364,11 @@ def train(params: TrainParams):
         f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
     )
 
+    monitor = Monitor()
+
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
-        create_detection_iterator(params), maxsize=4, name="det_pipeline"
+        create_detection_iterator(params), maxsize=4, name="det_pipeline", monitor=monitor
     )
 
     # 2. GPU Training thread
@@ -375,7 +377,8 @@ def train(params: TrainParams):
             data_iterator, model, criterion, optimizer, params, total_symbol_budget, dataset_symbols
         ),
         maxsize=2, # Buffer 2 batches of detached outputs
-        name="train_pipeline"
+        name="train_pipeline",
+        monitor=monitor
     )
 
     start_time = time.time()
@@ -383,75 +386,76 @@ def train(params: TrainParams):
     running_loss = None
 
     # 3. Main thread (Metrics & Visualization)
-    for result in train_iterator:
-        samples += len(result.batch.metadata)
+    with monitor:
+        for result in train_iterator:
+            samples += len(result.batch.metadata)
 
-        # Half-life decay based on symbols processed
-        smoothing = 0.5 ** (
-            result.symbols_processed / params.running_loss_half_life
-        )
-        if running_loss is None:
-            running_loss = result.total_loss
-        else:
-            running_loss = (
-                smoothing * running_loss + (1.0 - smoothing) * result.total_loss
+            # Half-life decay based on symbols processed
+            smoothing = 0.5 ** (
+                result.symbols_processed / params.running_loss_half_life
             )
+            if running_loss is None:
+                running_loss = result.total_loss
+            else:
+                running_loss = (
+                    smoothing * running_loss + (1.0 - smoothing) * result.total_loss
+                )
 
-        if result.step % params.log_interval == 0:
-            with torch.no_grad():
-                indices_match = matcher(result.outputs, result.targets)
-                map50 = compute_map_50(result.outputs, result.targets, params.num_classes)
-                miou = compute_mean_iou(result.outputs, result.targets, indices_match)
+            if result.step % params.log_interval == 0:
+                with torch.no_grad():
+                    indices_match = matcher(result.outputs, result.targets)
+                    map50 = compute_map_50(result.outputs, result.targets, params.num_classes)
+                    miou = compute_mean_iou(result.outputs, result.targets, indices_match)
 
-            elapsed = time.time() - start_time
-            speed = samples / elapsed if elapsed > 0 else 0.0
+                elapsed = time.time() - start_time
+                speed = samples / elapsed if elapsed > 0 else 0.0
 
-            metrics = DetectionMetrics(
-                step=result.step,
-                epoch=result.epoch,
-                lr=result.lr,
-                loss_total=result.total_loss,
-                loss_ce=result.losses.loss_ce.item(),
-                loss_bbox=result.losses.loss_bbox.item(),
-                loss_giou=result.losses.loss_giou.item(),
-                loss_fgl=result.losses.loss_fgl.item(),
-                map50=map50,
-                miou=miou,
-                speed=speed,
-            )
-            logger.log_metrics(metrics)
+                metrics = DetectionMetrics(
+                    step=result.step,
+                    epoch=result.epoch,
+                    lr=result.lr,
+                    loss_total=result.total_loss,
+                    loss_ce=result.losses.loss_ce.item(),
+                    loss_bbox=result.losses.loss_bbox.item(),
+                    loss_giou=result.losses.loss_giou.item(),
+                    loss_fgl=result.losses.loss_fgl.item(),
+                    map50=map50,
+                    miou=miou,
+                    speed=speed,
+                )
+                logger.log_metrics(metrics)
 
-            print(
-                f"Epoch [{result.epoch:.2f}/{params.epochs}] Step [{result.step}] "
-                f"LR: {result.lr:.2e} | "
-                f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
-                f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
-                f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
-                f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
-                f"Speed: {speed:.1f} sample/s"
-            )
+                print(
+                    f"Epoch [{result.epoch:.2f}/{params.epochs}] Step [{result.step}] "
+                    f"LR: {result.lr:.2e} | "
+                    f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
+                    f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
+                    f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
+                    f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
+                    f"Speed: {speed:.1f} sample/s"
+                )
 
-            # Reconstruct image from patches and update plot
-            img_tensor = reconstruct_image_from_patches(result.batch.sample.image)
-            update_plot(
-                ax,
-                img_tensor,
-                result.targets,
-                result.outputs,
-                f"Epoch: {result.epoch:.2f}",
-                indices=indices_match,
-            )
+                # Reconstruct image from patches and update plot
+                img_tensor = reconstruct_image_from_patches(result.batch.sample.image)
+                update_plot(
+                    ax,
+                    img_tensor,
+                    result.targets,
+                    result.outputs,
+                    f"Epoch: {result.epoch:.2f}",
+                    indices=indices_match,
+                )
 
-            vis_path = (
-                logger.get_visualizations_dir()
-                / f"epoch_{int(result.epoch):03d}_step_{result.step:05d}.png"
-            )
-            plt.savefig(vis_path, dpi=150)
+                vis_path = (
+                    logger.get_visualizations_dir()
+                    / f"epoch_{int(result.epoch):03d}_step_{result.step:05d}.png"
+                )
+                plt.savefig(vis_path, dpi=150)
 
-            if not params.headless:
-                fig.canvas.draw()
-                fig.canvas.flush_events()
-                plt.pause(0.001)
+                if not params.headless:
+                    fig.canvas.draw()
+                    fig.canvas.flush_events()
+                    plt.pause(0.001)
 
 
 if __name__ == "__main__":
