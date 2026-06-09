@@ -3,7 +3,7 @@ import time
 import math
 import random
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Iterable
 from dataclasses import dataclass
 from itertools import batched
 import torch
@@ -21,6 +21,8 @@ from visualization import update_plot, reconstruct_image_from_patches
 from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     DetectionTarget,
+    DetectionOutput,
+    DetectionLosses,
     DetectionLossWeights,
     Data,
     DetectionSample,
@@ -86,6 +88,19 @@ class TrainParams:
     exp_dir: Path
     stage_name: str
     headless: bool
+
+
+@dataclass
+class TrainStepResult:
+    step: int
+    epoch: float
+    lr: float
+    batch: BatchedData
+    targets: list[DetectionTarget]
+    outputs: DetectionOutput
+    losses: DetectionLosses
+    total_loss: float
+    symbols_processed: int
 
 
 def transform_image(
@@ -181,6 +196,90 @@ def create_detection_iterator(
     return log_patch_count(_pipeline(), params.log_patches)
 
 
+def train_step_pipeline(
+    iterator: Iterable[
+        BatchedData[
+            CocoMetadata,
+            DetectionSample[
+                Patches[Batch, NumPatches, PatchDim],
+                list[BoundingBoxes],
+                list[ClassLabels],
+            ],
+        ]
+    ],
+    model: OMRDetector,
+    criterion: DFINECriterion,
+    optimizer: optim.Optimizer,
+    params: TrainParams,
+    total_symbol_budget: int,
+    dataset_symbols: int,
+) -> Generator[TrainStepResult, None, None]:
+    """Executes the forward/backward pass and yields detached results for the main thread."""
+    cumulative_symbols = 0
+    global_step = 0
+
+    for batch in iterator:
+        if cumulative_symbols >= total_symbol_budget:
+            break
+
+        global_step += 1
+        current_epoch = cumulative_symbols / dataset_symbols
+
+        targets = [
+            DetectionTarget(labels=l, boxes=b)
+            for b, l in zip(batch.sample.boxes, batch.sample.labels)
+        ]
+
+        optimizer.zero_grad()
+        outputs = model(batch.sample.image)
+        losses = criterion(outputs, targets)
+        total_loss = (
+            losses.loss_ce
+            + losses.loss_bbox
+            + losses.loss_giou
+            + losses.loss_fgl
+        )
+        total_loss.backward()
+
+        # --- Symbol Budget LR Scheduler ---
+        current_batch_symbols = batch.sample.num_symbols
+        cumulative_symbols += current_batch_symbols
+        progress = min(1.0, cumulative_symbols / total_symbol_budget)
+
+        if progress < params.warmup_ratio:
+            # Linear Warmup
+            current_lr = params.lr * max(
+                params.min_lr_ratio, (progress / params.warmup_ratio)
+            )
+        else:
+            # Cosine Decay
+            cosine_progress = (progress - params.warmup_ratio) / (
+                1.0 - params.warmup_ratio
+            )
+            current_lr = (
+                params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
+            )
+
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = current_lr
+        # ----------------------------------
+
+        optimizer.step()
+
+        # Cleanly detach the entire nested dataclass structures
+        yield TrainStepResult(
+            step=global_step,
+            epoch=current_epoch,
+            lr=current_lr,
+            batch=batch,
+            targets=targets,
+            outputs=outputs.detach(),
+            losses=losses.detach(),
+            total_loss=total_loss.item(),
+            symbols_processed=current_batch_symbols,
+        )
+
+
 def train(params: TrainParams):
     import matplotlib
     if params.headless:
@@ -253,12 +352,6 @@ def train(params: TrainParams):
         if manager:
             manager.set_window_title("OMR Detector Training")
 
-    # 3. Training Loop
-    start_time = time.time()
-    samples = 0
-    running_loss = None
-    global_step = 0
-
     dataset_symbols = params.dataset.num_symbols
     print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
 
@@ -270,100 +363,57 @@ def train(params: TrainParams):
         f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
     )
 
-    cumulative_symbols = 0
-
-    iterator = ThreadedGenerator(
+    # 1. Data loading thread
+    data_iterator = ThreadedGenerator(
         create_detection_iterator(params), maxsize=4, name="det_pipeline"
     )
 
-    for step, batch in enumerate(iterator):
-        if cumulative_symbols >= total_symbol_budget:
-            print("Symbol budget reached. Training complete.")
-            break
+    # 2. GPU Training thread
+    train_iterator = ThreadedGenerator(
+        train_step_pipeline(
+            data_iterator, model, criterion, optimizer, params, total_symbol_budget, dataset_symbols
+        ),
+        maxsize=2, # Buffer 2 batches of detached outputs
+        name="train_pipeline"
+    )
 
-        global_step += 1
-        current_epoch = cumulative_symbols / dataset_symbols
+    start_time = time.time()
+    samples = 0
+    running_loss = None
 
-        # Reconstruct DetectionTarget for the criterion
-        targets = [
-            DetectionTarget(labels=l, boxes=b)
-            for b, l in zip(batch.sample.boxes, batch.sample.labels)
-        ]
-
-        optimizer.zero_grad()
-
-        # Forward pass
-        outputs = model(batch.sample.image)
-
-        # Compute loss
-        losses = criterion(outputs, targets)
-        total_loss = (
-            losses.loss_ce
-            + losses.loss_bbox
-            + losses.loss_giou
-            + losses.loss_fgl
-        )
-
-        # Backward pass
-        total_loss.backward()
-
-        # --- Symbol Budget LR Scheduler ---
-        current_batch_symbols = batch.sample.num_symbols
-        cumulative_symbols += current_batch_symbols
-        progress = min(1.0, cumulative_symbols / total_symbol_budget)
-
-        if progress < params.warmup_ratio:
-            # Linear Warmup
-            current_lr = params.lr * max(
-                params.min_lr_ratio, (progress / params.warmup_ratio)
-            )
-        else:
-            # Cosine Decay
-            cosine_progress = (progress - params.warmup_ratio) / (
-                1.0 - params.warmup_ratio
-            )
-            current_lr = (
-                params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
-            )
-
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = current_lr
-        # ----------------------------------
-
-        optimizer.step()
-
-        # Update metrics
-        samples += len(batch.metadata)
+    # 3. Main thread (Metrics & Visualization)
+    for result in train_iterator:
+        samples += len(result.batch.metadata)
 
         # Half-life decay based on symbols processed
         smoothing = 0.5 ** (
-            current_batch_symbols / params.running_loss_half_life
+            result.symbols_processed / params.running_loss_half_life
         )
         if running_loss is None:
-            running_loss = total_loss.item()
+            running_loss = result.total_loss
         else:
             running_loss = (
-                smoothing * running_loss + (1.0 - smoothing) * total_loss.item()
+                smoothing * running_loss + (1.0 - smoothing) * result.total_loss
             )
 
-        if global_step % params.log_interval == 0:
+        if result.step % params.log_interval == 0:
             with torch.no_grad():
-                indices_match = matcher(outputs, targets)
-                map50 = compute_map_50(outputs, targets, params.num_classes)
-                miou = compute_mean_iou(outputs, targets, indices_match)
+                indices_match = matcher(result.outputs, result.targets)
+                map50 = compute_map_50(result.outputs, result.targets, params.num_classes)
+                miou = compute_mean_iou(result.outputs, result.targets, indices_match)
 
             elapsed = time.time() - start_time
             speed = samples / elapsed if elapsed > 0 else 0.0
 
             metrics = DetectionMetrics(
-                step=global_step,
-                epoch=current_epoch,
-                lr=current_lr,
-                loss_total=total_loss.item(),
-                loss_ce=losses.loss_ce.item(),
-                loss_bbox=losses.loss_bbox.item(),
-                loss_giou=losses.loss_giou.item(),
-                loss_fgl=losses.loss_fgl.item(),
+                step=result.step,
+                epoch=result.epoch,
+                lr=result.lr,
+                loss_total=result.total_loss,
+                loss_ce=result.losses.loss_ce.item(),
+                loss_bbox=result.losses.loss_bbox.item(),
+                loss_giou=result.losses.loss_giou.item(),
+                loss_fgl=result.losses.loss_fgl.item(),
                 map50=map50,
                 miou=miou,
                 speed=speed,
@@ -371,29 +421,29 @@ def train(params: TrainParams):
             logger.log_metrics(metrics)
 
             print(
-                f"Epoch [{current_epoch:.2f}/{params.epochs}] Step [{global_step}] "
-                f"LR: {current_lr:.2e} | "
-                f"Loss: {total_loss.item():.4f} (Running: {running_loss:.4f}) | "
-                f"CE: {losses.loss_ce.item():.4f} | BBox: {losses.loss_bbox.item():.4f} | "
-                f"GIoU: {losses.loss_giou.item():.4f} | FGL: {losses.loss_fgl.item():.4f} | "
+                f"Epoch [{result.epoch:.2f}/{params.epochs}] Step [{result.step}] "
+                f"LR: {result.lr:.2e} | "
+                f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
+                f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
+                f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
                 f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
                 f"Speed: {speed:.1f} sample/s"
             )
 
             # Reconstruct image from patches and update plot
-            img_tensor = reconstruct_image_from_patches(batch.sample.image)
+            img_tensor = reconstruct_image_from_patches(result.batch.sample.image)
             update_plot(
                 ax,
                 img_tensor,
-                targets,
-                outputs,
-                f"Epoch: {current_epoch:.2f}",
+                result.targets,
+                result.outputs,
+                f"Epoch: {result.epoch:.2f}",
                 indices=indices_match,
             )
 
             vis_path = (
                 logger.get_visualizations_dir()
-                / f"epoch_{int(current_epoch):03d}_step_{global_step:05d}.png"
+                / f"epoch_{int(result.epoch):03d}_step_{result.step:05d}.png"
             )
             plt.savefig(vis_path, dpi=150)
 

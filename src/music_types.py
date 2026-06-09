@@ -1,5 +1,5 @@
-from typing import Literal
-from dataclasses import dataclass
+from typing import Literal, Self
+from dataclasses import dataclass, replace, fields
 from PIL import Image as Image_
 import numpy as np
 import torch
@@ -34,6 +34,26 @@ type Float1 = Literal["Float1"]
 type Range = Int255 | Float1
 
 
+class DetachMixin:
+    """Mixin that detaches any fields supporting the detach() method."""
+
+    def detach(self) -> Self:
+        changes = {}
+        for f in fields(self):
+            val = getattr(self, f.name)
+
+            if hasattr(val, "detach") and callable(val.detach):
+                changes[f.name] = val.detach()
+            elif isinstance(val, list):
+                # Handle lists of detachable objects (e.g., list[BoundingBoxes])
+                changes[f.name] = [
+                    v.detach() if hasattr(v, "detach") and callable(v.detach) else v
+                    for v in val
+                ]
+
+        return replace(self, **changes)
+
+
 @dataclass
 class PILImage[L: HWC | HW, M: Mode, R: Range]:
     data: Image_.Image
@@ -45,7 +65,7 @@ class ArrayImage[L: AnyLayouts, M: Mode, R: Range]:
 
 
 @dataclass
-class TensorData[Shape]:
+class TensorData[Shape](DetachMixin):
     """Base class for any dataclass that wraps a PyTorch tensor."""
 
     data: torch.Tensor
@@ -170,7 +190,7 @@ class DetectionLossWeights:
 
 
 @dataclass
-class DetectionLosses:
+class DetectionLosses(DetachMixin):
     """Holds the weighted losses from the DFINECriterion."""
 
     loss_ce: torch.Tensor
@@ -305,7 +325,7 @@ class DetectionTarget[Bx, Lbl]:
 
 
 @dataclass
-class DetectionOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim]:
+class DetectionOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](DetachMixin):
     """
     Holds the predictions from the OMRDetector.
     """
