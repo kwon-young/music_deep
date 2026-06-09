@@ -62,7 +62,7 @@ class TrainParams:
     dataset: CocoDataset
     batch_size: int
     patch_size: int
-    crop_size: int
+    crop_size: int | None
     channels: int
     num_classes: int
     num_shapes: int
@@ -109,13 +109,13 @@ def transform_image(
     dataset: CocoDataset,
     img_dir: Path,
     patch_size: int,
-    crop_size: int,
+    crop_size: int | None,
     device: torch.device,
 ) -> Data[
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Preprocessing: Load -> PIL -> Numpy -> Tensor -> Crop -> Device -> Float1 -> Pad -> Normalize."""
+    """Preprocessing: Load -> PIL -> Numpy -> Tensor -> [Crop] -> Device -> Float1 -> Pad -> Normalize."""
     # 1. Load the image from disk
     item = load_coco_sample(dataset, img_dir, index)
 
@@ -123,7 +123,11 @@ def transform_image(
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
 
-    item_cropped = det_tf.random_crop(item_t, crop_size=crop_size)
+    if crop_size is not None:
+        item_cropped = det_tf.random_crop(item_t, crop_size=crop_size)
+    else:
+        item_cropped = item_t
+        
     item_gpu = det_tf.to(item_cropped, device=device)
 
     item_tf = det_tf.to_float1(item_gpu)
@@ -282,6 +286,10 @@ def train_step_pipeline(
 
 
 def train(params: TrainParams):
+    import os
+    if params.headless:
+        os.environ["MPLBACKEND"] = "Agg"
+        
     import matplotlib
     if params.headless:
         matplotlib.use("Agg")
@@ -480,7 +488,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--patch_size", type=int, default=64)
-    parser.add_argument("--crop_size", type=int, default=3584)
+    parser.add_argument(
+        "--crop_size", 
+        type=int, 
+        default=None, 
+        help="Square crop size. If not provided, the full image is used."
+    )
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument(
