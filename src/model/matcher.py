@@ -68,13 +68,15 @@ class HungarianMatcher(nn.Module):
         """
         bs, num_queries = outputs.pred_logits.data.shape[:2]
 
-        # Move to CPU to avoid VRAM OOM on large images with many symbols.
-        # The N x M pairwise cost matrix can easily exceed VRAM limits.
-        out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).cpu()
-        out_bbox = outputs.pred_boxes.data.flatten(0, 1).cpu()
+        # Offload heavy N x M cost matrix computation to the second GPU.
+        # This prevents VRAM OOM on the primary GPU while keeping matrix math fast.
+        calc_device = torch.device("cuda:1")
 
-        tgt_ids = torch.cat([v.labels.data for v in targets]).cpu()
-        tgt_bbox = torch.cat([v.boxes.data for v in targets]).cpu()
+        out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).to(calc_device)
+        out_bbox = outputs.pred_boxes.data.flatten(0, 1).to(calc_device)
+
+        tgt_ids = torch.cat([v.labels.data for v in targets]).to(calc_device)
+        tgt_bbox = torch.cat([v.boxes.data for v in targets]).to(calc_device)
 
         # Handle edge case where there are no targets in the batch
         if len(tgt_ids) == 0:
@@ -124,7 +126,7 @@ class HungarianMatcher(nn.Module):
 
         # Run Hungarian Matching (linear_sum_assignment)
         indices = [
-            linear_sum_assignment(c[i].numpy())
+            linear_sum_assignment(c[i].cpu().numpy())
             for i, c in enumerate(C.split(sizes, -1))
         ]
 
