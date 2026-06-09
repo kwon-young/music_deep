@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Generator, Iterable
 from dataclasses import dataclass
 from itertools import batched
+from contextlib import nullcontext
 import torch
 import torch.optim as optim
 
@@ -89,6 +90,7 @@ class TrainParams:
     exp_dir: Path
     stage_name: str
     headless: bool
+    use_monitor: bool
 
 
 @dataclass
@@ -372,7 +374,7 @@ def train(params: TrainParams):
         f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
     )
 
-    monitor = Monitor()
+    monitor = Monitor() if params.use_monitor else None
 
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
@@ -393,8 +395,10 @@ def train(params: TrainParams):
     samples = 0
     running_loss = None
 
+    ctx = monitor if monitor else nullcontext()
+
     # 3. Main thread (Metrics & Visualization)
-    with monitor:
+    with ctx:
         for result in train_iterator:
             samples += len(result.batch.metadata)
 
@@ -572,6 +576,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable interactive display and use Agg backend",
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Enable the threaded generator monitor dashboard",
+    )
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -613,6 +622,7 @@ if __name__ == "__main__":
         exp_dir=args.exp_dir,
         stage_name=args.stage_name,
         headless=args.headless,
+        use_monitor=args.monitor,
     )
 
     train(params)
