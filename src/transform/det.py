@@ -5,6 +5,7 @@ from .core import (
     transform,
     batched_transform,
     decode_nvimgcodec_img,
+    decode_and_crop_pyvips_img,
     to_numpy_img,
     to_tensor_img,
     to_float1_img,
@@ -65,6 +66,40 @@ def decode_nvimgcodec[Bx, Lbl](
         image=decode_nvimgcodec_img(sample.image, decoder),
         boxes=sample.boxes,
         labels=sample.labels,
+    )
+
+
+@transform
+def decode_and_crop_pyvips[
+    B: NumBoxes,
+    D: BoxDim,
+    BR: BoxRange,
+    O: Origin,
+    LC: NumClasses,
+](
+    sample: DetectionSample[
+        LazyImage,
+        BoundingBoxes[tuple[B, D], XYXY, BR, O],
+        ClassLabels[tuple[B], LC],
+    ],
+    crop_size: int,
+) -> DetectionSample[
+    TensorImage[CHW, RGB, Int255],
+    BoundingBoxes[tuple[NumBoxes, D], XYXY, BR, O],
+    ClassLabels[tuple[NumBoxes], LC],
+]:
+    h, w = sample.image.height, sample.image.width
+    x, y = random_crop_params(h, w, crop_size, torch.device("cpu"))
+
+    new_img = decode_and_crop_pyvips_img(sample.image, x, y, crop_size)
+    new_boxes, new_labels = crop_boxes_xyxy(
+        sample.boxes, sample.labels, x, y, crop_size
+    )
+
+    return DetectionSample(
+        image=new_img,
+        boxes=new_boxes,
+        labels=new_labels,
     )
 
 

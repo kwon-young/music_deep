@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from nvidia.nvimgcodec import Decoder
+import pyvips
 from music_types import (
     Data,
     BatchedData,
@@ -104,6 +105,33 @@ def decode_nvimgcodec_img(
         t_rgb = t_gpu.unsqueeze(0).expand(3, -1, -1)
     else:  # RGB (H, W, C)
         t_rgb = t_gpu.permute(2, 0, 1)
+
+    return TensorImage(t_rgb)
+
+
+def decode_and_crop_pyvips_img(
+    image: LazyImage,
+    x: int,
+    y: int,
+    crop_size: int,
+) -> TensorImage[CHW, RGB, Int255]:
+    """Lazily crops a LazyImage using pyvips and formats it as a CHW RGB tensor."""
+    # Open lazily and crop
+    vips_img = pyvips.Image.new_from_file(str(image.path))
+    crop = vips_img.crop(x, y, crop_size, crop_size)
+
+    # Decode to memory and wrap in numpy (zero-copy from the buffer)
+    arr = np.ndarray(
+        buffer=crop.write_to_memory(),
+        dtype=np.uint8,
+        shape=(crop.height, crop.width, crop.bands)
+    )
+    t = torch.from_numpy(arr)
+
+    if t.shape[-1] == 1:  # Grayscale (H, W, 1)
+        t_rgb = t.squeeze(-1).unsqueeze(0).expand(3, -1, -1)
+    else:  # RGB (H, W, C)
+        t_rgb = t.permute(2, 0, 1)
 
     return TensorImage(t_rgb)
 
