@@ -26,9 +26,13 @@ def suppress_c_stderr():
         os.close(saved_fd)
 
 
-def prepare_images(src_path: Path, jpg_path: Path, tiff_path: Path) -> None:
-    """Converts the source PNG to JPEG and TIFF, preserving the color mode."""
+def prepare_images(src_path: Path, png_path: Path, jpg_path: Path) -> None:
+    """Converts the source TIFF to PNG and JPEG for benchmarking."""
     img = Image.open(src_path)
+
+    if not png_path.exists():
+        print(f"Converting to PNG: {png_path.name}")
+        img.save(png_path, format="PNG")
 
     # JPEG does not support alpha channels (RGBA) or palettes (P)
     if img.mode in ("RGBA", "P"):
@@ -37,17 +41,6 @@ def prepare_images(src_path: Path, jpg_path: Path, tiff_path: Path) -> None:
     if not jpg_path.exists():
         print(f"Converting to JPEG: {jpg_path.name}")
         img.save(jpg_path, format="JPEG", quality=95)
-
-    if not tiff_path.exists():
-        print(f"Converting to TIFF: {tiff_path.name}")
-        # tiff_adobe_deflate is an excellent lossless compression for both Grayscale and RGB
-        # We use 256x256 tiles for optimal cucim and nvimgcodec performance
-        img.save(
-            tiff_path,
-            format="TIFF",
-            compression="tiff_adobe_deflate",
-            tile=(256, 256),
-        )
 
 
 def current_pipeline(
@@ -127,16 +120,16 @@ def benchmark(
             print(f"Image not found: {src_img_path}")
             return
     else:
-        png_images = list(data_dir.glob("*.png"))
-        if not png_images:
-            print(f"No PNG images found in {data_dir}")
+        tiff_images = list(data_dir.glob("*.tiff"))
+        if not tiff_images:
+            print(f"No TIFF images found in {data_dir}")
             return
-        src_img_path = png_images[0]
+        src_img_path = tiff_images[0]
 
+    png_img_path = src_img_path.with_suffix(".png")
     jpg_img_path = src_img_path.with_suffix(".jpg")
-    tiff_img_path = src_img_path.with_suffix(".tiff")
 
-    prepare_images(src_img_path, jpg_img_path, tiff_img_path)
+    prepare_images(src_img_path, png_img_path, jpg_img_path)
 
     with Image.open(src_img_path) as img:
         w, h = img.size
@@ -166,17 +159,17 @@ def benchmark(
     with suppress_c_stderr():
         decoder = Decoder()
         current_pipeline(
-            src_img_path, coords[0][0], coords[0][1], crop_size, device
+            png_img_path, coords[0][0], coords[0][1], crop_size, device
         )
         cucim_pipeline(
-            tiff_img_path, coords[0][0], coords[0][1], crop_size, device
+            src_img_path, coords[0][0], coords[0][1], crop_size, device
         )
         nvimagecodec_pipeline(
             jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
         )
         try:
             nvimagecodec_pipeline(
-                tiff_img_path, coords[0][0], coords[0][1], crop_size, decoder
+                src_img_path, coords[0][0], coords[0][1], crop_size, decoder
             )
         except Exception:
             pass
@@ -185,7 +178,7 @@ def benchmark(
     # --- 1. Current Pipeline (PNG) ---
     start_time = time.perf_counter()
     for x, y in coords:
-        _ = current_pipeline(src_img_path, x, y, crop_size, device)
+        _ = current_pipeline(png_img_path, x, y, crop_size, device)
     torch.cuda.synchronize()
     current_time = time.perf_counter() - start_time
     print(
@@ -195,7 +188,7 @@ def benchmark(
     # --- 2. CuCIM Pipeline (TIFF) ---
     start_time = time.perf_counter()
     for x, y in coords:
-        _ = cucim_pipeline(tiff_img_path, x, y, crop_size, device)
+        _ = cucim_pipeline(src_img_path, x, y, crop_size, device)
     torch.cuda.synchronize()
     cucim_time = time.perf_counter() - start_time
     print(
@@ -216,7 +209,7 @@ def benchmark(
     try:
         start_time = time.perf_counter()
         for x, y in coords:
-            _ = nvimagecodec_pipeline(tiff_img_path, x, y, crop_size, decoder)
+            _ = nvimagecodec_pipeline(src_img_path, x, y, crop_size, decoder)
         torch.cuda.synchronize()
         nv_tiff_time = time.perf_counter() - start_time
         print(
@@ -248,7 +241,7 @@ if __name__ == "__main__":
         "--image_name",
         type=str,
         default=None,
-        help="Specific image file to use (e.g., image.png)",
+        help="Specific image file to use (e.g., image.tiff)",
     )
 
     args = parser.parse_args()
