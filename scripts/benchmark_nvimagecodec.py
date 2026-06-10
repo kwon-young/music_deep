@@ -156,24 +156,23 @@ def benchmark(
     )
 
     # --- Warmups ---
-    with suppress_c_stderr():
-        decoder = Decoder()
-        current_pipeline(
-            png_img_path, coords[0][0], coords[0][1], crop_size, device
-        )
-        cucim_pipeline(
-            src_img_path, coords[0][0], coords[0][1], crop_size, device
-        )
+    decoder = Decoder()
+    current_pipeline(
+        png_img_path, coords[0][0], coords[0][1], crop_size, device
+    )
+    cucim_pipeline(
+        src_img_path, coords[0][0], coords[0][1], crop_size, device
+    )
+    nvimagecodec_pipeline(
+        jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
+    )
+    try:
         nvimagecodec_pipeline(
-            jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
+            src_img_path, coords[0][0], coords[0][1], crop_size, decoder
         )
-        try:
-            nvimagecodec_pipeline(
-                src_img_path, coords[0][0], coords[0][1], crop_size, decoder
-            )
-        except Exception:
-            pass
-        torch.cuda.synchronize()
+    except Exception:
+        pass
+    torch.cuda.synchronize()
 
     # --- 1. Current Pipeline (PNG) ---
     start_time = time.perf_counter()
