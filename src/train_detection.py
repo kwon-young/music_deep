@@ -305,7 +305,9 @@ def log_and_save_checkpoint(
     # 1. Compute Metrics
     with torch.no_grad():
         indices_match = matcher(result.outputs, result.targets)
-        map50 = compute_map_50(result.outputs, result.targets, params.num_classes)
+        map50 = compute_map_50(
+            result.outputs, result.targets, params.num_classes
+        )
         miou = compute_mean_iou(result.outputs, result.targets, indices_match)
 
     elapsed = time.time() - start_time
@@ -454,7 +456,7 @@ def train(params: TrainParams):
     model.train()
 
     total_symbol_budget = dataset_symbols * params.epochs
-    print(f"Training on full dataset.")
+    print("Training on full dataset.")
     print(
         f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
     )
@@ -514,16 +516,36 @@ def train(params: TrainParams):
             if result.epoch - last_log_epoch >= params.log_epoch_interval:
                 last_log_epoch = result.epoch
                 log_and_save_checkpoint(
-                    result, params, matcher, logger, model, optimizer,
-                    running_loss, start_time, samples, ax, fig, plt
+                    result,
+                    params,
+                    matcher,
+                    logger,
+                    model,
+                    optimizer,
+                    running_loss,
+                    start_time,
+                    samples,
+                    ax,
+                    fig,
+                    plt,
                 )
 
         # Ensure the absolute final state is saved
         if last_result is not None:
             print("Training complete. Saving final checkpoint and metrics...")
             log_and_save_checkpoint(
-                last_result, params, matcher, logger, model, optimizer,
-                running_loss, start_time, samples, ax, fig, plt
+                last_result,
+                params,
+                matcher,
+                logger,
+                model,
+                optimizer,
+                running_loss,
+                start_time,
+                samples,
+                ax,
+                fig,
+                plt,
             )
 
 
@@ -601,7 +623,12 @@ if __name__ == "__main__":
         help="Half-life in symbols for running loss smoothing",
     )
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--log_epoch_interval", type=float, default=0.1, help="Log and save every X epochs")
+    parser.add_argument(
+        "--log_epoch_interval",
+        type=float,
+        default=0.1,
+        help="Log and save every X epochs",
+    )
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument(
         "--log_patches",
