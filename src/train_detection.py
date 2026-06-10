@@ -80,7 +80,7 @@ class TrainParams:
     min_lr_ratio: float
     running_loss_half_life: float
     epochs: int
-    log_interval: int
+    log_epoch_interval: float
     var_threshold: float
     log_patches: bool
     compile: bool
@@ -287,6 +287,89 @@ def train_step_pipeline(
         )
 
 
+def log_and_save_checkpoint(
+    result: TrainStepResult,
+    params: TrainParams,
+    matcher: HungarianMatcher,
+    logger: ExperimentLogger,
+    model: OMRDetector,
+    optimizer: optim.Optimizer,
+    running_loss: float,
+    start_time: float,
+    samples: int,
+    ax,
+    fig,
+    plt,
+):
+    """Handles metrics computation, visualization, and saving the model state."""
+    # 1. Compute Metrics
+    with torch.no_grad():
+        indices_match = matcher(result.outputs, result.targets)
+        map50 = compute_map_50(result.outputs, result.targets, params.num_classes)
+        miou = compute_mean_iou(result.outputs, result.targets, indices_match)
+
+    elapsed = time.time() - start_time
+    speed = samples / elapsed if elapsed > 0 else 0.0
+
+    metrics = DetectionMetrics(
+        step=result.step,
+        epoch=result.epoch,
+        lr=result.lr,
+        loss_total=result.total_loss,
+        loss_ce=result.losses.loss_ce.item(),
+        loss_bbox=result.losses.loss_bbox.item(),
+        loss_giou=result.losses.loss_giou.item(),
+        loss_fgl=result.losses.loss_fgl.item(),
+        map50=map50,
+        miou=miou,
+        speed=speed,
+    )
+    logger.log_metrics(metrics)
+
+    print(
+        f"Epoch [{result.epoch:.2f}/{params.epochs}] Step [{result.step}] "
+        f"LR: {result.lr:.2e} | "
+        f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
+        f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
+        f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
+        f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
+        f"Speed: {speed:.1f} sample/s"
+    )
+
+    # 2. Visualization
+    img_tensor = reconstruct_image_from_patches(result.batch.sample.image)
+    update_plot(
+        ax,
+        img_tensor,
+        result.targets,
+        result.outputs,
+        f"Epoch: {result.epoch:.2f}",
+        indices=indices_match,
+    )
+
+    vis_path = (
+        logger.get_visualizations_dir()
+        / f"epoch_{int(result.epoch):03d}_step_{result.step:05d}.png"
+    )
+    plt.savefig(vis_path, dpi=150)
+
+    if not params.headless:
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        plt.pause(0.001)
+
+    # 3. Save Checkpoint
+    checkpoint = {
+        "epoch": result.epoch,
+        "step": result.step,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "running_loss": running_loss,
+    }
+    checkpoint_path = logger.get_checkpoint_dir() / "latest_model.pt"
+    torch.save(checkpoint, checkpoint_path)
+
+
 def train(params: TrainParams):
     import os
 
@@ -405,12 +488,15 @@ def train(params: TrainParams):
     start_time = time.time()
     samples = 0
     running_loss = None
+    last_log_epoch = 0.0
+    last_result = None
 
     ctx = monitor if monitor else nullcontext()
 
     # 3. Main thread (Metrics & Visualization)
     with ctx:
         for result in train_iterator:
+            last_result = result
             samples += len(result.batch.metadata)
 
             # Half-life decay based on symbols processed
@@ -425,67 +511,20 @@ def train(params: TrainParams):
                     + (1.0 - smoothing) * result.total_loss
                 )
 
-            if result.step % params.log_interval == 0:
-                with torch.no_grad():
-                    indices_match = matcher(result.outputs, result.targets)
-                    map50 = compute_map_50(
-                        result.outputs, result.targets, params.num_classes
-                    )
-                    miou = compute_mean_iou(
-                        result.outputs, result.targets, indices_match
-                    )
-
-                elapsed = time.time() - start_time
-                speed = samples / elapsed if elapsed > 0 else 0.0
-
-                metrics = DetectionMetrics(
-                    step=result.step,
-                    epoch=result.epoch,
-                    lr=result.lr,
-                    loss_total=result.total_loss,
-                    loss_ce=result.losses.loss_ce.item(),
-                    loss_bbox=result.losses.loss_bbox.item(),
-                    loss_giou=result.losses.loss_giou.item(),
-                    loss_fgl=result.losses.loss_fgl.item(),
-                    map50=map50,
-                    miou=miou,
-                    speed=speed,
-                )
-                logger.log_metrics(metrics)
-
-                print(
-                    f"Epoch [{result.epoch:.2f}/{params.epochs}] Step [{result.step}] "
-                    f"LR: {result.lr:.2e} | "
-                    f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
-                    f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
-                    f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
-                    f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
-                    f"Speed: {speed:.1f} sample/s"
+            if result.epoch - last_log_epoch >= params.log_epoch_interval:
+                last_log_epoch = result.epoch
+                log_and_save_checkpoint(
+                    result, params, matcher, logger, model, optimizer,
+                    running_loss, start_time, samples, ax, fig, plt
                 )
 
-                # Reconstruct image from patches and update plot
-                img_tensor = reconstruct_image_from_patches(
-                    result.batch.sample.image
-                )
-                update_plot(
-                    ax,
-                    img_tensor,
-                    result.targets,
-                    result.outputs,
-                    f"Epoch: {result.epoch:.2f}",
-                    indices=indices_match,
-                )
-
-                vis_path = (
-                    logger.get_visualizations_dir()
-                    / f"epoch_{int(result.epoch):03d}_step_{result.step:05d}.png"
-                )
-                plt.savefig(vis_path, dpi=150)
-
-                if not params.headless:
-                    fig.canvas.draw()
-                    fig.canvas.flush_events()
-                    plt.pause(0.001)
+        # Ensure the absolute final state is saved
+        if last_result is not None:
+            print("Training complete. Saving final checkpoint and metrics...")
+            log_and_save_checkpoint(
+                last_result, params, matcher, logger, model, optimizer,
+                running_loss, start_time, samples, ax, fig, plt
+            )
 
 
 if __name__ == "__main__":
@@ -562,7 +601,7 @@ if __name__ == "__main__":
         help="Half-life in symbols for running loss smoothing",
     )
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--log_interval", type=int, default=10)
+    parser.add_argument("--log_epoch_interval", type=float, default=0.1, help="Log and save every X epochs")
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument(
         "--log_patches",
@@ -630,7 +669,7 @@ if __name__ == "__main__":
         min_lr_ratio=args.min_lr_ratio,
         running_loss_half_life=args.running_loss_half_life,
         epochs=args.epochs,
-        log_interval=args.log_interval,
+        log_epoch_interval=args.log_epoch_interval,
         var_threshold=args.var_threshold,
         log_patches=args.log_patches,
         compile=args.compile,
