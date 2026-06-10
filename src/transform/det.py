@@ -57,8 +57,8 @@ from music_types import (
 
 
 @transform
-def decode_nvimgcodec[M: Mode, R: Range, Bx, Lbl](
-    sample: DetectionSample[LazyImage[M, R], Bx, Lbl],
+def decode_nvimgcodec[Bx, Lbl](
+    sample: DetectionSample[LazyImage, Bx, Lbl],
     decoder: Decoder,
 ) -> DetectionSample[TensorImage[CHW, RGB, Int255], Bx, Lbl]:
     return DetectionSample(

@@ -88,8 +88,8 @@ def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
     return TensorImage(stacked_tensor)
 
 
-def decode_nvimgcodec_img[M: Mode, R: Range](
-    image: LazyImage[M, R],
+def decode_nvimgcodec_img(
+    image: LazyImage,
     decoder: Decoder,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""

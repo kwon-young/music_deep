@@ -112,7 +112,7 @@ def load_coco_sample(
 ) -> Data[
     CocoMetadata,
     DetectionSample[
-        LazyImage[RGB, Int255],
+        LazyImage,
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
         ClassLabels[tuple[NumBoxes], NumClasses],
     ],

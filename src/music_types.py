@@ -59,7 +59,7 @@ class DetachMixin:
 
 
 @dataclass
-class LazyImage[M: Mode, R: Range]:
+class LazyImage:
     path: Path
     width: int
     height: int
