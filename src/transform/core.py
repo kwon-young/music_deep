@@ -387,4 +387,4 @@ def normalize_boxes_img[B: NumBoxes, D: BoxDim, O: Origin](
     if len(new_data) > 0:
         new_data[:, [0, 2]] /= w
         new_data[:, [1, 3]] /= h
-    return replace(boxes, data=new_data)
+    return BoundingBoxes(data=new_data)
