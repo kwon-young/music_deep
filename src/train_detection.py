@@ -532,6 +532,7 @@ def train(params: TrainParams):
 
         # Ensure the absolute final state is saved
         if last_result is not None:
+            assert running_loss is not None
             print("Training complete. Saving final checkpoint and metrics...")
             log_and_save_checkpoint(
                 last_result,
