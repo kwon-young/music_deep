@@ -172,7 +172,8 @@ class Transformer(Module):
         return self.norm(x)
 
 
-class ViT(Module):
+class BaseViT(Module):
+    """Base class holding the parameters and core logic. Does not define forward()."""
     def __init__(
         self,
         *,
@@ -204,8 +205,8 @@ class ViT(Module):
             dim, depth, heads, dim_head, mlp_dim, dropout
         )
 
-    def forward[B: Batch, N: NumPatches](
-        self, patches: Patches[B, N, PatchDim]
+    def _forward_impl[B: Batch, N: NumPatches](
+        self, patches: Embeddings[B, N, Any]
     ) -> Embeddings[B, N, EmbedDim]:
         freqs = compute_freqs(patches, self.dim_head)
         x_data = patches.data
@@ -222,11 +223,21 @@ class ViT(Module):
         )
 
 
-class ViewViT(ViT):
+class ViT(BaseViT):
+    """Standard ViT that processes generic Patches."""
+    def forward[B: Batch, N: NumPatches](
+        self, patches: Patches[B, N, PatchDim]
+    ) -> Embeddings[B, N, EmbedDim]:
+        return self._forward_impl(patches)
+
+
+class ViewViT(BaseViT):
+    """Specialized ViT that strictly processes FlatViewPatches."""
     def forward[B: Batch, BV: BatchView, V: View, N: NumPatches](
         self, patches: FlatViewPatches[B, BV, V, N, PatchDim]
     ) -> FlatViewEmbeddings[B, BV, V, N, EmbedDim]:
-        out = super().forward(patches)
+        
+        out = self._forward_impl(patches)
 
         return FlatViewEmbeddings(
             data=out.data,
