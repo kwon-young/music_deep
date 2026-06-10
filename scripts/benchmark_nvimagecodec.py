@@ -1,10 +1,29 @@
 import argparse
 import time
+import os
+import sys
 import torch
 import numpy as np
 from pathlib import Path
 from PIL import Image
 from nvidia.nvimgcodec import Decoder
+import cucim
+from contextlib import contextmanager
+
+
+@contextmanager
+def suppress_c_stderr():
+    """Temporarily redirects C-level stderr to /dev/null to silence C++ library prints."""
+    fd = sys.stderr.fileno()
+    saved_fd = os.dup(fd)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, fd)
+    try:
+        yield
+    finally:
+        os.dup2(saved_fd, fd)
+        os.close(devnull)
+        os.close(saved_fd)
 
 
 def prepare_images(src_path: Path, jpg_path: Path, tiff_path: Path) -> None:
@@ -22,7 +41,13 @@ def prepare_images(src_path: Path, jpg_path: Path, tiff_path: Path) -> None:
     if not tiff_path.exists():
         print(f"Converting to TIFF: {tiff_path.name}")
         # tiff_adobe_deflate is an excellent lossless compression for both Grayscale and RGB
-        img.save(tiff_path, format="TIFF", compression="tiff_adobe_deflate")
+        # We use 256x256 tiles for optimal cucim and nvimgcodec performance
+        img.save(
+            tiff_path,
+            format="TIFF",
+            compression="tiff_adobe_deflate",
+            tile=(256, 256),
+        )
 
 
 def current_pipeline(
@@ -40,6 +65,26 @@ def current_pipeline(
     else:  # RGB (H, W, C)
         t_crop = t[y : y + crop_size, x : x + crop_size, :]
         t_gpu = t_crop.to(device)
+        t_rgb = t_gpu.permute(2, 0, 1)
+
+    t_float = t_rgb.float() / 255.0
+    return t_float
+
+
+def cucim_pipeline(
+    img_path: Path, x: int, y: int, crop_size: int, device: torch.device
+) -> torch.Tensor:
+    """cucim -> read_region -> Numpy -> Torch -> GPU -> Expand/Permute -> Float1"""
+    img = cucim.CuImage(str(img_path))
+    region = img.read_region(location=(x, y), size=(crop_size, crop_size))
+    arr = np.asarray(region)  # Guarantees zero-copy if the buffer is compatible
+    t = torch.from_numpy(arr)
+
+    if t.ndim == 2:  # Grayscale (H, W)
+        t_gpu = t.to(device)
+        t_rgb = t_gpu.unsqueeze(0).expand(3, -1, -1)
+    else:  # RGB (H, W, C)
+        t_gpu = t.to(device)
         t_rgb = t_gpu.permute(2, 0, 1)
 
     t_float = t_rgb.float() / 255.0
@@ -113,17 +158,31 @@ def benchmark(
         for _ in range(iterations)
     ]
 
-    decoder = Decoder()
-
     print(
         f"\nBenchmarking {iterations} iterations of {crop_size}x{crop_size} crops on {src_img_path.name}..."
     )
 
+    # --- Warmups ---
+    with suppress_c_stderr():
+        decoder = Decoder()
+        current_pipeline(
+            src_img_path, coords[0][0], coords[0][1], crop_size, device
+        )
+        cucim_pipeline(
+            tiff_img_path, coords[0][0], coords[0][1], crop_size, device
+        )
+        nvimagecodec_pipeline(
+            jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
+        )
+        try:
+            nvimagecodec_pipeline(
+                tiff_img_path, coords[0][0], coords[0][1], crop_size, decoder
+            )
+        except Exception:
+            pass
+        torch.cuda.synchronize()
+
     # --- 1. Current Pipeline (PNG) ---
-    current_pipeline(
-        src_img_path, coords[0][0], coords[0][1], crop_size, device
-    )
-    torch.cuda.synchronize()
     start_time = time.perf_counter()
     for x, y in coords:
         _ = current_pipeline(src_img_path, x, y, crop_size, device)
@@ -133,43 +192,45 @@ def benchmark(
         f"Current Pipeline (PIL PNG): {current_time:.4f}s ({iterations / current_time:.2f} it/s)"
     )
 
-    # --- 2. nvimagecodec Pipeline (JPEG) ---
-    nvimagecodec_pipeline(
-        jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
-    )
+    # --- 2. CuCIM Pipeline (TIFF) ---
+    start_time = time.perf_counter()
+    for x, y in coords:
+        _ = cucim_pipeline(tiff_img_path, x, y, crop_size, device)
     torch.cuda.synchronize()
+    cucim_time = time.perf_counter() - start_time
+    print(
+        f"CuCIM Pipeline (CPU TIFF):  {cucim_time:.4f}s ({iterations / cucim_time:.2f} it/s) -> {current_time / cucim_time:.2f}x speedup"
+    )
+
+    # --- 3. nvimagecodec Pipeline (JPEG) ---
     start_time = time.perf_counter()
     for x, y in coords:
         _ = nvimagecodec_pipeline(jpg_img_path, x, y, crop_size, decoder)
     torch.cuda.synchronize()
     nv_jpg_time = time.perf_counter() - start_time
     print(
-        f"nvimagecodec   (GPU JPEG): {nv_jpg_time:.4f}s ({iterations / nv_jpg_time:.2f} it/s) -> {current_time / nv_jpg_time:.2f}x speedup"
+        f"nvimagecodec   (GPU JPEG):  {nv_jpg_time:.4f}s ({iterations / nv_jpg_time:.2f} it/s) -> {current_time / nv_jpg_time:.2f}x speedup"
     )
 
-    # --- 3. nvimagecodec Pipeline (TIFF) ---
+    # --- 4. nvimagecodec Pipeline (TIFF) ---
     try:
-        nvimagecodec_pipeline(
-            tiff_img_path, coords[0][0], coords[0][1], crop_size, decoder
-        )
-        torch.cuda.synchronize()
         start_time = time.perf_counter()
         for x, y in coords:
             _ = nvimagecodec_pipeline(tiff_img_path, x, y, crop_size, decoder)
         torch.cuda.synchronize()
         nv_tiff_time = time.perf_counter() - start_time
         print(
-            f"nvimagecodec   (GPU TIFF): {nv_tiff_time:.4f}s ({iterations / nv_tiff_time:.2f} it/s) -> {current_time / nv_tiff_time:.2f}x speedup"
+            f"nvimagecodec   (GPU TIFF):  {nv_tiff_time:.4f}s ({iterations / nv_tiff_time:.2f} it/s) -> {current_time / nv_tiff_time:.2f}x speedup"
         )
     except Exception as e:
         print(
-            f"nvimagecodec   (GPU TIFF): FAILED (Expected on Maxwell/Quadro M1200). Error: {e}"
+            f"nvimagecodec   (GPU TIFF):  FAILED (Expected on Maxwell/Quadro M1200). Error: {e}"
         )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Benchmark nvimagecodec vs PIL"
+        description="Benchmark nvimagecodec vs cucim vs PIL"
     )
     parser.add_argument(
         "--data_dir",
