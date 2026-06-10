@@ -72,7 +72,9 @@ class HungarianMatcher(nn.Module):
         # This prevents VRAM OOM on the primary GPU while keeping matrix math fast.
         calc_device = torch.device("cuda:1")
 
-        out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).to(calc_device)
+        out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).to(
+            calc_device
+        )
         out_bbox = outputs.pred_boxes.data.flatten(0, 1).to(calc_device)
 
         tgt_ids = torch.cat([v.labels.data for v in targets]).to(calc_device)

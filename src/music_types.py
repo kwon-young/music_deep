@@ -47,7 +47,9 @@ class DetachMixin:
             elif isinstance(val, list):
                 # Handle lists of detachable objects (e.g., list[BoundingBoxes])
                 changes[f.name] = [
-                    v.detach() if hasattr(v, "detach") and callable(v.detach) else v
+                    v.detach()
+                    if hasattr(v, "detach") and callable(v.detach)
+                    else v
                     for v in val
                 ]
 
@@ -325,7 +327,9 @@ class DetectionTarget[Bx, Lbl]:
 
 
 @dataclass
-class DetectionOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](DetachMixin):
+class DetectionOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](
+    DetachMixin
+):
     """
     Holds the predictions from the OMRDetector.
     """

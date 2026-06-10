@@ -129,7 +129,7 @@ def transform_image(
         item_cropped = det_tf.random_crop(item_t, crop_size=crop_size)
     else:
         item_cropped = item_t
-        
+
     item_gpu = det_tf.to(item_cropped, device=device)
 
     item_tf = det_tf.to_float1(item_gpu)
@@ -289,10 +289,12 @@ def train_step_pipeline(
 
 def train(params: TrainParams):
     import os
+
     if params.headless:
         os.environ["MPLBACKEND"] = "Agg"
-        
+
     import matplotlib
+
     if params.headless:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -378,17 +380,26 @@ def train(params: TrainParams):
 
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
-        create_detection_iterator(params), maxsize=4, name="det_pipeline", monitor=monitor
+        create_detection_iterator(params),
+        maxsize=4,
+        name="det_pipeline",
+        monitor=monitor,
     )
 
     # 2. GPU Training thread
     train_iterator = ThreadedGenerator(
         train_step_pipeline(
-            data_iterator, model, criterion, optimizer, params, total_symbol_budget, dataset_symbols
+            data_iterator,
+            model,
+            criterion,
+            optimizer,
+            params,
+            total_symbol_budget,
+            dataset_symbols,
         ),
-        maxsize=2, # Buffer 2 batches of detached outputs
+        maxsize=2,  # Buffer 2 batches of detached outputs
         name="train_pipeline",
-        monitor=monitor
+        monitor=monitor,
     )
 
     start_time = time.time()
@@ -410,14 +421,19 @@ def train(params: TrainParams):
                 running_loss = result.total_loss
             else:
                 running_loss = (
-                    smoothing * running_loss + (1.0 - smoothing) * result.total_loss
+                    smoothing * running_loss
+                    + (1.0 - smoothing) * result.total_loss
                 )
 
             if result.step % params.log_interval == 0:
                 with torch.no_grad():
                     indices_match = matcher(result.outputs, result.targets)
-                    map50 = compute_map_50(result.outputs, result.targets, params.num_classes)
-                    miou = compute_mean_iou(result.outputs, result.targets, indices_match)
+                    map50 = compute_map_50(
+                        result.outputs, result.targets, params.num_classes
+                    )
+                    miou = compute_mean_iou(
+                        result.outputs, result.targets, indices_match
+                    )
 
                 elapsed = time.time() - start_time
                 speed = samples / elapsed if elapsed > 0 else 0.0
@@ -448,7 +464,9 @@ def train(params: TrainParams):
                 )
 
                 # Reconstruct image from patches and update plot
-                img_tensor = reconstruct_image_from_patches(result.batch.sample.image)
+                img_tensor = reconstruct_image_from_patches(
+                    result.batch.sample.image
+                )
                 update_plot(
                     ax,
                     img_tensor,
@@ -493,10 +511,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument(
-        "--crop_size", 
-        type=int, 
-        default=None, 
-        help="Square crop size. If not provided, the full image is used."
+        "--crop_size",
+        type=int,
+        default=None,
+        help="Square crop size. If not provided, the full image is used.",
     )
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
