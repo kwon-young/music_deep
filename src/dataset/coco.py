@@ -7,8 +7,7 @@ from PIL import Image as Image_
 
 from music_types import (
     Data,
-    PILImage,
-    HWC,
+    LazyImage,
     RGB,
     Int255,
     DetectionSample,
@@ -18,7 +17,6 @@ from music_types import (
     NumClasses,
     BoxDim,
     XYXY,
-    Float1,
     Absolute,
     TopLeft,
 )
@@ -114,7 +112,7 @@ def load_coco_sample(
 ) -> Data[
     CocoMetadata,
     DetectionSample[
-        PILImage[HWC, RGB, Int255],
+        LazyImage[RGB, Int255],
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
         ClassLabels[tuple[NumBoxes], NumClasses],
     ],
@@ -126,7 +124,6 @@ def load_coco_sample(
     if not img_path.exists():
         raise FileNotFoundError(f"Image not found: {img_path}")
 
-    pil_img = Image_.open(img_path).convert("RGB")
     anns = dataset.annotations.get(img_meta.img_id, [])
 
     labels: list[int] = []
@@ -146,7 +143,7 @@ def load_coco_sample(
     return Data(
         metadata=img_meta,
         sample=DetectionSample(
-            image=PILImage(pil_img),
+            image=LazyImage(path=img_path, width=img_meta.width, height=img_meta.height),
             boxes=BoundingBoxes(boxes_tensor),
             labels=ClassLabels(labels_tensor),
         ),

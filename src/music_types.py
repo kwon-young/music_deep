@@ -1,5 +1,6 @@
 from typing import Literal, Self
 from dataclasses import dataclass, replace, fields
+from pathlib import Path
 from PIL import Image as Image_
 import numpy as np
 import torch
@@ -55,6 +56,13 @@ class DetachMixin:
                 ]
 
         return replace(self, **changes)
+
+
+@dataclass
+class LazyImage[M: Mode, R: Range]:
+    path: Path
+    width: int
+    height: int
 
 
 @dataclass

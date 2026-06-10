@@ -1,5 +1,6 @@
 import torch
 from dataclasses import replace
+from nvidia.nvimgcodec import Decoder
 from .core import (
     transform,
     batched_transform,
@@ -21,6 +22,7 @@ from .core import (
 )
 from music_types import (
     DetectionSample,
+    LazyImage,
     PILImage,
     ArrayImage,
     TensorImage,
@@ -51,6 +53,31 @@ from music_types import (
     XYXY,
     Absolute,
 )
+
+
+@transform
+def decode_nvimgcodec[M: Mode, R: Range, Bx, Lbl](
+    sample: DetectionSample[LazyImage[M, R], Bx, Lbl],
+    decoder: Decoder,
+) -> DetectionSample[TensorImage[CHW, RGB, Int255], Bx, Lbl]:
+    """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""
+    nv_img = decoder.read(str(sample.image.path))
+    t_gpu = torch.from_dlpack(nv_img)
+
+    # nvimagecodec might return (H, W, 1) for grayscale. Squeeze to (H, W)
+    if t_gpu.ndim == 3 and t_gpu.shape[-1] == 1:
+        t_gpu = t_gpu.squeeze(-1)
+
+    if t_gpu.ndim == 2:  # Grayscale (H, W)
+        t_rgb = t_gpu.unsqueeze(0).expand(3, -1, -1)
+    else:  # RGB (H, W, C)
+        t_rgb = t_gpu.permute(2, 0, 1)
+
+    return DetectionSample(
+        image=TensorImage(t_rgb),
+        boxes=sample.boxes,
+        labels=sample.labels,
+    )
 
 
 @transform
