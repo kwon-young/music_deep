@@ -14,6 +14,7 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
+from nvidia.nvimgcodec import Decoder
 from music_types import (
     Data,
     BatchedData,
@@ -23,6 +24,7 @@ from music_types import (
     Range,
     Int255,
     Float1,
+    LazyImage,
     PILImage,
     ArrayImage,
     TensorImage,
@@ -51,6 +53,7 @@ from music_types import (
     NumClasses,
     XYXY,
     Absolute,
+    RGB,
 )
 
 
@@ -83,6 +86,26 @@ def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
 ) -> TensorImage[tuple[Batch, C, H, W], M, R]:
     stacked_tensor = torch.stack([item.data for item in items], dim=0)
     return TensorImage(stacked_tensor)
+
+
+def decode_nvimgcodec_img[M: Mode, R: Range](
+    image: LazyImage[M, R],
+    decoder: Decoder,
+) -> TensorImage[CHW, RGB, Int255]:
+    """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""
+    nv_img = decoder.read(str(image.path))
+    t_gpu = torch.from_dlpack(nv_img)
+
+    # nvimagecodec might return (H, W, 1) for grayscale. Squeeze to (H, W)
+    if t_gpu.ndim == 3 and t_gpu.shape[-1] == 1:
+        t_gpu = t_gpu.squeeze(-1)
+
+    if t_gpu.ndim == 2:  # Grayscale (H, W)
+        t_rgb = t_gpu.unsqueeze(0).expand(3, -1, -1)
+    else:  # RGB (H, W, C)
+        t_rgb = t_gpu.permute(2, 0, 1)
+
+    return TensorImage(t_rgb)
 
 
 def to_numpy_img[H: Height, W: Width, C: Channel, M: Mode, R: Range](
