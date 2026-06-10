@@ -173,7 +173,6 @@ class Transformer(Module):
 
 
 class BaseViT(Module):
-    """Base class holding the parameters and core logic. Does not define forward()."""
     def __init__(
         self,
         *,
@@ -225,6 +224,7 @@ class BaseViT(Module):
 
 class ViT(BaseViT):
     """Standard ViT that processes generic Patches."""
+
     def forward[B: Batch, N: NumPatches](
         self, patches: Patches[B, N, PatchDim]
     ) -> Embeddings[B, N, EmbedDim]:
@@ -233,10 +233,11 @@ class ViT(BaseViT):
 
 class ViewViT(BaseViT):
     """Specialized ViT that strictly processes FlatViewPatches."""
+
     def forward[B: Batch, BV: BatchView, V: View, N: NumPatches](
         self, patches: FlatViewPatches[B, BV, V, N, PatchDim]
     ) -> FlatViewEmbeddings[B, BV, V, N, EmbedDim]:
-        
+
         out = self._forward_impl(patches)
 
         return FlatViewEmbeddings(
