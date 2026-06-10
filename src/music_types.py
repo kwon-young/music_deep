@@ -34,6 +34,7 @@ type Float1 = Literal["Float1"]
 type Range = Int255 | Float1
 
 
+@dataclass
 class DetachMixin:
     """Mixin that detaches any fields supporting the detach() method."""
 
