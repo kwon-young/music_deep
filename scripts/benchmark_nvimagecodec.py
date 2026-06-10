@@ -8,22 +8,7 @@ from pathlib import Path
 from PIL import Image
 from nvidia.nvimgcodec import Decoder
 import cucim
-from contextlib import contextmanager
-
-
-@contextmanager
-def suppress_c_stderr():
-    """Temporarily redirects C-level stderr to /dev/null to silence C++ library prints."""
-    fd = sys.stderr.fileno()
-    saved_fd = os.dup(fd)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, fd)
-    try:
-        yield
-    finally:
-        os.dup2(saved_fd, fd)
-        os.close(devnull)
-        os.close(saved_fd)
+import pyvips
 
 
 def prepare_images(src_path: Path, png_path: Path, jpg_path: Path) -> None:
@@ -75,6 +60,35 @@ def cucim_pipeline(
 
     if t.ndim == 2:  # Grayscale (H, W)
         t_gpu = t.to(device)
+        t_rgb = t_gpu.unsqueeze(0).expand(3, -1, -1)
+    else:  # RGB (H, W, C)
+        t_gpu = t.to(device)
+        t_rgb = t_gpu.permute(2, 0, 1)
+
+    t_float = t_rgb.float() / 255.0
+    return t_float
+
+
+def pyvips_pipeline(
+    img_path: Path, x: int, y: int, crop_size: int, device: torch.device
+) -> torch.Tensor:
+    """pyvips -> crop -> Numpy -> Torch -> GPU -> Expand/Permute -> Float1"""
+    # Open lazily
+    img = pyvips.Image.new_from_file(str(img_path))
+    
+    # Crop lazily
+    crop = img.crop(x, y, crop_size, crop_size)
+    
+    # Decode to memory and wrap in numpy (zero-copy from the buffer)
+    arr = np.ndarray(
+        buffer=crop.write_to_memory(),
+        dtype=np.uint8,
+        shape=(crop.height, crop.width, crop.bands)
+    )
+    t = torch.from_numpy(arr)
+
+    if t.shape[-1] == 1:  # Grayscale (H, W, 1)
+        t_gpu = t.squeeze(-1).to(device)
         t_rgb = t_gpu.unsqueeze(0).expand(3, -1, -1)
     else:  # RGB (H, W, C)
         t_gpu = t.to(device)
@@ -163,6 +177,9 @@ def benchmark(
     cucim_pipeline(
         src_img_path, coords[0][0], coords[0][1], crop_size, device
     )
+    pyvips_pipeline(
+        src_img_path, coords[0][0], coords[0][1], crop_size, device
+    )
     nvimagecodec_pipeline(
         jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
     )
@@ -194,7 +211,17 @@ def benchmark(
         f"CuCIM Pipeline (CPU TIFF):  {cucim_time:.4f}s ({iterations / cucim_time:.2f} it/s) -> {current_time / cucim_time:.2f}x speedup"
     )
 
-    # --- 3. nvimagecodec Pipeline (JPEG) ---
+    # --- 3. pyvips Pipeline (TIFF) ---
+    start_time = time.perf_counter()
+    for x, y in coords:
+        _ = pyvips_pipeline(src_img_path, x, y, crop_size, device)
+    torch.cuda.synchronize()
+    pyvips_time = time.perf_counter() - start_time
+    print(
+        f"pyvips Pipeline (CPU TIFF): {pyvips_time:.4f}s ({iterations / pyvips_time:.2f} it/s) -> {current_time / pyvips_time:.2f}x speedup"
+    )
+
+    # --- 4. nvimagecodec Pipeline (JPEG) ---
     start_time = time.perf_counter()
     for x, y in coords:
         _ = nvimagecodec_pipeline(jpg_img_path, x, y, crop_size, decoder)
@@ -204,7 +231,7 @@ def benchmark(
         f"nvimagecodec   (GPU JPEG):  {nv_jpg_time:.4f}s ({iterations / nv_jpg_time:.2f} it/s) -> {current_time / nv_jpg_time:.2f}x speedup"
     )
 
-    # --- 4. nvimagecodec Pipeline (TIFF) ---
+    # --- 5. nvimagecodec Pipeline (TIFF) ---
     try:
         start_time = time.perf_counter()
         for x, y in coords:
@@ -222,7 +249,7 @@ def benchmark(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Benchmark nvimagecodec vs cucim vs PIL"
+        description="Benchmark nvimagecodec vs cucim vs pyvips vs PIL"
     )
     parser.add_argument(
         "--data_dir",
