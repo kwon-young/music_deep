@@ -14,7 +14,6 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-import pyvips
 from music_types import (
     Data,
     BatchedData,
@@ -89,10 +88,10 @@ def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
 
 
 @cache
-def get_nv_decoder():
+def get_nv_decoder(device_id: int = 0):
     try:
         from nvidia.nvimgcodec import Decoder
-        return Decoder()
+        return Decoder(device_id=device_id)
     except ImportError as e:
         raise RuntimeError("nvimgcodec is not installed but a CUDA prep_device was requested.") from e
 
@@ -102,7 +101,8 @@ def decode_nvimgcodec_img(
     device: torch.device,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""
-    decoder = get_nv_decoder()
+    device_id = device.index if device.index is not None else 0
+    decoder = get_nv_decoder(device_id)
     nv_img = decoder.read(str(image.path))
     t_gpu = torch.from_dlpack(nv_img).to(device)
 
@@ -123,6 +123,7 @@ def decode_pyvips_img(
     device: torch.device,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Decodes a full LazyImage using pyvips and formats it as a CHW RGB tensor."""
+    import pyvips
     vips_img = pyvips.Image.new_from_file(str(image.path))
 
     arr = np.ndarray(
@@ -148,6 +149,7 @@ def decode_and_crop_pyvips_img(
     device: torch.device,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Lazily crops a LazyImage using pyvips and formats it as a CHW RGB tensor."""
+    import pyvips
     # Open lazily and crop
     vips_img = pyvips.Image.new_from_file(str(image.path))
     crop = vips_img.crop(x, y, crop_size, crop_size)
