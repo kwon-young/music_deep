@@ -1,10 +1,10 @@
 import torch
 from dataclasses import replace
-from nvidia.nvimgcodec import Decoder
 from .core import (
     transform,
     batched_transform,
     decode_nvimgcodec_img,
+    decode_pyvips_img,
     decode_and_crop_pyvips_img,
     to_numpy_img,
     to_tensor_img,
@@ -60,10 +60,22 @@ from music_types import (
 @transform
 def decode_nvimgcodec[Bx, Lbl](
     sample: DetectionSample[LazyImage, Bx, Lbl],
-    decoder: Decoder,
+    device: torch.device,
 ) -> DetectionSample[TensorImage[CHW, RGB, Int255], Bx, Lbl]:
     return DetectionSample(
-        image=decode_nvimgcodec_img(sample.image, decoder),
+        image=decode_nvimgcodec_img(sample.image, device),
+        boxes=sample.boxes,
+        labels=sample.labels,
+    )
+
+
+@transform
+def decode_pyvips[Bx, Lbl](
+    sample: DetectionSample[LazyImage, Bx, Lbl],
+    device: torch.device,
+) -> DetectionSample[TensorImage[CHW, RGB, Int255], Bx, Lbl]:
+    return DetectionSample(
+        image=decode_pyvips_img(sample.image, device),
         boxes=sample.boxes,
         labels=sample.labels,
     )
@@ -83,6 +95,7 @@ def decode_and_crop_pyvips[
         ClassLabels[tuple[B], LC],
     ],
     crop_size: int,
+    device: torch.device,
 ) -> DetectionSample[
     TensorImage[CHW, RGB, Int255],
     BoundingBoxes[tuple[NumBoxes, D], XYXY, BR, O],
@@ -91,7 +104,7 @@ def decode_and_crop_pyvips[
     h, w = sample.image.height, sample.image.width
     x, y = random_crop_params(h, w, crop_size, torch.device("cpu"))
 
-    new_img = decode_and_crop_pyvips_img(sample.image, x, y, crop_size)
+    new_img = decode_and_crop_pyvips_img(sample.image, x, y, crop_size, device)
     new_boxes, new_labels = crop_boxes_xyxy(
         sample.boxes, sample.labels, x, y, crop_size
     )

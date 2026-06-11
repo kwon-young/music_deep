@@ -3,12 +3,13 @@ import time
 import math
 import random
 from pathlib import Path
-from typing import Generator, Iterable
-from dataclasses import dataclass
+from typing import Generator, Iterable, Any
+from dataclasses import dataclass, replace
 from itertools import batched
 from contextlib import nullcontext
 import torch
 import torch.optim as optim
+from PIL import Image as Image_
 
 from model.vit import vit_nano
 from model.detector import OMRDetector
@@ -28,6 +29,7 @@ from music_types import (
     Data,
     DetectionSample,
     TensorImage,
+    PILImage,
     CHW,
     RGB,
     Float1,
@@ -84,7 +86,8 @@ class TrainParams:
     var_threshold: float
     log_patches: bool
     compile: bool
-    device: torch.device
+    prep_device: torch.device
+    train_device: torch.device
     backbone_checkpoint: Path | None
     freeze_backbone: bool
     exp_dir: Path
@@ -112,27 +115,27 @@ def transform_image(
     img_dir: Path,
     patch_size: int,
     crop_size: int | None,
-    device: torch.device,
+    prep_device: torch.device,
 ) -> Data[
     CocoMetadata,
     DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
 ]:
-    """Preprocessing: Load -> PIL -> Numpy -> Tensor -> [Crop] -> Device -> Float1 -> Pad -> Normalize."""
-    # 1. Load the image from disk
+    """Preprocessing: Load -> Decode/Crop -> Float1 -> Pad -> Normalize."""
     item = load_coco_sample(dataset, img_dir, index)
 
-    # 2. Apply transformations
-    item_np = det_tf.to_numpy(item)
-    item_t = det_tf.to_tensor(item_np)
-
-    if crop_size is not None:
-        item_cropped = det_tf.random_crop(item_t, crop_size=crop_size)
+    if prep_device.type == "cuda":
+        item_decoded = det_tf.decode_nvimgcodec(item, device=prep_device)
+        if crop_size is not None:
+            item_cropped = det_tf.random_crop(item_decoded, crop_size=crop_size)
+        else:
+            item_cropped = item_decoded
     else:
-        item_cropped = item_t
+        if crop_size is not None:
+            item_cropped = det_tf.decode_and_crop_pyvips(item, crop_size=crop_size, device=prep_device)
+        else:
+            item_cropped = det_tf.decode_pyvips(item, device=prep_device)
 
-    item_gpu = det_tf.to(item_cropped, device=device)
-
-    item_tf = det_tf.to_float1(item_gpu)
+    item_tf = det_tf.to_float1(item_cropped)
     item_padded = det_tf.pad_to_patch_size(
         item_tf, patch_size=(patch_size, patch_size)
     )
@@ -183,7 +186,7 @@ def create_detection_iterator(
                     params.img_dir,
                     params.patch_size,
                     params.crop_size,
-                    params.device,
+                    params.prep_device,
                 )
                 for idx in indices
             )
@@ -198,7 +201,10 @@ def create_detection_iterator(
                 dropped_item = det_tf.variance_patch_drop(
                     patched_item, var_threshold=params.var_threshold
                 )
-                yield dropped_item
+                
+                # Move the final batch to the training device
+                final_item = det_tf.to_patches(dropped_item, device=params.train_device)
+                yield final_item
 
     return log_patch_count(_pipeline(), params.log_patches)
 
@@ -384,7 +390,8 @@ def train(params: TrainParams):
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    print(f"Using device: {params.device}")
+    print(f"Using prep_device: {params.prep_device}")
+    print(f"Using train_device: {params.train_device}")
     print(f"Learning Rate: {params.lr:.2e}")
 
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
@@ -396,7 +403,7 @@ def train(params: TrainParams):
         print(f"Loading backbone weights from {params.backbone_checkpoint}")
         checkpoint = torch.load(
             params.backbone_checkpoint,
-            map_location=params.device,
+            map_location=params.train_device,
             weights_only=True,
         )
         backbone.load_state_dict(checkpoint["backbone"], strict=True)
@@ -417,7 +424,7 @@ def train(params: TrainParams):
         num_classes=params.num_classes,
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
-    ).to(params.device)
+    ).to(params.train_device)
 
     if params.compile:
         print("Compiling model with torch.compile(dynamic=True)...")
@@ -428,6 +435,7 @@ def train(params: TrainParams):
         cost_class=params.cost_class,
         cost_bbox=params.cost_bbox,
         cost_giou=params.cost_giou,
+        calc_device=params.prep_device,
     )
     weights = DetectionLossWeights(
         loss_ce=params.loss_ce,
@@ -437,7 +445,7 @@ def train(params: TrainParams):
     )
     criterion = DFINECriterion(
         matcher, num_classes=params.num_classes, weights=weights
-    ).to(params.device)
+    ).to(params.train_device)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
@@ -642,6 +650,18 @@ if __name__ == "__main__":
         help="Enable torch.compile for the model (useful for Kaggle/modern GPUs)",
     )
     parser.add_argument(
+        "--prep_device",
+        type=str,
+        default="cpu",
+        help="Device for preprocessing and matching (e.g., cpu, cuda:0)",
+    )
+    parser.add_argument(
+        "--train_device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device for model training (e.g., cuda:0)",
+    )
+    parser.add_argument(
         "--backbone_checkpoint",
         type=Path,
         default=None,
@@ -668,7 +688,8 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    prep_device = torch.device(args.prep_device)
+    train_device = torch.device(args.train_device)
 
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
@@ -701,7 +722,8 @@ if __name__ == "__main__":
         var_threshold=args.var_threshold,
         log_patches=args.log_patches,
         compile=args.compile,
-        device=device,
+        prep_device=prep_device,
+        train_device=train_device,
         backbone_checkpoint=args.backbone_checkpoint,
         freeze_backbone=args.freeze_backbone,
         exp_dir=args.exp_dir,

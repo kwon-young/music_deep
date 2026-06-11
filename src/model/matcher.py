@@ -34,6 +34,7 @@ class HungarianMatcher(nn.Module):
         cost_giou: float = 2.0,
         alpha: float = 0.25,
         gamma: float = 2.0,
+        calc_device: torch.device | None = None,
     ):
         super().__init__()
         self.cost_class = cost_class
@@ -41,6 +42,7 @@ class HungarianMatcher(nn.Module):
         self.cost_giou = cost_giou
         self.alpha = alpha
         self.gamma = gamma
+        self.calc_device = calc_device
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, (
             "all costs can't be 0"
         )
@@ -68,9 +70,7 @@ class HungarianMatcher(nn.Module):
         """
         bs, num_queries = outputs.pred_logits.data.shape[:2]
 
-        # Offload heavy N x M cost matrix computation to the second GPU.
-        # This prevents VRAM OOM on the primary GPU while keeping matrix math fast.
-        calc_device = torch.device("cuda:1")
+        calc_device = self.calc_device if self.calc_device is not None else outputs.pred_logits.data.device
 
         out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).to(
             calc_device

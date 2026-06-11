@@ -7,14 +7,13 @@ from typing import (
     TypeVar,
     Any,
 )
-from functools import wraps
+from functools import wraps, cache
 from dataclasses import replace
 import random
 import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-from nvidia.nvimgcodec import Decoder
 import pyvips
 from music_types import (
     Data,
@@ -89,13 +88,23 @@ def stack_tensor_img[C: Channel, H: Height, W: Width, M: Mode, R: Range](
     return TensorImage(stacked_tensor)
 
 
+@cache
+def get_nv_decoder():
+    try:
+        from nvidia.nvimgcodec import Decoder
+        return Decoder()
+    except ImportError as e:
+        raise RuntimeError("nvimgcodec is not installed but a CUDA prep_device was requested.") from e
+
+
 def decode_nvimgcodec_img(
     image: LazyImage,
-    decoder: Decoder,
+    device: torch.device,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""
+    decoder = get_nv_decoder()
     nv_img = decoder.read(str(image.path))
-    t_gpu = torch.from_dlpack(nv_img)
+    t_gpu = torch.from_dlpack(nv_img).to(device)
 
     # nvimagecodec might return (H, W, 1) for grayscale. Squeeze to (H, W)
     if t_gpu.ndim == 3 and t_gpu.shape[-1] == 1:
@@ -109,11 +118,34 @@ def decode_nvimgcodec_img(
     return TensorImage(t_rgb)
 
 
+def decode_pyvips_img(
+    image: LazyImage,
+    device: torch.device,
+) -> TensorImage[CHW, RGB, Int255]:
+    """Decodes a full LazyImage using pyvips and formats it as a CHW RGB tensor."""
+    vips_img = pyvips.Image.new_from_file(str(image.path))
+
+    arr = np.ndarray(
+        buffer=vips_img.write_to_memory(),
+        dtype=np.uint8,
+        shape=(vips_img.height, vips_img.width, vips_img.bands)
+    )
+    t = torch.from_numpy(arr).to(device)
+
+    if t.shape[-1] == 1:  # Grayscale (H, W, 1)
+        t_rgb = t.squeeze(-1).unsqueeze(0).expand(3, -1, -1)
+    else:  # RGB (H, W, C)
+        t_rgb = t.permute(2, 0, 1)
+
+    return TensorImage(t_rgb)
+
+
 def decode_and_crop_pyvips_img(
     image: LazyImage,
     x: int,
     y: int,
     crop_size: int,
+    device: torch.device,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Lazily crops a LazyImage using pyvips and formats it as a CHW RGB tensor."""
     # Open lazily and crop
@@ -126,7 +158,7 @@ def decode_and_crop_pyvips_img(
         dtype=np.uint8,
         shape=(crop.height, crop.width, crop.bands)
     )
-    t = torch.from_numpy(arr)
+    t = torch.from_numpy(arr).to(device)
 
     if t.shape[-1] == 1:  # Grayscale (H, W, 1)
         t_rgb = t.squeeze(-1).unsqueeze(0).expand(3, -1, -1)
