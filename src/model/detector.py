@@ -126,9 +126,15 @@ class DFINEDenseHead(nn.Module):
             nn.Linear(in_dim, self.out_dim),
         )
 
+        bias_view = self.mlp[-1].bias.view(num_shapes, self.preds_per_shape)
+
+        # Initialize classification bias for Focal Loss stability
+        prior_prob = 0.01
+        cls_bias_init = -math.log((1 - prior_prob) / prior_prob)
+        nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
+
         # Initialize the bias for the width/height predictions so they start at base_anchor_size
         init_val = math.log(math.exp(base_anchor_size) - 1)
-        bias_view = self.mlp[-1].bias.view(num_shapes, self.preds_per_shape)
         nn.init.constant_(
             bias_view[:, num_classes + 2 : num_classes + 4], init_val
         )
