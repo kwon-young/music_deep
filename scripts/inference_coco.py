@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 import torch
 from pathlib import Path
 from tqdm import tqdm
@@ -126,9 +127,17 @@ def run_inference(args):
 
     coco_results = []
 
+    # Determine indices to process
+    num_images = len(dataset.images)
+    if args.num_samples is not None and args.num_samples < num_images:
+        indices = random.sample(range(num_images), args.num_samples)
+        print(f"Randomly subsampled {args.num_samples} images out of {num_images}.")
+    else:
+        indices = range(num_images)
+
     print("Running inference...")
     with torch.no_grad():
-        for i in tqdm(range(len(dataset.images))):
+        for i in tqdm(indices):
             # Process image in a separate function so local tensors go out of scope
             results = process_single_image(i, dataset, args, model, device, idx_to_cat_id)
             coco_results.extend(results)
@@ -175,6 +184,12 @@ if __name__ == "__main__":
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help="Number of random images to process. If not set, processes the whole dataset.",
+    )
     parser.add_argument(
         "--device",
         type=str,
