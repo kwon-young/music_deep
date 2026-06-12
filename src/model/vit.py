@@ -110,11 +110,9 @@ class Attention(Module):
         project_out = not (heads == 1 and dim_head == dim)
 
         self.heads = heads
-        self.scale = dim_head**-0.5
 
         self.norm = nn.LayerNorm(dim)
 
-        self.attend = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
@@ -136,12 +134,11 @@ class Attention(Module):
         if freqs is not None:
             q, k = apply_pope(q, k, freqs)
 
-        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout.p if self.training else 0.0,
+        )
 
-        attn = self.attend(dots)
-        attn = self.dropout(attn)
-
-        out = torch.matmul(attn, v)
         out = out.transpose(1, 2).flatten(2)
         return self.to_out(out)
 
