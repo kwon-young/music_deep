@@ -91,14 +91,24 @@ def main(args):
         labels_path=str(subset_anno_path),
         name=dataset_name,
         label_field="ground_truth",
-        include_id=True,  # FIX: Tell FiftyOne to save the COCO image_id so we can match predictions
     )
+    
+    # FIX: Manually add coco_id to samples so add_coco_labels can match them
+    print("Mapping COCO image IDs to FiftyOne samples...")
+    with open(subset_anno_path, "r") as f:
+        subset_data = json.load(f)
+    filename_to_id = {img["file_name"]: img["id"] for img in subset_data.get("images", [])}
+    
+    for sample in dataset:
+        fname = Path(sample.filepath).name
+        if fname in filename_to_id:
+            sample["coco_id"] = filename_to_id[fname]
+            sample.save()
     
     print("Extracting category mapping from Ground Truth...")
     _, classes_map, _, _, _ = fouc.load_coco_detection_annotations(str(subset_anno_path))
 
     print("Adding predictions to FiftyOne...")
-    # FIX: Pass dataset.default_classes as the required 'categories' argument
     fouc.add_coco_labels(
         dataset,
         "predictions",
