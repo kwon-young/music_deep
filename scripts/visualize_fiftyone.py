@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import fiftyone as fo
 import fiftyone.utils.coco as fouc
+from PIL import Image
 
 def filter_coco_json(anno_path: Path, pred_image_ids: set, out_path: Path):
     # Check if we already have a valid subset to avoid the heavy load
@@ -94,15 +95,29 @@ def main(args):
     )
     
     # FIX: Manually add coco_id to samples so add_coco_labels can match them
-    print("Mapping COCO image IDs to FiftyOne samples...")
+    print("Mapping COCO image IDs and converting TIFFs to PNG for browser compatibility...")
     with open(subset_anno_path, "r") as f:
         subset_data = json.load(f)
     filename_to_id = {img["file_name"]: img["id"] for img in subset_data.get("images", [])}
     
+    cache_dir = args.img_dir / ".fiftyone_cache"
+    cache_dir.mkdir(exist_ok=True)
+
     for sample in dataset:
-        fname = Path(sample.filepath).name
+        orig_path = Path(sample.filepath)
+        fname = orig_path.name
+        
         if fname in filename_to_id:
             sample["coco_id"] = filename_to_id[fname]
+            
+            # Convert TIFF to PNG for web viewing
+            if orig_path.suffix.lower() in [".tif", ".tiff"]:
+                png_path = cache_dir / (orig_path.stem + ".png")
+                if not png_path.exists():
+                    img = Image.open(orig_path).convert("RGB")
+                    img.save(png_path, "PNG")
+                sample.filepath = str(png_path)
+                
             sample.save()
     
     print("Extracting category mapping from Ground Truth...")
