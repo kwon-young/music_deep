@@ -11,7 +11,18 @@ def filter_coco_json(anno_path: Path, pred_image_ids: set, out_path: Path):
     print("Filtering GT to match predicted images...")
     # Keep only the images and annotations that we actually have predictions for
     data["images"] = [img for img in data["images"] if img["id"] in pred_image_ids]
-    data["annotations"] = [ann for ann in data["annotations"] if ann["image_id"] in pred_image_ids]
+    
+    filtered_annotations = []
+    for ann in data["annotations"]:
+        if ann["image_id"] in pred_image_ids:
+            # Strip out heavy segmentation masks to prevent FiftyOne from OOMing
+            if "segmentation" in ann:
+                del ann["segmentation"]
+            filtered_annotations.append(ann)
+            
+    # GO NUCLEAR: Keep only 10 ground truth annotations
+    data["annotations"] = filtered_annotations[:10]
+    print(f"Nuclear option: restricted to {len(data['annotations'])} ground truth annotations.")
     
     print(f"Saving filtered GT JSON to {out_path}...")
     with open(out_path, "w") as f:
@@ -45,6 +56,11 @@ def main(args):
 
     # Filter predictions to only these images
     preds = [p for p in preds if p["image_id"] in pred_image_ids]
+    
+    # GO NUCLEAR: Sort by score and keep only the top 100 predictions
+    preds.sort(key=lambda x: x.get("score", 0), reverse=True)
+    preds = preds[:100]
+    print(f"Nuclear option: restricted to {len(preds)} predictions.")
     
     filtered_preds_path = args.predictions_path.parent / "predictions_subset_eval.json"
     with open(filtered_preds_path, "w") as f:
