@@ -33,8 +33,22 @@ def main(args):
         preds = json.load(f)
         
     # Find exactly which images we ran inference on
-    pred_image_ids = set(p["image_id"] for p in preds)
-    print(f"Found predictions for {len(pred_image_ids)} images.")
+    all_pred_image_ids = list(set(p["image_id"] for p in preds))
+    
+    # Restrict to a specific number of images to prevent OOM
+    if args.num_images is not None:
+        pred_image_ids = set(all_pred_image_ids[:args.num_images])
+    else:
+        pred_image_ids = set(all_pred_image_ids)
+        
+    print(f"Restricting visualization to {len(pred_image_ids)} images.")
+
+    # Filter predictions to only these images
+    preds = [p for p in preds if p["image_id"] in pred_image_ids]
+    
+    filtered_preds_path = args.predictions_path.parent / "predictions_subset_eval.json"
+    with open(filtered_preds_path, "w") as f:
+        json.dump(preds, f)
 
     # Create a subset GT JSON to prevent FiftyOne from OOMing on the full dataset
     subset_anno_path = args.anno_path.parent / "instances_subset_eval.json"
@@ -51,7 +65,7 @@ def main(args):
     
     print("Adding predictions to FiftyOne...")
     dataset.add_coco_labels(
-        str(args.predictions_path),
+        str(filtered_preds_path),
         label_field="predictions",
         coco_id_field="coco_id",
     )
@@ -81,6 +95,12 @@ if __name__ == "__main__":
         type=Path, 
         default=Path("experiments/010_full_dataset_baseline/predictions.json"),
         help="Path to the predictions COCO JSON."
+    )
+    parser.add_argument(
+        "--num_images", 
+        type=int, 
+        default=1,
+        help="Number of images to load into FiftyOne to prevent OOM."
     )
     
     args = parser.parse_args()
