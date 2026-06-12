@@ -131,7 +131,9 @@ def transform_image(
             item_cropped = item_decoded
     else:
         if crop_size is not None:
-            item_cropped = det_tf.decode_and_crop_pyvips(item, crop_size=crop_size, device=prep_device)
+            item_cropped = det_tf.decode_and_crop_pyvips(
+                item, crop_size=crop_size, device=prep_device
+            )
         else:
             item_cropped = det_tf.decode_pyvips(item, device=prep_device)
 
@@ -201,9 +203,11 @@ def create_detection_iterator(
                 dropped_item = det_tf.variance_patch_drop(
                     patched_item, var_threshold=params.var_threshold
                 )
-                
+
                 # Move the final batch to the training device
-                final_item = det_tf.to_patches(dropped_item, device=params.train_device)
+                final_item = det_tf.to_patches(
+                    dropped_item, device=params.train_device
+                )
                 yield final_item
 
     return log_patch_count(_pipeline(), params.log_patches)
