@@ -73,11 +73,16 @@ def run_inference(args):
                 batched_item, patch_size=(args.patch_size, args.patch_size)
             )
 
+            # Apply variance patch dropping (same as training)
+            dropped_item = det_tf.variance_patch_drop(
+                patched_item, var_threshold=args.var_threshold
+            )
+
             # Forward pass
             with torch.autocast(
                 device_type=device.type, dtype=torch.float16, enabled=args.use_amp
             ):
-                outputs = model(patched_item.sample.image)
+                outputs = model(dropped_item.sample.image)
 
             # Post-process outputs
             pred_logits = outputs.pred_logits.data[0]  # (P*K, C)
@@ -155,6 +160,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument("--base_anchor_size", type=float, default=1.0)
     parser.add_argument("--conf_thresh", type=float, default=0.01)
+    parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")
     parser.add_argument(
