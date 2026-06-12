@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.optimize import linear_sum_assignment
-from .box_ops import box_xyxy_to_cxcywh, generalized_box_iou
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import min_weight_full_bipartite_matching
+from .box_ops import box_xyxy_to_cxcywh
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -22,9 +23,35 @@ from music_types import (
 )
 
 
+def elementwise_generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """
+    Computes the Generalized IoU element-wise for two 1D lists of boxes.
+    boxes1 and boxes2 must have the same shape [K, 4].
+    """
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+
+    lt = torch.max(boxes1[:, :2], boxes2[:, :2])
+    rb = torch.min(boxes1[:, 2:], boxes2[:, 2:])
+
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    union = area1 + area2 - inter
+    iou = inter / union
+
+    lt_hull = torch.min(boxes1[:, :2], boxes2[:, :2])
+    rb_hull = torch.max(boxes1[:, 2:], boxes2[:, 2:])
+    wh_hull = (rb_hull - lt_hull).clamp(min=0)
+    area_hull = wh_hull[:, 0] * wh_hull[:, 1]
+
+    return iou - (area_hull - union) / area_hull
+
+
 class HungarianMatcher(nn.Module):
     """
-    This class computes an assignment between the targets and the predictions of the network.
+    This class computes a sparse assignment between the targets and the predictions of the network.
+    It uses box-to-box distance to prune impossible matches, drastically speeding up training on large crops
+    while keeping VRAM usage extremely low.
     """
 
     def __init__(
@@ -35,6 +62,10 @@ class HungarianMatcher(nn.Module):
         alpha: float = 0.25,
         gamma: float = 2.0,
         calc_device: torch.device | None = None,
+        radius_patches: float = 4.0,
+        top_k: int = 10,
+        patch_size: int = 64,
+        image_size: int = 3584,
     ):
         super().__init__()
         self.cost_class = cost_class
@@ -43,9 +74,37 @@ class HungarianMatcher(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
         self.calc_device = calc_device
-        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, (
-            "all costs can't be 0"
+        
+        self.top_k = top_k
+        # Convert the radius in patches to a normalized [0, 1] distance
+        self.normalized_radius = radius_patches * (patch_size / image_size)
+        
+        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs can't be 0"
+
+    def _get_valid_pairs(self, out_bbox: torch.Tensor, tgt_bbox: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the dense distance matrix to find valid pairs.
+        Because this is a separate function, the massive NxM matrices are 
+        automatically destroyed and their VRAM freed the exact moment this function returns.
+        """
+        dx = torch.clamp(
+            torch.max(tgt_bbox[None, :, 0] - out_bbox[:, None, 2],
+                      out_bbox[:, None, 0] - tgt_bbox[None, :, 2]), min=0
         )
+        dy = torch.clamp(
+            torch.max(tgt_bbox[None, :, 1] - out_bbox[:, None, 3],
+                      out_bbox[:, None, 1] - tgt_bbox[None, :, 3]), min=0
+        )
+        box_distances = torch.sqrt(dx**2 + dy**2)
+
+        valid_mask = box_distances <= self.normalized_radius
+        
+        # Top-K Fallback: Ensure every GT box has at least K valid predictions
+        topk = min(self.top_k, len(out_bbox))
+        topk_idx = torch.topk(box_distances, k=topk, dim=0, largest=False).indices
+        valid_mask.scatter_(0, topk_idx, True)
+
+        return torch.where(valid_mask)
 
     @torch.no_grad()
     def forward(
@@ -58,84 +117,72 @@ class HungarianMatcher(nn.Module):
             ]
         ],
     ) -> list[MatchIndices]:
-        """
-        Params:
-            outputs: DetectionOutput containing predictions
-            targets: This is a list of DetectionTarget (len(targets) = batch_size)
-
-        Returns:
-            A list of size batch_size, containing MatchIndices where:
-                - pred_indices is the indices of the selected predictions (in order)
-                - target_indices is the indices of the corresponding selected targets (in order)
-        """
         bs, num_queries = outputs.pred_logits.data.shape[:2]
-
         calc_device = self.calc_device if self.calc_device is not None else outputs.pred_logits.data.device
 
-        out_prob = F.sigmoid(outputs.pred_logits.data.flatten(0, 1)).to(
-            calc_device
-        )
-        out_bbox = outputs.pred_boxes.data.flatten(0, 1).to(calc_device)
+        out_prob = F.sigmoid(outputs.pred_logits.data).to(calc_device)
+        out_bbox = outputs.pred_boxes.data.to(calc_device)
 
-        tgt_ids = torch.cat([v.labels.data for v in targets]).to(calc_device)
-        tgt_bbox = torch.cat([v.boxes.data for v in targets]).to(calc_device)
+        indices = []
 
-        # Handle edge case where there are no targets in the batch
-        if len(tgt_ids) == 0:
-            return [
-                MatchIndices(
-                    pred_indices=torch.empty(0, dtype=torch.int64),
-                    target_indices=torch.empty(0, dtype=torch.int64),
+        for b in range(bs):
+            tgt_ids = targets[b].labels.data.to(calc_device)
+            tgt_bbox = targets[b].boxes.data.to(calc_device)
+            num_targets = len(tgt_ids)
+
+            if num_targets == 0:
+                indices.append(
+                    MatchIndices(
+                        pred_indices=torch.empty(0, dtype=torch.int64),
+                        target_indices=torch.empty(0, dtype=torch.int64),
+                    )
                 )
-                for _ in range(bs)
-            ]
+                continue
 
-        # 1. Compute the classification cost (Focal Loss approximation)
-        out_prob = out_prob[:, tgt_ids]
-        neg_cost_class = (
-            (1 - self.alpha)
-            * (out_prob**self.gamma)
-            * (-(1 - out_prob + 1e-8).log())
-        )
-        pos_cost_class = (
-            self.alpha
-            * ((1 - out_prob) ** self.gamma)
-            * (-(out_prob + 1e-8).log())
-        )
-        cost_class = pos_cost_class - neg_cost_class
+            # 1. Get sparse indices (VRAM spike is contained here)
+            row_idx, col_idx = self._get_valid_pairs(out_bbox[b], tgt_bbox)
 
-        # 2. Compute the L1 cost between boxes
-        # L1 cost is typically computed on [cx, cy, w, h] format
-        out_bbox_cxcywh = box_xyxy_to_cxcywh(out_bbox)
-        tgt_bbox_cxcywh = box_xyxy_to_cxcywh(tgt_bbox)
-        cost_bbox = torch.cdist(out_bbox_cxcywh, tgt_bbox_cxcywh, p=1)
+            # 2. Gather 1D tensors using the indices
+            valid_out_prob = out_prob[b][row_idx]
+            valid_tgt_ids = tgt_ids[col_idx]
+            valid_out_bbox = out_bbox[b][row_idx]
+            valid_tgt_bbox = tgt_bbox[col_idx]
 
-        # 3. Compute the GIoU cost between boxes (requires [x1, y1, x2, y2] format)
-        cost_giou = -generalized_box_iou(out_bbox, tgt_bbox)
+            # 3. Compute 1D costs
+            # Classification Cost
+            prob_for_target = valid_out_prob[torch.arange(len(row_idx)), valid_tgt_ids]
+            neg_cost_class = (1 - self.alpha) * (prob_for_target**self.gamma) * (-(1 - prob_for_target + 1e-8).log())
+            pos_cost_class = self.alpha * ((1 - prob_for_target)**self.gamma) * (-(prob_for_target + 1e-8).log())
+            cost_class_1d = pos_cost_class - neg_cost_class
 
-        # Final cost matrix
-        C = (
-            self.cost_bbox * cost_bbox
-            + self.cost_class * cost_class
-            + self.cost_giou * cost_giou
-        )
-        C = C.view(bs, num_queries, -1)
+            # BBox L1 Cost
+            valid_out_cxcywh = box_xyxy_to_cxcywh(valid_out_bbox)
+            valid_tgt_cxcywh = box_xyxy_to_cxcywh(valid_tgt_bbox)
+            cost_bbox_1d = F.l1_loss(valid_out_cxcywh, valid_tgt_cxcywh, reduction="none").sum(dim=-1)
 
-        # Handle potential NaNs
-        C = torch.nan_to_num(C, nan=1e6)
+            # GIoU Cost
+            cost_giou_1d = -elementwise_generalized_box_iou(valid_out_bbox, valid_tgt_bbox)
 
-        sizes = [len(v.boxes.data) for v in targets]
-
-        # Run Hungarian Matching (linear_sum_assignment)
-        indices = [
-            linear_sum_assignment(c[i].cpu().numpy())
-            for i, c in enumerate(C.split(sizes, -1))
-        ]
-
-        return [
-            MatchIndices(
-                pred_indices=torch.as_tensor(i, dtype=torch.int64),
-                target_indices=torch.as_tensor(j, dtype=torch.int64),
+            # 4. Combine 1D costs
+            valid_costs = (
+                self.cost_bbox * cost_bbox_1d + 
+                self.cost_class * cost_class_1d + 
+                self.cost_giou * cost_giou_1d
             )
-            for i, j in indices
-        ]
+
+            # 5. Build SciPy Sparse Matrix and solve
+            sparse_cost_matrix = csr_matrix(
+                (valid_costs.cpu().numpy(), (row_idx.cpu().numpy(), col_idx.cpu().numpy())),
+                shape=(num_queries, num_targets)
+            )
+
+            row_ind, col_ind = min_weight_full_bipartite_matching(sparse_cost_matrix)
+
+            indices.append(
+                MatchIndices(
+                    pred_indices=torch.as_tensor(row_ind, dtype=torch.int64),
+                    target_indices=torch.as_tensor(col_ind, dtype=torch.int64),
+                )
+            )
+
+        return indices
