@@ -23,7 +23,9 @@ from music_types import (
 )
 
 
-def elementwise_generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+def elementwise_generalized_box_iou(
+    boxes1: torch.Tensor, boxes2: torch.Tensor
+) -> torch.Tensor:
     """
     Computes the Generalized IoU element-wise for two 1D lists of boxes.
     boxes1 and boxes2 must have the same shape [K, 4].
@@ -74,34 +76,46 @@ class HungarianMatcher(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
         self.calc_device = calc_device
-        
+
         self.top_k = top_k
         # Convert the radius in patches to a normalized [0, 1] distance
         self.normalized_radius = radius_patches * (patch_size / image_size)
-        
-        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs can't be 0"
 
-    def _get_valid_pairs(self, out_bbox: torch.Tensor, tgt_bbox: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, (
+            "all costs can't be 0"
+        )
+
+    def _get_valid_pairs(
+        self, out_bbox: torch.Tensor, tgt_bbox: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Computes the dense distance matrix to find valid pairs.
-        Because this is a separate function, the massive NxM matrices are 
+        Because this is a separate function, the massive NxM matrices are
         automatically destroyed and their VRAM freed the exact moment this function returns.
         """
         dx = torch.clamp(
-            torch.max(tgt_bbox[None, :, 0] - out_bbox[:, None, 2],
-                      out_bbox[:, None, 0] - tgt_bbox[None, :, 2]), min=0
+            torch.max(
+                tgt_bbox[None, :, 0] - out_bbox[:, None, 2],
+                out_bbox[:, None, 0] - tgt_bbox[None, :, 2],
+            ),
+            min=0,
         )
         dy = torch.clamp(
-            torch.max(tgt_bbox[None, :, 1] - out_bbox[:, None, 3],
-                      out_bbox[:, None, 1] - tgt_bbox[None, :, 3]), min=0
+            torch.max(
+                tgt_bbox[None, :, 1] - out_bbox[:, None, 3],
+                out_bbox[:, None, 1] - tgt_bbox[None, :, 3],
+            ),
+            min=0,
         )
         box_distances = torch.sqrt(dx**2 + dy**2)
 
         valid_mask = box_distances <= self.normalized_radius
-        
+
         # Top-K Fallback: Ensure every GT box has at least K valid predictions
         topk = min(self.top_k, len(out_bbox))
-        topk_idx = torch.topk(box_distances, k=topk, dim=0, largest=False).indices
+        topk_idx = torch.topk(
+            box_distances, k=topk, dim=0, largest=False
+        ).indices
         valid_mask.scatter_(0, topk_idx, True)
 
         return torch.where(valid_mask)
@@ -118,7 +132,11 @@ class HungarianMatcher(nn.Module):
         ],
     ) -> list[MatchIndices]:
         bs, num_queries = outputs.pred_logits.data.shape[:2]
-        calc_device = self.calc_device if self.calc_device is not None else outputs.pred_logits.data.device
+        calc_device = (
+            self.calc_device
+            if self.calc_device is not None
+            else outputs.pred_logits.data.device
+        )
 
         out_prob = F.sigmoid(outputs.pred_logits.data).to(calc_device)
         out_bbox = outputs.pred_boxes.data.to(calc_device)
@@ -150,33 +168,52 @@ class HungarianMatcher(nn.Module):
 
             # 3. Compute 1D costs
             # Classification Cost
-            prob_for_target = valid_out_prob[torch.arange(len(row_idx)), valid_tgt_ids]
-            neg_cost_class = (1 - self.alpha) * (prob_for_target**self.gamma) * (-(1 - prob_for_target + 1e-8).log())
-            pos_cost_class = self.alpha * ((1 - prob_for_target)**self.gamma) * (-(prob_for_target + 1e-8).log())
+            prob_for_target = valid_out_prob[
+                torch.arange(len(row_idx)), valid_tgt_ids
+            ]
+            neg_cost_class = (
+                (1 - self.alpha)
+                * (prob_for_target**self.gamma)
+                * (-(1 - prob_for_target + 1e-8).log())
+            )
+            pos_cost_class = (
+                self.alpha
+                * ((1 - prob_for_target) ** self.gamma)
+                * (-(prob_for_target + 1e-8).log())
+            )
             cost_class_1d = pos_cost_class - neg_cost_class
 
             # BBox L1 Cost
             valid_out_cxcywh = box_xyxy_to_cxcywh(valid_out_bbox)
             valid_tgt_cxcywh = box_xyxy_to_cxcywh(valid_tgt_bbox)
-            cost_bbox_1d = F.l1_loss(valid_out_cxcywh, valid_tgt_cxcywh, reduction="none").sum(dim=-1)
+            cost_bbox_1d = F.l1_loss(
+                valid_out_cxcywh, valid_tgt_cxcywh, reduction="none"
+            ).sum(dim=-1)
 
             # GIoU Cost
-            cost_giou_1d = -elementwise_generalized_box_iou(valid_out_bbox, valid_tgt_bbox)
+            cost_giou_1d = -elementwise_generalized_box_iou(
+                valid_out_bbox, valid_tgt_bbox
+            )
 
             # 4. Combine 1D costs
             valid_costs = (
-                self.cost_bbox * cost_bbox_1d + 
-                self.cost_class * cost_class_1d + 
-                self.cost_giou * cost_giou_1d
+                self.cost_bbox * cost_bbox_1d
+                + self.cost_class * cost_class_1d
+                + self.cost_giou * cost_giou_1d
             )
 
             # 5. Build SciPy Sparse Matrix and solve
             sparse_cost_matrix = csr_matrix(
-                (valid_costs.cpu().numpy(), (row_idx.cpu().numpy(), col_idx.cpu().numpy())),
-                shape=(num_queries, num_targets)
+                (
+                    valid_costs.cpu().numpy(),
+                    (row_idx.cpu().numpy(), col_idx.cpu().numpy()),
+                ),
+                shape=(num_queries, num_targets),
             )
 
-            row_ind, col_ind = min_weight_full_bipartite_matching(sparse_cost_matrix)
+            row_ind, col_ind = min_weight_full_bipartite_matching(
+                sparse_cost_matrix
+            )
 
             indices.append(
                 MatchIndices(

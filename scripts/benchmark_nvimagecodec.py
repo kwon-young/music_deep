@@ -75,15 +75,15 @@ def pyvips_pipeline(
     """pyvips -> crop -> Numpy -> Torch -> GPU -> Expand/Permute -> Float1"""
     # Open lazily
     img = pyvips.Image.new_from_file(str(img_path))
-    
+
     # Crop lazily
     crop = img.crop(x, y, crop_size, crop_size)
-    
+
     # Decode to memory and wrap in numpy (zero-copy from the buffer)
     arr = np.ndarray(
         buffer=crop.write_to_memory(),
         dtype=np.uint8,
-        shape=(crop.height, crop.width, crop.bands)
+        shape=(crop.height, crop.width, crop.bands),
     )
     t = torch.from_numpy(arr)
 
@@ -174,12 +174,10 @@ def benchmark(
     current_pipeline(
         png_img_path, coords[0][0], coords[0][1], crop_size, device
     )
-    cucim_pipeline(
-        src_img_path, coords[0][0], coords[0][1], crop_size, device
-    )
-    pyvips_pipeline(
-        src_img_path, coords[0][0], coords[0][1], crop_size, device
-    )
+    # cucim_pipeline(
+    #     src_img_path, coords[0][0], coords[0][1], crop_size, device
+    # )
+    pyvips_pipeline(src_img_path, coords[0][0], coords[0][1], crop_size, device)
     nvimagecodec_pipeline(
         jpg_img_path, coords[0][0], coords[0][1], crop_size, decoder
     )
@@ -201,15 +199,15 @@ def benchmark(
         f"Current Pipeline (PIL PNG): {current_time:.4f}s ({iterations / current_time:.2f} it/s)"
     )
 
-    # --- 2. CuCIM Pipeline (TIFF) ---
-    start_time = time.perf_counter()
-    for x, y in coords:
-        _ = cucim_pipeline(src_img_path, x, y, crop_size, device)
-    torch.cuda.synchronize()
-    cucim_time = time.perf_counter() - start_time
-    print(
-        f"CuCIM Pipeline (CPU TIFF):  {cucim_time:.4f}s ({iterations / cucim_time:.2f} it/s) -> {current_time / cucim_time:.2f}x speedup"
-    )
+    # # --- 2. CuCIM Pipeline (TIFF) ---
+    # start_time = time.perf_counter()
+    # for x, y in coords:
+    #     _ = cucim_pipeline(src_img_path, x, y, crop_size, device)
+    # torch.cuda.synchronize()
+    # cucim_time = time.perf_counter() - start_time
+    # print(
+    #     f"CuCIM Pipeline (CPU TIFF):  {cucim_time:.4f}s ({iterations / cucim_time:.2f} it/s) -> {current_time / cucim_time:.2f}x speedup"
+    # )
 
     # --- 3. pyvips Pipeline (TIFF) ---
     start_time = time.perf_counter()

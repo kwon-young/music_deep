@@ -143,7 +143,9 @@ def load_coco_sample(
     return Data(
         metadata=img_meta,
         sample=DetectionSample(
-            image=LazyImage(path=img_path, width=img_meta.width, height=img_meta.height),
+            image=LazyImage(
+                path=img_path, width=img_meta.width, height=img_meta.height
+            ),
             boxes=BoundingBoxes(boxes_tensor),
             labels=ClassLabels(labels_tensor),
         ),

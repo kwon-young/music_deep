@@ -9,7 +9,8 @@
     - pytorch 2.10 or later
     - numpy
     - scipy
-    - latest pillow for image loading
+    - nvimagecodec for gpu image decoding
+    - pyvips for cpu image decoding
 - no other dependencies are allowed
 - everything should be thoroughly type checked using the latest type hint expressions
     - this repo is an experiment on how far I can push the type checker to fit my domain
