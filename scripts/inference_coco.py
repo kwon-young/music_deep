@@ -13,6 +13,91 @@ from dataset.coco import parse_coco, load_coco_sample
 import transform.det as det_tf
 
 
+def process_single_image(i, dataset, args, model, device, idx_to_cat_id):
+    img_meta = dataset.images[i]
+
+    # Load sample
+    item = load_coco_sample(dataset, args.img_dir, i)
+
+    # Decode and transform
+    if device.type == "cuda":
+        try:
+            item_decoded = det_tf.decode_nvimgcodec(item, device=device)
+        except Exception:
+            # Fallback for unsupported formats
+            item_decoded = det_tf.decode_pyvips(item, device=device)
+    else:
+        item_decoded = det_tf.decode_pyvips(item, device=device)
+
+    item_tf = det_tf.to_float1(item_decoded)
+    item_padded = det_tf.pad_to_patch_size(
+        item_tf, patch_size=(args.patch_size, args.patch_size)
+    )
+
+    # Get padded dimensions for un-normalizing boxes later
+    _, padded_h, padded_w = item_padded.sample.image.data.shape
+
+    # Collate to add batch dimension and extract patches
+    batched_item = det_tf.collate((item_padded,))
+    patched_item = det_tf.extract_patches(
+        batched_item, patch_size=(args.patch_size, args.patch_size)
+    )
+
+    # Apply variance patch dropping (same as training)
+    dropped_item = det_tf.variance_patch_drop(
+        patched_item, var_threshold=args.var_threshold
+    )
+
+    # Forward pass
+    with torch.autocast(
+        device_type=device.type, dtype=torch.float16, enabled=args.use_amp
+    ):
+        outputs = model(dropped_item.sample.image)
+
+    # Post-process outputs
+    pred_logits = outputs.pred_logits.data[0]  # (P*K, C)
+    pred_boxes = outputs.pred_boxes.data[0]  # (P*K, 4)
+
+    probs = torch.sigmoid(pred_logits)
+    max_probs, pred_labels = probs.max(dim=-1)
+
+    # Filter by confidence threshold
+    keep = max_probs > args.conf_thresh
+    pred_boxes_kept = pred_boxes[keep]
+    pred_probs_kept = max_probs[keep]
+    pred_labels_kept = pred_labels[keep]
+
+    # Convert boxes from [0, 1] (relative to padded image) to absolute pixels
+    pred_boxes_kept[:, [0, 2]] *= padded_w
+    pred_boxes_kept[:, [1, 3]] *= padded_h
+
+    results = []
+    # Convert to COCO format [x, y, width, height] and append
+    for box, prob, label in zip(
+        pred_boxes_kept, pred_probs_kept, pred_labels_kept
+    ):
+        x1, y1, x2, y2 = box.tolist()
+        w = x2 - x1
+        h = y2 - y1
+
+        # Clip to original image dimensions
+        x1 = max(0.0, min(x1, float(img_meta.width)))
+        y1 = max(0.0, min(y1, float(img_meta.height)))
+        w = max(0.0, min(w, float(img_meta.width - x1)))
+        h = max(0.0, min(h, float(img_meta.height - y1)))
+
+        results.append(
+            {
+                "image_id": img_meta.img_id,
+                "category_id": idx_to_cat_id[label.item()],
+                "bbox": [x1, y1, w, h],
+                "score": prob.item(),
+            }
+        )
+        
+    return results
+
+
 def run_inference(args):
     device = torch.device(args.device)
     print(f"Using device: {device}")
@@ -44,85 +129,12 @@ def run_inference(args):
     print("Running inference...")
     with torch.no_grad():
         for i in tqdm(range(len(dataset.images))):
-            img_meta = dataset.images[i]
-
-            # Load sample
-            item = load_coco_sample(dataset, args.img_dir, i)
-
-            # Decode and transform
+            # Process image in a separate function so local tensors go out of scope
+            results = process_single_image(i, dataset, args, model, device, idx_to_cat_id)
+            coco_results.extend(results)
+            
             if device.type == "cuda":
-                try:
-                    item_decoded = det_tf.decode_nvimgcodec(item, device=device)
-                except Exception:
-                    # Fallback for unsupported formats
-                    item_decoded = det_tf.decode_pyvips(item, device=device)
-            else:
-                item_decoded = det_tf.decode_pyvips(item, device=device)
-
-            item_tf = det_tf.to_float1(item_decoded)
-            item_padded = det_tf.pad_to_patch_size(
-                item_tf, patch_size=(args.patch_size, args.patch_size)
-            )
-
-            # Get padded dimensions for un-normalizing boxes later
-            _, padded_h, padded_w = item_padded.sample.image.data.shape
-
-            # Collate to add batch dimension and extract patches
-            batched_item = det_tf.collate((item_padded,))
-            patched_item = det_tf.extract_patches(
-                batched_item, patch_size=(args.patch_size, args.patch_size)
-            )
-
-            # Apply variance patch dropping (same as training)
-            dropped_item = det_tf.variance_patch_drop(
-                patched_item, var_threshold=args.var_threshold
-            )
-
-            # Forward pass
-            with torch.autocast(
-                device_type=device.type, dtype=torch.float16, enabled=args.use_amp
-            ):
-                outputs = model(dropped_item.sample.image)
-
-            # Post-process outputs
-            pred_logits = outputs.pred_logits.data[0]  # (P*K, C)
-            pred_boxes = outputs.pred_boxes.data[0]  # (P*K, 4)
-
-            probs = torch.sigmoid(pred_logits)
-            max_probs, pred_labels = probs.max(dim=-1)
-
-            # Filter by confidence threshold
-            keep = max_probs > args.conf_thresh
-            pred_boxes_kept = pred_boxes[keep]
-            pred_probs_kept = max_probs[keep]
-            pred_labels_kept = pred_labels[keep]
-
-            # Convert boxes from [0, 1] (relative to padded image) to absolute pixels
-            pred_boxes_kept[:, [0, 2]] *= padded_w
-            pred_boxes_kept[:, [1, 3]] *= padded_h
-
-            # Convert to COCO format [x, y, width, height] and append
-            for box, prob, label in zip(
-                pred_boxes_kept, pred_probs_kept, pred_labels_kept
-            ):
-                x1, y1, x2, y2 = box.tolist()
-                w = x2 - x1
-                h = y2 - y1
-
-                # Clip to original image dimensions
-                x1 = max(0.0, min(x1, float(img_meta.width)))
-                y1 = max(0.0, min(y1, float(img_meta.height)))
-                w = max(0.0, min(w, float(img_meta.width - x1)))
-                h = max(0.0, min(h, float(img_meta.height - y1)))
-
-                coco_results.append(
-                    {
-                        "image_id": img_meta.img_id,
-                        "category_id": idx_to_cat_id[label.item()],
-                        "bbox": [x1, y1, w, h],
-                        "score": prob.item(),
-                    }
-                )
+                torch.cuda.empty_cache()
 
     # Save results
     out_path = args.output_json
