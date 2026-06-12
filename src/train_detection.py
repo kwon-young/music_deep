@@ -73,6 +73,8 @@ class TrainParams:
     cost_class: float
     cost_bbox: float
     cost_giou: float
+    radius_patches: float
+    top_k: int
     loss_ce: float
     loss_bbox: float
     loss_giou: float
@@ -440,6 +442,10 @@ def train(params: TrainParams):
         cost_bbox=params.cost_bbox,
         cost_giou=params.cost_giou,
         calc_device=params.prep_device,
+        radius_patches=params.radius_patches,
+        top_k=params.top_k,
+        patch_size=params.patch_size,
+        image_size=params.crop_size if params.crop_size is not None else 3584,
     )
     weights = DetectionLossWeights(
         loss_ce=params.loss_ce,
@@ -603,6 +609,8 @@ if __name__ == "__main__":
     parser.add_argument("--cost_class", type=float, default=2.0)
     parser.add_argument("--cost_bbox", type=float, default=5.0)
     parser.add_argument("--cost_giou", type=float, default=2.0)
+    parser.add_argument("--radius_patches", type=float, default=4.0, help="Radius in patches for sparse matching")
+    parser.add_argument("--top_k", type=int, default=10, help="Top K fallback for sparse matching")
 
     # Loss weights
     parser.add_argument("--loss_ce", type=float, default=2.0)
@@ -713,6 +721,8 @@ if __name__ == "__main__":
         cost_class=args.cost_class,
         cost_bbox=args.cost_bbox,
         cost_giou=args.cost_giou,
+        radius_patches=args.radius_patches,
+        top_k=args.top_k,
         loss_ce=args.loss_ce,
         loss_bbox=args.loss_bbox,
         loss_giou=args.loss_giou,
