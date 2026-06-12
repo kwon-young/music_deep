@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .box_ops import generalized_box_iou
+from .box_ops import generalized_box_iou, box_xyxy_to_cxcywh
 from .detector import DFINEWeightingFunction
 from music_types import (
     DetectionTarget,
@@ -129,9 +129,13 @@ class DFINECriterion(nn.Module):
         num_boxes: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """L1 and GIoU loss applied ONLY to matched predictions."""
+        # Convert to CXCYWH for L1 loss
+        src_boxes_cxcywh = box_xyxy_to_cxcywh(src_boxes)
+        matched_boxes_cxcywh = box_xyxy_to_cxcywh(matched_boxes)
+
         # 1. L1 Loss
         loss_bbox = (
-            F.l1_loss(src_boxes, matched_boxes, reduction="none").sum()
+            F.l1_loss(src_boxes_cxcywh, matched_boxes_cxcywh, reduction="none").sum()
             / num_boxes
         )
 
