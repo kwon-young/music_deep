@@ -93,12 +93,15 @@ def main(args):
         label_field="ground_truth",
     )
     
+    print("Extracting category mapping from Ground Truth...")
+    _, classes_map, _, _, _ = fouc.load_coco_detection_annotations(str(subset_anno_path))
+
     print("Adding predictions to FiftyOne...")
-    # FIX: Use the utility function instead of a dataset method
     fouc.add_coco_labels(
         dataset,
         "predictions",
         str(filtered_preds_path),
+        classes_map,
         coco_id_field="coco_id",
     )
 
