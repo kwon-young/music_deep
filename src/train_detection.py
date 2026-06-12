@@ -90,6 +90,7 @@ class TrainParams:
     compile: bool
     prep_device: torch.device
     train_device: torch.device
+    match_device: torch.device
     backbone_checkpoint: Path | None
     freeze_backbone: bool
     exp_dir: Path
@@ -398,6 +399,7 @@ def train(params: TrainParams):
 
     print(f"Using prep_device: {params.prep_device}")
     print(f"Using train_device: {params.train_device}")
+    print(f"Using match_device: {params.match_device}")
     print(f"Learning Rate: {params.lr:.2e}")
 
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
@@ -441,7 +443,7 @@ def train(params: TrainParams):
         cost_class=params.cost_class,
         cost_bbox=params.cost_bbox,
         cost_giou=params.cost_giou,
-        calc_device=params.prep_device,
+        calc_device=params.match_device,
         radius_patches=params.radius_patches,
         top_k=params.top_k,
         patch_size=params.patch_size,
@@ -665,13 +667,19 @@ if __name__ == "__main__":
         "--prep_device",
         type=str,
         default="cpu",
-        help="Device for preprocessing and matching (e.g., cpu, cuda:0)",
+        help="Device for preprocessing (e.g., cpu, cuda:0)",
     )
     parser.add_argument(
         "--train_device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Device for model training (e.g., cuda:0)",
+    )
+    parser.add_argument(
+        "--match_device",
+        type=str,
+        default="cpu",
+        help="Device for the Hungarian Matcher (e.g., cpu, cuda:1)",
     )
     parser.add_argument(
         "--backbone_checkpoint",
@@ -702,6 +710,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     prep_device = torch.device(args.prep_device)
     train_device = torch.device(args.train_device)
+    match_device = torch.device(args.match_device)
 
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
@@ -738,6 +747,7 @@ if __name__ == "__main__":
         compile=args.compile,
         prep_device=prep_device,
         train_device=train_device,
+        match_device=match_device,
         backbone_checkpoint=args.backbone_checkpoint,
         freeze_backbone=args.freeze_backbone,
         exp_dir=args.exp_dir,
