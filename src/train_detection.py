@@ -88,6 +88,8 @@ class TrainParams:
     var_threshold: float
     log_patches: bool
     compile: bool
+    use_sdpa: bool
+    use_amp: bool
     prep_device: torch.device
     train_device: torch.device
     match_device: torch.device
@@ -238,6 +240,8 @@ def train_step_pipeline(
     cumulative_symbols = 0
     global_step = 0
 
+    scaler = torch.amp.GradScaler(device=params.train_device.type, enabled=params.use_amp)
+
     for batch in iterator:
         if cumulative_symbols >= total_symbol_budget:
             break
@@ -251,15 +255,18 @@ def train_step_pipeline(
         ]
 
         optimizer.zero_grad()
-        outputs = model(batch.sample.image)
-        losses = criterion(outputs, targets)
-        total_loss = (
-            losses.loss_ce
-            + losses.loss_bbox
-            + losses.loss_giou
-            + losses.loss_fgl
-        )
-        total_loss.backward()
+        
+        with torch.autocast(device_type=params.train_device.type, dtype=torch.float16, enabled=params.use_amp):
+            outputs = model(batch.sample.image)
+            losses = criterion(outputs, targets)
+            total_loss = (
+                losses.loss_ce
+                + losses.loss_bbox
+                + losses.loss_giou
+                + losses.loss_fgl
+            )
+            
+        scaler.scale(total_loss).backward()
 
         # --- Symbol Budget LR Scheduler ---
         current_batch_symbols = batch.sample.num_symbols
@@ -284,7 +291,8 @@ def train_step_pipeline(
             param_group["lr"] = current_lr
         # ----------------------------------
 
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         # Cleanly detach the entire nested dataclass structures
         yield TrainStepResult(
@@ -405,7 +413,7 @@ def train(params: TrainParams):
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
     # 1. Setup Model
-    backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
+    backbone = vit_nano(patch_size=params.patch_size, channels=params.channels, use_sdpa=params.use_sdpa)
 
     if params.backbone_checkpoint and params.backbone_checkpoint.exists():
         print(f"Loading backbone weights from {params.backbone_checkpoint}")
@@ -663,6 +671,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable torch.compile for the model (useful for Kaggle/modern GPUs)",
     )
+    parser.add_argument("--use_sdpa", action="store_true", help="Enable scaled_dot_product_attention")
+    parser.add_argument("--use_amp", action="store_true", help="Enable Automatic Mixed Precision (FP16)")
     parser.add_argument(
         "--prep_device",
         type=str,
@@ -745,6 +755,8 @@ if __name__ == "__main__":
         var_threshold=args.var_threshold,
         log_patches=args.log_patches,
         compile=args.compile,
+        use_sdpa=args.use_sdpa,
+        use_amp=args.use_amp,
         prep_device=prep_device,
         train_device=train_device,
         match_device=match_device,

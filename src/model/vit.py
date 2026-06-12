@@ -104,12 +104,17 @@ class FeedForward(Module):
 
 
 class Attention(Module):
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0, use_sdpa=True):
         super().__init__()
         inner_dim = dim_head * heads
         project_out = not (heads == 1 and dim_head == dim)
 
         self.heads = heads
+        self.use_sdpa = use_sdpa
+
+        if not self.use_sdpa:
+            self.scale = dim_head ** -0.5
+            self.attend = nn.Softmax(dim=-1)
 
         self.norm = nn.LayerNorm(dim)
 
@@ -134,17 +139,23 @@ class Attention(Module):
         if freqs is not None:
             q, k = apply_pope(q, k, freqs)
 
-        out = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.dropout.p if self.training else 0.0,
-        )
+        if self.use_sdpa:
+            out = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.dropout.p if self.training else 0.0,
+            )
+        else:
+            dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+            attn = self.attend(dots)
+            attn = self.dropout(attn)
+            out = torch.matmul(attn, v)
 
         out = out.transpose(1, 2).flatten(2)
         return self.to_out(out)
 
 
 class Transformer(Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0, use_sdpa=True):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.layers = ModuleList([])
@@ -154,7 +165,7 @@ class Transformer(Module):
                 ModuleList(
                     [
                         Attention(
-                            dim, heads=heads, dim_head=dim_head, dropout=dropout
+                            dim, heads=heads, dim_head=dim_head, dropout=dropout, use_sdpa=use_sdpa
                         ),
                         FeedForward(dim, mlp_dim, dropout=dropout),
                     ]
@@ -182,6 +193,7 @@ class BaseViT(Module):
         dim_head: int = 64,
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
+        use_sdpa: bool = True,
     ) -> None:
         super().__init__()
         self.patch_size = patch_height, patch_width = pair(patch_size)
@@ -198,7 +210,7 @@ class BaseViT(Module):
         self.dropout = nn.Dropout(emb_dropout)
 
         self.transformer = Transformer(
-            dim, depth, heads, dim_head, mlp_dim, dropout
+            dim, depth, heads, dim_head, mlp_dim, dropout, use_sdpa
         )
 
     def _forward_impl[B: Batch, N: NumPatches](
