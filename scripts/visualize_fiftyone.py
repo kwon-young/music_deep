@@ -2,8 +2,22 @@ import argparse
 import json
 from pathlib import Path
 import fiftyone as fo
+import fiftyone.utils.coco as fouc
 
 def filter_coco_json(anno_path: Path, pred_image_ids: set, out_path: Path):
+    # Check if we already have a valid subset to avoid the heavy load
+    if out_path.exists():
+        print(f"Checking existing subset at {out_path}...")
+        try:
+            with open(out_path, "r") as f:
+                subset_data = json.load(f)
+            subset_img_ids = set(img["id"] for img in subset_data.get("images", []))
+            if subset_img_ids == pred_image_ids:
+                print("Subset already matches requested images. Skipping heavy JSON load.")
+                return
+        except Exception:
+            pass # If it fails to load or parse, just rebuild it
+
     print(f"Loading full GT JSON from {anno_path} (this takes a moment but saves RAM later)...")
     with open(anno_path, "r") as f:
         data = json.load(f)
@@ -80,9 +94,11 @@ def main(args):
     )
     
     print("Adding predictions to FiftyOne...")
-    dataset.add_coco_labels(
+    # FIX: Use the utility function instead of a dataset method
+    fouc.add_coco_labels(
+        dataset,
+        "predictions",
         str(filtered_preds_path),
-        label_field="predictions",
         coco_id_field="coco_id",
     )
 
