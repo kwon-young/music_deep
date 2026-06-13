@@ -610,10 +610,14 @@ def train(params: TrainParams):
             ):
                 assert logger is not None
                 last_log_epoch = result.epoch
-                
+
                 current_time = time.time()
                 elapsed = current_time - last_log_time
-                speed = (total_symbols - last_log_symbols) / elapsed if elapsed > 0 else 0.0
+                speed = (
+                    (total_symbols - last_log_symbols) / elapsed
+                    if elapsed > 0
+                    else 0.0
+                )
                 last_log_time = current_time
                 last_log_symbols = total_symbols
 
@@ -636,11 +640,15 @@ def train(params: TrainParams):
             assert running_loss is not None
             assert logger is not None
             print("Training complete. Saving final checkpoint and metrics...")
-            
+
             current_time = time.time()
             elapsed = current_time - last_log_time
-            speed = (total_symbols - last_log_symbols) / elapsed if elapsed > 0 else 0.0
-            
+            speed = (
+                (total_symbols - last_log_symbols) / elapsed
+                if elapsed > 0
+                else 0.0
+            )
+
             log_and_save_checkpoint(
                 last_result,
                 params,
