@@ -572,7 +572,7 @@ def train(params: TrainParams):
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
         create_detection_iterator(params),
-        maxsize=4,
+        maxsize=1,
         name="det_pipeline",
         monitor=monitor,
     )

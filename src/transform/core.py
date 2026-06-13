@@ -104,10 +104,28 @@ def decode_nvimgcodec_img(
     device: torch.device,
 ) -> TensorImage[CHW, RGB, Int255]:
     """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""
+    import time
+    
     device_id = device.index if device.index is not None else 0
     decoder = get_nv_decoder(device_id)
-    nv_img = decoder.read(str(image.path))
-    t_gpu = torch.from_dlpack(nv_img).to(device)
+    
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            nv_img = decoder.read(str(image.path))
+            t_gpu = torch.from_dlpack(nv_img).to(device)
+            break  # Success
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # VRAM is likely full. Clear cache and wait for the training thread 
+                # to finish its backward pass and free intermediate activations.
+                torch.cuda.empty_cache()
+                time.sleep(0.5)
+            else:
+                raise RuntimeError(
+                    f"Failed to decode {image.path} with nvimgcodec after {max_retries} attempts. "
+                    f"Last error: {e}"
+                ) from e
 
     # nvimagecodec might return (H, W, 1) for grayscale. Squeeze to (H, W)
     if t_gpu.ndim == 3 and t_gpu.shape[-1] == 1:
