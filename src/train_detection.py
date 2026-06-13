@@ -334,8 +334,7 @@ def log_and_save_checkpoint(
     model: OMRDetector,
     optimizer: optim.Optimizer,
     running_loss: float,
-    start_time: float,
-    samples: int,
+    speed: float,
     ax,
     fig,
     plt,
@@ -348,9 +347,6 @@ def log_and_save_checkpoint(
             result.outputs, result.targets, params.num_classes
         )
         miou = compute_mean_iou(result.outputs, result.targets, indices_match)
-
-    elapsed = time.time() - start_time
-    speed = samples / elapsed if elapsed > 0 else 0.0
 
     metrics = DetectionMetrics(
         step=result.step,
@@ -374,7 +370,7 @@ def log_and_save_checkpoint(
         f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
         f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
         f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
-        f"Speed: {speed:.1f} sample/s"
+        f"Speed: {speed:.1f} symbols/s"
     )
 
     # 2. Visualization
@@ -582,8 +578,9 @@ def train(params: TrainParams):
         monitor=monitor,
     )
 
-    start_time = time.time()
-    samples = 0
+    last_log_time = time.time()
+    total_symbols = 0
+    last_log_symbols = 0
     running_loss = None
     last_log_epoch = 0.0
     last_result = None
@@ -594,7 +591,7 @@ def train(params: TrainParams):
     with ctx:
         for result in train_iterator:
             last_result = result
-            samples += len(result.batch.metadata)
+            total_symbols += result.symbols_processed
 
             # Half-life decay based on symbols processed
             smoothing = 0.5 ** (
@@ -613,6 +610,13 @@ def train(params: TrainParams):
             ):
                 assert logger is not None
                 last_log_epoch = result.epoch
+                
+                current_time = time.time()
+                elapsed = current_time - last_log_time
+                speed = (total_symbols - last_log_symbols) / elapsed if elapsed > 0 else 0.0
+                last_log_time = current_time
+                last_log_symbols = total_symbols
+
                 log_and_save_checkpoint(
                     result,
                     params,
@@ -621,8 +625,7 @@ def train(params: TrainParams):
                     raw_model,
                     optimizer,
                     running_loss,
-                    start_time,
-                    samples,
+                    speed,
                     ax,
                     fig,
                     plt,
@@ -633,6 +636,11 @@ def train(params: TrainParams):
             assert running_loss is not None
             assert logger is not None
             print("Training complete. Saving final checkpoint and metrics...")
+            
+            current_time = time.time()
+            elapsed = current_time - last_log_time
+            speed = (total_symbols - last_log_symbols) / elapsed if elapsed > 0 else 0.0
+            
             log_and_save_checkpoint(
                 last_result,
                 params,
@@ -641,8 +649,7 @@ def train(params: TrainParams):
                 raw_model,
                 optimizer,
                 running_loss,
-                start_time,
-                samples,
+                speed,
                 ax,
                 fig,
                 plt,
