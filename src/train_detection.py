@@ -435,16 +435,17 @@ def train(params: TrainParams):
     else:
         print("Fine-tuning backbone parameters.")
 
-    model = OMRDetector(
+    raw_model = OMRDetector(
         backbone,
         num_classes=params.num_classes,
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
     ).to(params.train_device)
 
+    model = raw_model
     if params.compile:
         print("Compiling model with torch.compile(dynamic=True)...")
-        model = torch.compile(model, dynamic=True)
+        model = torch.compile(raw_model, dynamic=True)
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(
@@ -548,7 +549,7 @@ def train(params: TrainParams):
                     params,
                     matcher,
                     logger,
-                    model,
+                    raw_model,
                     optimizer,
                     running_loss,
                     start_time,
@@ -567,7 +568,7 @@ def train(params: TrainParams):
                 params,
                 matcher,
                 logger,
-                model,
+                raw_model,
                 optimizer,
                 running_loss,
                 start_time,
