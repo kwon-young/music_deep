@@ -263,7 +263,11 @@ def train_step_pipeline(
         ]
 
         # Prevent DDP from synchronizing gradients during accumulation steps
-        sync_context = model.no_sync() if (is_distributed and is_accumulating) else nullcontext()
+        sync_context = (
+            model.no_sync()
+            if (is_distributed and is_accumulating)
+            else nullcontext()
+        )
 
         with sync_context:
             with torch.autocast(

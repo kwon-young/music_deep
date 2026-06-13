@@ -41,7 +41,7 @@ def greedy_matcher_gpu(
     # Pre-allocate max possible size to avoid dynamic list appending on GPU
     match_preds = torch.empty_like(sorted_rows)
     match_targets = torch.empty_like(sorted_cols)
-    
+
     count = 0
     for i in range(sorted_rows.size(0)):
         r = sorted_rows[i]
@@ -54,7 +54,7 @@ def greedy_matcher_gpu(
             count += 1
             if count == num_targets:
                 break
-                
+
     return match_preds[:count], match_targets[:count]
 
 
@@ -255,14 +255,22 @@ class HungarianMatcher(nn.Module):
 
                 indices.append(
                     MatchIndices(
-                        pred_indices=torch.as_tensor(row_ind, dtype=torch.int64),
-                        target_indices=torch.as_tensor(col_ind, dtype=torch.int64),
+                        pred_indices=torch.as_tensor(
+                            row_ind, dtype=torch.int64
+                        ),
+                        target_indices=torch.as_tensor(
+                            col_ind, dtype=torch.int64
+                        ),
                     )
                 )
             elif self.matcher_type == "greedy":
                 if len(valid_costs) == 0:
-                    row_ind = torch.empty(0, dtype=torch.int64, device=calc_device)
-                    col_ind = torch.empty(0, dtype=torch.int64, device=calc_device)
+                    row_ind = torch.empty(
+                        0, dtype=torch.int64, device=calc_device
+                    )
+                    col_ind = torch.empty(
+                        0, dtype=torch.int64, device=calc_device
+                    )
                 else:
                     # Sort on GPU
                     _, sort_idx = torch.sort(valid_costs)
