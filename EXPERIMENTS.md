@@ -116,11 +116,16 @@
   1. **Tie Label Fix**: Merging the 308 buggy `tie` sub-categories into a single class restores the overall mAP calculation.
   2. **L1 Loss Fix**: Computing the L1 bounding box loss in `CXCYWH` format (instead of `XYXY`) provides better gradient signals for center localization.
   3. **Focal Loss Initialization**: Setting the initial classification bias based on a prior probability prevents massive early loss spikes and stabilizes early training.
-  4. **DDP Scaling**: Training on 2 GPUs using DistributedDataParallel (effective batch size = 2) correctly synchronizes gradients and symbol counts, effectively halving the wall-clock time.
+  4. **DDP Scaling & Grad Accumulation**: Training on 2 GPUs with gradient accumulation to smooth out extreme symbol count variances.
+  5. **GPU-Native Matcher**: Replacing SciPy with a TorchScript greedy matcher to fix CPU bottlenecks.
 * **Setup**: 
   * Model: `vit_nano` (patch_size=64)
   * Crop Size: Full Image (None)
   * Data: Full Trompa-COCO dataset (with cleaned `tie` annotations).
-  * Command: `mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py --exp_dir experiments/011_full_dataset_fixes_and_ddp --patch_size 64 --epochs 10 --use_sdpa --use_amp`
+  * Command: `mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py --exp_dir experiments/011_full_dataset_fixes_and_ddp --patch_size 64 --epochs 10 --use_sdpa --accumulation_steps 4 --matcher_type greedy` (Note: `--use_amp` disabled, see note below).
+
+### Interim Note: AMP (FP16) Numerical Instability
+An initial attempt at this experiment using `--use_amp` (FP16) combined with gradient accumulation yielded extremely poor results. This is highly likely due to FP16's limited precision (11 bits of mantissa). In OMR, a 4-pixel thick staff line on a 3584x3584 image has a normalized dimension of `4 / 3584 ≈ 0.0011`. When the network regresses fine-grained edge offsets or computes IoU for these microscopic values, FP16 suffers from catastrophic cancellation and underflow. Dividing the loss by `accumulation_steps` exacerbates this by pushing gradients even closer to the underflow limit. The official run for Exp 011 will proceed in pure FP32.
+
 * **Results**: [To be filled after running. Expecting the overall mAP to be non-zero now that the tie bug is fixed, and the training speed to roughly double.]
 * **Conclusion**: [To be filled after running.]
