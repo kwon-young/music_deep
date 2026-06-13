@@ -66,6 +66,8 @@ class TrainParams:
     dataset: CocoDataset
     batch_size: int
     accumulation_steps: int
+    loader_maxsize: int
+    train_maxsize: int
     patch_size: int
     crop_size: int | None
     channels: int
@@ -572,7 +574,7 @@ def train(params: TrainParams):
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
         create_detection_iterator(params),
-        maxsize=1,
+        maxsize=params.loader_maxsize,
         name="det_pipeline",
         monitor=monitor,
     )
@@ -589,7 +591,7 @@ def train(params: TrainParams):
             dataset_symbols,
             is_distributed,
         ),
-        maxsize=2,  # Buffer 2 batches of detached outputs
+        maxsize=params.train_maxsize,
         name="train_pipeline",
         monitor=monitor,
     )
@@ -709,6 +711,18 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="Number of steps to accumulate gradients before updating weights",
+    )
+    parser.add_argument(
+        "--loader_maxsize",
+        type=int,
+        default=1,
+        help="Maximum number of batches to pre-load in the data pipeline queue",
+    )
+    parser.add_argument(
+        "--train_maxsize",
+        type=int,
+        default=2,
+        help="Maximum number of detached outputs to buffer in the training queue",
     )
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument(
@@ -868,6 +882,8 @@ if __name__ == "__main__":
         dataset=dataset,
         batch_size=args.batch_size,
         accumulation_steps=args.accumulation_steps,
+        loader_maxsize=args.loader_maxsize,
+        train_maxsize=args.train_maxsize,
         patch_size=args.patch_size,
         crop_size=args.crop_size,
         channels=args.channels,
