@@ -109,3 +109,18 @@
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/010_full_dataset_baseline --patch_size 64 --epochs 10 --use_sdpa --use_amp --prep_device cuda:0 --train_device cuda:1 --match_device cuda:1`
 * **Results**: The pipeline successfully processed the full dataset without OOM errors, validating the lazy-loading index strategy and the memory efficiency of AMP and SDPA. The Symbol Budget LR scheduler worked perfectly. The model learned effectively, with total loss dropping from ~1988 to ~4.28 (driven mostly by CE loss dropping to ~1.81). Localization improved, with mIoU climbing to ~0.4889. However, `mAP@0.5` remained low at ~0.0181. Processing speed improved to ~1.0 samples/s.
 * **Conclusion**: The full-dataset pipeline, dynamic shapes, patch dropping, and custom LR scheduler work seamlessly at scale. Using full images with AMP and SDPA improved throughput. However, `patch_size=64` is still too coarse for the strict 0.5 IoU threshold required for thin music symbols (staff lines, stems). To achieve high mAP, a smaller patch size (16 or 32) is required, which will necessitate a smaller crop size (896 or 1792) to maintain memory/speed efficiency. This concludes the detection scaling and baseline track.
+
+## Experiment 011: Full Dataset Checkpoint (Fixes & DDP)
+* **Experiment Name/ID**: `experiments/011_full_dataset_fixes_and_ddp`
+* **Hypothesis/Goal**: This is a checkpoint experiment to validate a series of critical bug fixes and infrastructure improvements made since Experiment 010, before moving on to higher-resolution patch sizes. Specifically, we want to verify that:
+  1. **Tie Label Fix**: Merging the 308 buggy `tie` sub-categories into a single class restores the overall mAP calculation.
+  2. **L1 Loss Fix**: Computing the L1 bounding box loss in `CXCYWH` format (instead of `XYXY`) provides better gradient signals for center localization.
+  3. **Focal Loss Initialization**: Setting the initial classification bias based on a prior probability prevents massive early loss spikes and stabilizes early training.
+  4. **DDP Scaling**: Training on 2 GPUs using DistributedDataParallel (effective batch size = 2) correctly synchronizes gradients and symbol counts, effectively halving the wall-clock time.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64)
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset (with cleaned `tie` annotations).
+  * Command: `mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py --exp_dir experiments/011_full_dataset_fixes_and_ddp --patch_size 64 --epochs 10 --use_sdpa --use_amp`
+* **Results**: [To be filled after running. Expecting the overall mAP to be non-zero now that the tie bug is fixed, and the training speed to roughly double.]
+* **Conclusion**: [To be filled after running.]
