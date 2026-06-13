@@ -4,15 +4,14 @@ import math
 import random
 import os
 from pathlib import Path
-from typing import Generator, Iterable, Any
-from dataclasses import dataclass, replace
+from typing import Generator, Iterable
+from dataclasses import dataclass
 from itertools import batched
 from contextlib import nullcontext
 import torch
 import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from PIL import Image as Image_
 
 from model.vit import vit_nano
 from model.detector import OMRDetector
@@ -32,7 +31,6 @@ from music_types import (
     Data,
     DetectionSample,
     TensorImage,
-    PILImage,
     CHW,
     RGB,
     Float1,
@@ -244,7 +242,9 @@ def train_step_pipeline(
     cumulative_symbols = 0
     global_step = 0
 
-    scaler = torch.amp.GradScaler(device=params.train_device.type, enabled=params.use_amp)
+    scaler = torch.amp.GradScaler(
+        device=params.train_device.type, enabled=params.use_amp
+    )
 
     for batch in iterator:
         if cumulative_symbols >= total_symbol_budget:
@@ -258,8 +258,12 @@ def train_step_pipeline(
         ]
 
         optimizer.zero_grad()
-        
-        with torch.autocast(device_type=params.train_device.type, dtype=torch.float16, enabled=params.use_amp):
+
+        with torch.autocast(
+            device_type=params.train_device.type,
+            dtype=torch.float16,
+            enabled=params.use_amp,
+        ):
             outputs = model(batch.sample.image)
             losses = criterion(outputs, targets)
             total_loss = (
@@ -268,13 +272,15 @@ def train_step_pipeline(
                 + losses.loss_giou
                 + losses.loss_fgl
             )
-            
+
         scaler.scale(total_loss).backward()
 
         # --- Synchronize Symbol Count ---
         local_symbols = batch.sample.num_symbols
         if is_distributed:
-            sym_tensor = torch.tensor([local_symbols], dtype=torch.long, device=params.train_device)
+            sym_tensor = torch.tensor(
+                [local_symbols], dtype=torch.long, device=params.train_device
+            )
             dist.all_reduce(sym_tensor, op=dist.ReduceOp.SUM)
             step_symbols = sym_tensor.item()
         else:
@@ -412,10 +418,10 @@ def train(params: TrainParams):
         dist.init_process_group(backend="nccl")
         local_rank = int(os.environ["LOCAL_RANK"])
         global_rank = dist.get_rank()
-        
+
         device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(device)
-        
+
         # Force all operations to the local GPU
         params.prep_device = device
         params.train_device = device
@@ -423,7 +429,7 @@ def train(params: TrainParams):
     else:
         global_rank = 0
         local_rank = 0
-        
+
     is_main_process = global_rank == 0
     # ----------------------------------------
 
@@ -442,10 +448,18 @@ def train(params: TrainParams):
         print(f"Using match_device: {params.match_device}")
         print(f"Learning Rate: {params.lr:.2e}")
 
-    logger = ExperimentLogger(params.exp_dir, params.stage_name) if is_main_process else None
+    logger = (
+        ExperimentLogger(params.exp_dir, params.stage_name)
+        if is_main_process
+        else None
+    )
 
     # 1. Setup Model
-    backbone = vit_nano(patch_size=params.patch_size, channels=params.channels, use_sdpa=params.use_sdpa)
+    backbone = vit_nano(
+        patch_size=params.patch_size,
+        channels=params.channels,
+        use_sdpa=params.use_sdpa,
+    )
 
     if params.backbone_checkpoint and params.backbone_checkpoint.exists():
         if is_main_process:
@@ -479,10 +493,12 @@ def train(params: TrainParams):
     ).to(params.train_device)
 
     model = raw_model
-    
+
     # --- Wrap Model in DDP ---
     if is_distributed:
-        model = DDP(raw_model, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(
+            raw_model, device_ids=[local_rank], output_device=local_rank
+        )
     # ------------------------------
 
     if params.compile:
@@ -591,7 +607,10 @@ def train(params: TrainParams):
                     + (1.0 - smoothing) * result.total_loss
                 )
 
-            if is_main_process and (result.epoch - last_log_epoch >= params.log_epoch_interval):
+            if is_main_process and (
+                result.epoch - last_log_epoch >= params.log_epoch_interval
+            ):
+                assert logger is not None
                 last_log_epoch = result.epoch
                 log_and_save_checkpoint(
                     result,
@@ -611,6 +630,7 @@ def train(params: TrainParams):
         # Ensure the absolute final state is saved
         if is_main_process and last_result is not None:
             assert running_loss is not None
+            assert logger is not None
             print("Training complete. Saving final checkpoint and metrics...")
             log_and_save_checkpoint(
                 last_result,
@@ -672,8 +692,18 @@ if __name__ == "__main__":
     parser.add_argument("--cost_class", type=float, default=2.0)
     parser.add_argument("--cost_bbox", type=float, default=5.0)
     parser.add_argument("--cost_giou", type=float, default=2.0)
-    parser.add_argument("--radius_patches", type=float, default=4.0, help="Radius in patches for sparse matching")
-    parser.add_argument("--top_k", type=int, default=10, help="Top K fallback for sparse matching")
+    parser.add_argument(
+        "--radius_patches",
+        type=float,
+        default=4.0,
+        help="Radius in patches for sparse matching",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=10,
+        help="Top K fallback for sparse matching",
+    )
 
     # Loss weights
     parser.add_argument("--loss_ce", type=float, default=2.0)
@@ -724,8 +754,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable torch.compile for the model (useful for Kaggle/modern GPUs)",
     )
-    parser.add_argument("--use_sdpa", action="store_true", help="Enable scaled_dot_product_attention")
-    parser.add_argument("--use_amp", action="store_true", help="Enable Automatic Mixed Precision (FP16)")
+    parser.add_argument(
+        "--use_sdpa",
+        action="store_true",
+        help="Enable scaled_dot_product_attention",
+    )
+    parser.add_argument(
+        "--use_amp",
+        action="store_true",
+        help="Enable Automatic Mixed Precision (FP16)",
+    )
     parser.add_argument(
         "--prep_device",
         type=str,

@@ -113,7 +113,7 @@ class Attention(Module):
         self.use_sdpa = use_sdpa
 
         if not self.use_sdpa:
-            self.scale = dim_head ** -0.5
+            self.scale = dim_head**-0.5
             self.attend = nn.Softmax(dim=-1)
 
         self.norm = nn.LayerNorm(dim)
@@ -141,7 +141,9 @@ class Attention(Module):
 
         if self.use_sdpa:
             out = F.scaled_dot_product_attention(
-                q, k, v,
+                q,
+                k,
+                v,
                 dropout_p=self.dropout.p if self.training else 0.0,
             )
         else:
@@ -155,7 +157,9 @@ class Attention(Module):
 
 
 class Transformer(Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0, use_sdpa=True):
+    def __init__(
+        self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0, use_sdpa=True
+    ):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.layers = ModuleList([])
@@ -165,7 +169,11 @@ class Transformer(Module):
                 ModuleList(
                     [
                         Attention(
-                            dim, heads=heads, dim_head=dim_head, dropout=dropout, use_sdpa=use_sdpa
+                            dim,
+                            heads=heads,
+                            dim_head=dim_head,
+                            dropout=dropout,
+                            use_sdpa=use_sdpa,
                         ),
                         FeedForward(dim, mlp_dim, dropout=dropout),
                     ]

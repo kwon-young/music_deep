@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
 
+
 def main() -> None:
     anno_path = Path("data/trompa-coco/annotations/instances_trainval2017.json")
-    
+
     print(f"Loading JSON from {anno_path}...")
     with open(anno_path, "r") as f:
         data = json.load(f)
@@ -14,7 +15,7 @@ def main() -> None:
         if cat["name"] == "tie":
             tie_cat_id = cat["id"]
             break
-            
+
     if tie_cat_id is None:
         print("Error: Base 'tie' category not found in JSON!")
         return
@@ -22,7 +23,7 @@ def main() -> None:
     # 2. Identify buggy tie categories
     buggy_tie_ids: set[int] = set()
     valid_categories: list[dict] = []
-    
+
     for cat in data["categories"]:
         if cat["name"].startswith("tie ") and cat["name"] != "tie":
             buggy_tie_ids.add(cat["id"])
@@ -47,8 +48,11 @@ def main() -> None:
     print("Saving fixed JSON...")
     with open(anno_path, "w") as f:
         json.dump(data, f)
-        
-    print("Done! Remember to manually delete the .pkl cache file so the dataset parser picks up the changes.")
+
+    print(
+        "Done! Remember to manually delete the .pkl cache file so the dataset parser picks up the changes."
+    )
+
 
 if __name__ == "__main__":
     main()

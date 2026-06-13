@@ -135,7 +135,9 @@ class DFINECriterion(nn.Module):
 
         # 1. L1 Loss
         loss_bbox = (
-            F.l1_loss(src_boxes_cxcywh, matched_boxes_cxcywh, reduction="none").sum()
+            F.l1_loss(
+                src_boxes_cxcywh, matched_boxes_cxcywh, reduction="none"
+            ).sum()
             / num_boxes
         )
 

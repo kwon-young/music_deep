@@ -95,7 +95,7 @@ def process_single_image(i, dataset, args, model, device, idx_to_cat_id):
                 "score": prob.item(),
             }
         )
-        
+
     return results
 
 
@@ -110,7 +110,9 @@ def run_inference(args):
 
     # 2. Setup model
     backbone = vit_nano(
-        patch_size=args.patch_size, channels=args.channels, use_sdpa=args.use_sdpa
+        patch_size=args.patch_size,
+        channels=args.channels,
+        use_sdpa=args.use_sdpa,
     )
     model = OMRDetector(
         backbone,
@@ -121,7 +123,9 @@ def run_inference(args):
 
     # 3. Load checkpoint
     print(f"Loading checkpoint from {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    checkpoint = torch.load(
+        args.checkpoint, map_location=device, weights_only=True
+    )
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -131,7 +135,9 @@ def run_inference(args):
     num_images = len(dataset.images)
     if args.num_samples is not None and args.num_samples < num_images:
         indices = random.sample(range(num_images), args.num_samples)
-        print(f"Randomly subsampled {args.num_samples} images out of {num_images}.")
+        print(
+            f"Randomly subsampled {args.num_samples} images out of {num_images}."
+        )
     else:
         indices = range(num_images)
 
@@ -139,9 +145,11 @@ def run_inference(args):
     with torch.no_grad():
         for i in tqdm(indices):
             # Process image in a separate function so local tensors go out of scope
-            results = process_single_image(i, dataset, args, model, device, idx_to_cat_id)
+            results = process_single_image(
+                i, dataset, args, model, device, idx_to_cat_id
+            )
             coco_results.extend(results)
-            
+
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
@@ -154,7 +162,9 @@ def run_inference(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run inference and save COCO results")
+    parser = argparse.ArgumentParser(
+        description="Run inference and save COCO results"
+    )
     parser.add_argument(
         "--checkpoint",
         type=Path,
@@ -170,7 +180,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--anno_path",
         type=Path,
-        default=Path("data/trompa-coco/annotations/instances_trainval2017.json"),
+        default=Path(
+            "data/trompa-coco/annotations/instances_trainval2017.json"
+        ),
     )
     parser.add_argument("--cache_dir", type=Path, default=None)
     parser.add_argument(
