@@ -2,6 +2,7 @@ import argparse
 import time
 import math
 import random
+import os
 from pathlib import Path
 from typing import Generator, Iterable, Any
 from dataclasses import dataclass, replace
@@ -9,6 +10,8 @@ from itertools import batched
 from contextlib import nullcontext
 import torch
 import torch.optim as optim
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from PIL import Image as Image_
 
 from model.vit import vit_nano
@@ -229,12 +232,13 @@ def train_step_pipeline(
             ],
         ]
     ],
-    model: OMRDetector,
+    model: OMRDetector | DDP,
     criterion: DFINECriterion,
     optimizer: optim.Optimizer,
     params: TrainParams,
     total_symbol_budget: int,
     dataset_symbols: int,
+    is_distributed: bool,
 ) -> Generator[TrainStepResult, None, None]:
     """Executes the forward/backward pass and yields detached results for the main thread."""
     cumulative_symbols = 0
@@ -247,7 +251,6 @@ def train_step_pipeline(
             break
 
         global_step += 1
-        current_epoch = cumulative_symbols / dataset_symbols
 
         targets = [
             DetectionTarget(labels=l, boxes=b)
@@ -268,11 +271,20 @@ def train_step_pipeline(
             
         scaler.scale(total_loss).backward()
 
-        # --- Symbol Budget LR Scheduler ---
-        current_batch_symbols = batch.sample.num_symbols
-        cumulative_symbols += current_batch_symbols
+        # --- Synchronize Symbol Count ---
+        local_symbols = batch.sample.num_symbols
+        if is_distributed:
+            sym_tensor = torch.tensor([local_symbols], dtype=torch.long, device=params.train_device)
+            dist.all_reduce(sym_tensor, op=dist.ReduceOp.SUM)
+            step_symbols = sym_tensor.item()
+        else:
+            step_symbols = local_symbols
+
+        cumulative_symbols += step_symbols
+        current_epoch = cumulative_symbols / dataset_symbols
         progress = min(1.0, cumulative_symbols / total_symbol_budget)
 
+        # --- Symbol Budget LR Scheduler ---
         if progress < params.warmup_ratio:
             # Linear Warmup
             current_lr = params.lr * max(
@@ -304,7 +316,7 @@ def train_step_pipeline(
             outputs=outputs.detach(),
             losses=losses.detach(),
             total_loss=total_loss.item(),
-            symbols_processed=current_batch_symbols,
+            symbols_processed=step_symbols,
         )
 
 
@@ -394,7 +406,26 @@ def log_and_save_checkpoint(
 
 
 def train(params: TrainParams):
-    import os
+    # --- DDP Setup & Device Override ---
+    is_distributed = "WORLD_SIZE" in os.environ
+    if is_distributed:
+        dist.init_process_group(backend="nccl")
+        local_rank = int(os.environ["LOCAL_RANK"])
+        global_rank = dist.get_rank()
+        
+        device = torch.device(f"cuda:{local_rank}")
+        torch.cuda.set_device(device)
+        
+        # Force all operations to the local GPU
+        params.prep_device = device
+        params.train_device = device
+        params.match_device = device
+    else:
+        global_rank = 0
+        local_rank = 0
+        
+    is_main_process = global_rank == 0
+    # ----------------------------------------
 
     if params.headless:
         os.environ["MPLBACKEND"] = "Agg"
@@ -405,18 +436,20 @@ def train(params: TrainParams):
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    print(f"Using prep_device: {params.prep_device}")
-    print(f"Using train_device: {params.train_device}")
-    print(f"Using match_device: {params.match_device}")
-    print(f"Learning Rate: {params.lr:.2e}")
+    if is_main_process:
+        print(f"Using prep_device: {params.prep_device}")
+        print(f"Using train_device: {params.train_device}")
+        print(f"Using match_device: {params.match_device}")
+        print(f"Learning Rate: {params.lr:.2e}")
 
-    logger = ExperimentLogger(params.exp_dir, params.stage_name)
+    logger = ExperimentLogger(params.exp_dir, params.stage_name) if is_main_process else None
 
     # 1. Setup Model
     backbone = vit_nano(patch_size=params.patch_size, channels=params.channels, use_sdpa=params.use_sdpa)
 
     if params.backbone_checkpoint and params.backbone_checkpoint.exists():
-        print(f"Loading backbone weights from {params.backbone_checkpoint}")
+        if is_main_process:
+            print(f"Loading backbone weights from {params.backbone_checkpoint}")
         checkpoint = torch.load(
             params.backbone_checkpoint,
             map_location=params.train_device,
@@ -424,16 +457,19 @@ def train(params: TrainParams):
         )
         backbone.load_state_dict(checkpoint["backbone"], strict=True)
     elif params.backbone_checkpoint:
-        print(
-            f"Warning: Checkpoint {params.backbone_checkpoint} not found. Training from scratch."
-        )
+        if is_main_process:
+            print(
+                f"Warning: Checkpoint {params.backbone_checkpoint} not found. Training from scratch."
+            )
 
     if params.freeze_backbone:
-        print("Freezing backbone parameters (no fine-tuning).")
+        if is_main_process:
+            print("Freezing backbone parameters (no fine-tuning).")
         for param in backbone.parameters():
             param.requires_grad = False
     else:
-        print("Fine-tuning backbone parameters.")
+        if is_main_process:
+            print("Fine-tuning backbone parameters.")
 
     raw_model = OMRDetector(
         backbone,
@@ -443,9 +479,16 @@ def train(params: TrainParams):
     ).to(params.train_device)
 
     model = raw_model
+    
+    # --- Wrap Model in DDP ---
+    if is_distributed:
+        model = DDP(raw_model, device_ids=[local_rank], output_device=local_rank)
+    # ------------------------------
+
     if params.compile:
-        print("Compiling model with torch.compile(dynamic=True)...")
-        model = torch.compile(raw_model, dynamic=True)
+        if is_main_process:
+            print("Compiling model with torch.compile(dynamic=True)...")
+        model = torch.compile(model, dynamic=True)
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(
@@ -470,27 +513,32 @@ def train(params: TrainParams):
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
-    # Setup Interactive Plotting
-    if not params.headless:
-        plt.ion()
-    fig, ax = plt.subplots(1, figsize=(8, 8))
-    if not params.headless:
-        manager = fig.canvas.manager
-        if manager:
-            manager.set_window_title("OMR Detector Training")
+    # Setup Interactive Plotting ONLY on main process
+    if is_main_process:
+        if not params.headless:
+            plt.ion()
+        fig, ax = plt.subplots(1, figsize=(8, 8))
+        if not params.headless:
+            manager = fig.canvas.manager
+            if manager:
+                manager.set_window_title("OMR Detector Training")
+    else:
+        fig, ax = None, None
 
     dataset_symbols = params.dataset.num_symbols
-    print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
+    if is_main_process:
+        print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
 
     model.train()
 
     total_symbol_budget = dataset_symbols * params.epochs
-    print("Training on full dataset.")
-    print(
-        f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
-    )
+    if is_main_process:
+        print("Training on full dataset.")
+        print(
+            f"Total Symbol Budget for {params.epochs} epochs: {total_symbol_budget}"
+        )
 
-    monitor = Monitor() if params.use_monitor else None
+    monitor = Monitor() if (params.use_monitor and is_main_process) else None
 
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
@@ -510,6 +558,7 @@ def train(params: TrainParams):
             params,
             total_symbol_budget,
             dataset_symbols,
+            is_distributed,
         ),
         maxsize=2,  # Buffer 2 batches of detached outputs
         name="train_pipeline",
@@ -542,7 +591,7 @@ def train(params: TrainParams):
                     + (1.0 - smoothing) * result.total_loss
                 )
 
-            if result.epoch - last_log_epoch >= params.log_epoch_interval:
+            if is_main_process and (result.epoch - last_log_epoch >= params.log_epoch_interval):
                 last_log_epoch = result.epoch
                 log_and_save_checkpoint(
                     result,
@@ -560,7 +609,7 @@ def train(params: TrainParams):
                 )
 
         # Ensure the absolute final state is saved
-        if last_result is not None:
+        if is_main_process and last_result is not None:
             assert running_loss is not None
             print("Training complete. Saving final checkpoint and metrics...")
             log_and_save_checkpoint(
@@ -577,6 +626,9 @@ def train(params: TrainParams):
                 fig,
                 plt,
             )
+
+    if is_distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
