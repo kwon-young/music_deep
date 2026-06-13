@@ -1,3 +1,4 @@
+import os
 import json
 import pickle
 from pathlib import Path
@@ -100,9 +101,10 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         annotations=annotations,
     )
 
-    print(f"Caching parsed dataset to {cache_path}")
-    with open(cache_path, "wb") as f:
-        pickle.dump(dataset, f)
+    if os.environ.get("LOCAL_RANK", "0") == "0":
+        print(f"Caching parsed dataset to {cache_path}")
+        with open(cache_path, "wb") as f:
+            pickle.dump(dataset, f)
 
     return dataset
 
