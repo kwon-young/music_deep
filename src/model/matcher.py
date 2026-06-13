@@ -23,6 +23,41 @@ from music_types import (
 )
 
 
+@torch.jit.script
+def greedy_matcher_gpu(
+    sorted_rows: torch.Tensor,
+    sorted_cols: torch.Tensor,
+    num_queries: int,
+    num_targets: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    A fully GPU-native greedy bipartite matcher compiled via TorchScript.
+    Avoids CPU-GPU syncs and Python loop overhead.
+    """
+    device = sorted_rows.device
+    assigned_preds = torch.zeros(num_queries, dtype=torch.bool, device=device)
+    assigned_targets = torch.zeros(num_targets, dtype=torch.bool, device=device)
+
+    # Pre-allocate max possible size to avoid dynamic list appending on GPU
+    match_preds = torch.empty_like(sorted_rows)
+    match_targets = torch.empty_like(sorted_cols)
+    
+    count = 0
+    for i in range(sorted_rows.size(0)):
+        r = sorted_rows[i]
+        c = sorted_cols[i]
+        if not assigned_preds[r] and not assigned_targets[c]:
+            match_preds[count] = r
+            match_targets[count] = c
+            assigned_preds[r] = True
+            assigned_targets[c] = True
+            count += 1
+            if count == num_targets:
+                break
+                
+    return match_preds[:count], match_targets[:count]
+
+
 def elementwise_generalized_box_iou(
     boxes1: torch.Tensor, boxes2: torch.Tensor
 ) -> torch.Tensor:
@@ -68,8 +103,10 @@ class HungarianMatcher(nn.Module):
         top_k: int = 10,
         patch_size: int = 64,
         image_size: int = 3584,
+        matcher_type: str = "scipy",
     ):
         super().__init__()
+        self.matcher_type = matcher_type
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
@@ -202,24 +239,48 @@ class HungarianMatcher(nn.Module):
                 + self.cost_giou * cost_giou_1d
             )
 
-            # 5. Build SciPy Sparse Matrix and solve
-            sparse_cost_matrix = csr_matrix(
-                (
-                    valid_costs.cpu().numpy(),
-                    (row_idx.cpu().numpy(), col_idx.cpu().numpy()),
-                ),
-                shape=(num_queries, num_targets),
-            )
-
-            row_ind, col_ind = min_weight_full_bipartite_matching(
-                sparse_cost_matrix
-            )
-
-            indices.append(
-                MatchIndices(
-                    pred_indices=torch.as_tensor(row_ind, dtype=torch.int64),
-                    target_indices=torch.as_tensor(col_ind, dtype=torch.int64),
+            if self.matcher_type == "scipy":
+                # 5. Build SciPy Sparse Matrix and solve
+                sparse_cost_matrix = csr_matrix(
+                    (
+                        valid_costs.cpu().numpy(),
+                        (row_idx.cpu().numpy(), col_idx.cpu().numpy()),
+                    ),
+                    shape=(num_queries, num_targets),
                 )
-            )
+
+                row_ind, col_ind = min_weight_full_bipartite_matching(
+                    sparse_cost_matrix
+                )
+
+                indices.append(
+                    MatchIndices(
+                        pred_indices=torch.as_tensor(row_ind, dtype=torch.int64),
+                        target_indices=torch.as_tensor(col_ind, dtype=torch.int64),
+                    )
+                )
+            elif self.matcher_type == "greedy":
+                if len(valid_costs) == 0:
+                    row_ind = torch.empty(0, dtype=torch.int64, device=calc_device)
+                    col_ind = torch.empty(0, dtype=torch.int64, device=calc_device)
+                else:
+                    # Sort on GPU
+                    _, sort_idx = torch.sort(valid_costs)
+                    sorted_rows = row_idx[sort_idx]
+                    sorted_cols = col_idx[sort_idx]
+
+                    # Execute compiled GPU kernel
+                    row_ind, col_ind = greedy_matcher_gpu(
+                        sorted_rows, sorted_cols, num_queries, num_targets
+                    )
+
+                indices.append(
+                    MatchIndices(
+                        pred_indices=row_ind,
+                        target_indices=col_ind,
+                    )
+                )
+            else:
+                raise ValueError(f"Unknown matcher_type: {self.matcher_type}")
 
         return indices

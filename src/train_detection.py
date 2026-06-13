@@ -77,6 +77,7 @@ class TrainParams:
     cost_giou: float
     radius_patches: float
     top_k: int
+    matcher_type: str
     loss_ce: float
     loss_bbox: float
     loss_giou: float
@@ -523,6 +524,7 @@ def train(params: TrainParams):
         top_k=params.top_k,
         patch_size=params.patch_size,
         image_size=params.crop_size if params.crop_size is not None else 3584,
+        matcher_type=params.matcher_type,
     )
     weights = DetectionLossWeights(
         loss_ce=params.loss_ce,
@@ -736,6 +738,13 @@ if __name__ == "__main__":
         default=10,
         help="Top K fallback for sparse matching",
     )
+    parser.add_argument(
+        "--matcher_type",
+        type=str,
+        choices=["scipy", "greedy"],
+        default="scipy",
+        help="Type of bipartite matching to use",
+    )
 
     # Loss weights
     parser.add_argument("--loss_ce", type=float, default=2.0)
@@ -866,6 +875,7 @@ if __name__ == "__main__":
         cost_giou=args.cost_giou,
         radius_patches=args.radius_patches,
         top_k=args.top_k,
+        matcher_type=args.matcher_type,
         loss_ce=args.loss_ce,
         loss_bbox=args.loss_bbox,
         loss_giou=args.loss_giou,
