@@ -415,7 +415,8 @@ def train(params: TrainParams):
     # --- DDP Setup & Device Override ---
     is_distributed = "WORLD_SIZE" in os.environ
     if is_distributed:
-        dist.init_process_group(backend="nccl")
+        backend = "nccl" if dist.is_nccl_available() else "gloo"
+        dist.init_process_group(backend=backend)
         local_rank = int(os.environ["LOCAL_RANK"])
         global_rank = dist.get_rank()
 

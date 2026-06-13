@@ -3,7 +3,6 @@ from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 from typing import Any
-from functools import lru_cache
 from music_types import (
     Patches,
     Embeddings,
@@ -39,7 +38,6 @@ def apply_pope(q, k, freqs):
     return q_rotated, k_rotated
 
 
-@lru_cache(maxsize=32)
 def get_2d_pope_frequencies(
     grid_h, grid_w, dim_head, base=10000.0, device="cpu"
 ):

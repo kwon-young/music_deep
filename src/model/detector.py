@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
-from functools import lru_cache
 from music_types import (
     Patches,
     DetectionOutput,
@@ -23,11 +22,9 @@ from music_types import (
 )
 
 
-@lru_cache(maxsize=32)
 def get_2d_patch_centers(grid_h: int, grid_w: int, device: str) -> torch.Tensor:
     """
     Computes the base normalized (x, y) centers for a full grid.
-    Cached to avoid recomputing meshgrids on every forward pass.
     """
     torch_device = torch.device(device)
 
