@@ -65,6 +65,7 @@ class TrainParams:
     img_dir: Path
     dataset: CocoDataset
     batch_size: int
+    accumulation_steps: int
     patch_size: int
     crop_size: int | None
     channels: int
@@ -246,34 +247,41 @@ def train_step_pipeline(
         device=params.train_device.type, enabled=params.use_amp
     )
 
+    optimizer.zero_grad()
+
     for batch in iterator:
         if cumulative_symbols >= total_symbol_budget:
             break
 
         global_step += 1
+        is_accumulating = (global_step % params.accumulation_steps) != 0
 
         targets = [
             DetectionTarget(labels=l, boxes=b)
             for b, l in zip(batch.sample.boxes, batch.sample.labels)
         ]
 
-        optimizer.zero_grad()
+        # Prevent DDP from synchronizing gradients during accumulation steps
+        sync_context = model.no_sync() if (is_distributed and is_accumulating) else nullcontext()
 
-        with torch.autocast(
-            device_type=params.train_device.type,
-            dtype=torch.float16,
-            enabled=params.use_amp,
-        ):
-            outputs = model(batch.sample.image)
-            losses = criterion(outputs, targets)
-            total_loss = (
-                losses.loss_ce
-                + losses.loss_bbox
-                + losses.loss_giou
-                + losses.loss_fgl
-            )
+        with sync_context:
+            with torch.autocast(
+                device_type=params.train_device.type,
+                dtype=torch.float16,
+                enabled=params.use_amp,
+            ):
+                outputs = model(batch.sample.image)
+                losses = criterion(outputs, targets)
+                total_loss = (
+                    losses.loss_ce
+                    + losses.loss_bbox
+                    + losses.loss_giou
+                    + losses.loss_fgl
+                )
 
-        scaler.scale(total_loss).backward()
+            # Scale the loss to average gradients over the accumulation steps
+            scaled_loss = total_loss / params.accumulation_steps
+            scaler.scale(scaled_loss).backward()
 
         # --- Synchronize Symbol Count ---
         local_symbols = batch.sample.num_symbols
@@ -309,8 +317,10 @@ def train_step_pipeline(
             param_group["lr"] = current_lr
         # ----------------------------------
 
-        scaler.step(optimizer)
-        scaler.update()
+        if not is_accumulating:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
 
         # Cleanly detach the entire nested dataclass structures
         yield TrainStepResult(
@@ -688,6 +698,12 @@ if __name__ == "__main__":
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument(
+        "--accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of steps to accumulate gradients before updating weights",
+    )
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument(
         "--crop_size",
@@ -838,6 +854,7 @@ if __name__ == "__main__":
         img_dir=args.img_dir,
         dataset=dataset,
         batch_size=args.batch_size,
+        accumulation_steps=args.accumulation_steps,
         patch_size=args.patch_size,
         crop_size=args.crop_size,
         channels=args.channels,
