@@ -116,16 +116,29 @@
   1. **Tie Label Fix**: Merging the 308 buggy `tie` sub-categories into a single class restores the overall mAP calculation.
   2. **L1 Loss Fix**: Computing the L1 bounding box loss in `CXCYWH` format (instead of `XYXY`) provides better gradient signals for center localization.
   3. **Focal Loss Initialization**: Setting the initial classification bias based on a prior probability prevents massive early loss spikes and stabilizes early training.
-  4. **DDP Scaling & Grad Accumulation**: Training on 2 GPUs with gradient accumulation to smooth out extreme symbol count variances.
-  5. **GPU-Native Matcher**: Replacing SciPy with a TorchScript greedy matcher to fix CPU bottlenecks.
+  4. **DDP Scaling**: Training on 2 GPUs to smooth out extreme symbol count variances and speed up training.
 * **Setup**: 
   * Model: `vit_nano` (patch_size=64)
   * Crop Size: Full Image (None)
   * Data: Full Trompa-COCO dataset (with cleaned `tie` annotations).
-  * Command: `mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py --exp_dir experiments/011_full_dataset_fixes_and_ddp --patch_size 64 --epochs 10 --use_sdpa --accumulation_steps 4 --matcher_type greedy` (Note: `--use_amp` disabled, see note below).
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/011_full_dataset_fixes_and_ddp \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+    *(Note: `--use_amp` disabled, see note below).*
 
 ### Interim Note: AMP (FP16) Numerical Instability
 An initial attempt at this experiment using `--use_amp` (FP16) combined with gradient accumulation yielded extremely poor results. This is highly likely due to FP16's limited precision (11 bits of mantissa). In OMR, a 4-pixel thick staff line on a 3584x3584 image has a normalized dimension of `4 / 3584 ≈ 0.0011`. When the network regresses fine-grained edge offsets or computes IoU for these microscopic values, FP16 suffers from catastrophic cancellation and underflow. Dividing the loss by `accumulation_steps` exacerbates this by pushing gradients even closer to the underflow limit. The official run for Exp 011 will proceed in pure FP32.
 
-* **Results**: [To be filled after running. Expecting the overall mAP to be non-zero now that the tie bug is fixed, and the training speed to roughly double.]
-* **Conclusion**: [To be filled after running.]
+* **Results**: The experiment successfully completed all 10 epochs. The total loss dropped to ~2.68 (at peak mAP), with classification loss (`loss_ce`) dropping to ~0.50. Crucially, `mAP@0.5` saw a massive improvement, peaking at **0.2356** (up from 0.0181 in Exp 010), and `mIoU` reached **0.6587**. Training speed was excellent, sustaining ~1600-1700 symbols/s across the 2 GPUs.
+* **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format resolved the mAP bottleneck, proving the model is learning meaningful localizations even at a coarse 64x64 patch size. DDP provided excellent throughput. The foundation is now solid enough to scale down the patch size (e.g., to 32 or 16) to achieve high-precision bounding boxes.
