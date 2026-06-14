@@ -112,7 +112,7 @@
 
 ## Experiment 011: Full Dataset Checkpoint (Fixes & DDP)
 * **Experiment Name/ID**: `experiments/011_full_dataset_fixes_and_ddp`
-* **Hypothesis/Goal**: This is a checkpoint experiment to validate a series of critical bug fixes and infrastructure improvements made since Experiment 010, before moving on to higher-resolution patch sizes. Specifically, we want to verify that:
+* **Hypothesis/Goal**: This is a checkpoint experiment to validate a series of critical bug fixes and infrastructure improvements made since Experiment 010. Specifically, we want to verify that:
   1. **Tie Label Fix**: Merging the 308 buggy `tie` sub-categories into a single class restores the overall mAP calculation.
   2. **L1 Loss Fix**: Computing the L1 bounding box loss in `CXCYWH` format (instead of `XYXY`) provides better gradient signals for center localization.
   3. **Focal Loss Initialization**: Setting the initial classification bias based on a prior probability prevents massive early loss spikes and stabilizes early training.
@@ -141,4 +141,4 @@
 An initial attempt at this experiment using `--use_amp` (FP16) combined with gradient accumulation yielded extremely poor results. This is highly likely due to FP16's limited precision (11 bits of mantissa). In OMR, a 4-pixel thick staff line on a 3584x3584 image has a normalized dimension of `4 / 3584 ≈ 0.0011`. When the network regresses fine-grained edge offsets or computes IoU for these microscopic values, FP16 suffers from catastrophic cancellation and underflow. Dividing the loss by `accumulation_steps` exacerbates this by pushing gradients even closer to the underflow limit. The official run for Exp 011 will proceed in pure FP32.
 
 * **Results**: The experiment successfully completed all 10 epochs. The total loss dropped to ~2.68 (at peak mAP), with classification loss (`loss_ce`) dropping to ~0.50. Crucially, `mAP@0.5` saw a massive improvement, peaking at **0.2356** (up from 0.0181 in Exp 010), and `mIoU` reached **0.6587**. Training speed was excellent, sustaining ~1600-1700 symbols/s across the 2 GPUs.
-* **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format resolved the mAP bottleneck, proving the model is learning meaningful localizations even at a coarse 64x64 patch size. DDP provided excellent throughput. The foundation is now solid enough to scale down the patch size (e.g., to 32 or 16) to achieve high-precision bounding boxes.
+* **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format resolved the mAP bottleneck, proving the model is learning meaningful localizations even at a coarse 64x64 patch size. DDP provided excellent throughput.
