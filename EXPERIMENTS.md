@@ -142,3 +142,27 @@ An initial attempt at this experiment using `--use_amp` (FP16) combined with gra
 
 * **Results**: The experiment successfully completed all 10 epochs. While the in-training batch-level `mAP@0.5` peaked at ~0.2356, the official full-dataset `pycocotools` evaluation yielded a global `mAP@0.5` of **0.047**. This discrepancy is due to `pycocotools` macro-averaging across all ~70 categories: over 40 rare or tiny classes scored 0.0000, heavily penalizing the global average. However, performance on common, distinct symbols was excellent: `noteheadBlack` (**0.9296**), `gClef` (**0.8549**), `stem` (**0.4428**), `accidentalFlat` (**0.4003**), and `fClef` (**0.3645**).
 * **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format allowed the model to learn meaningful localizations, as evidenced by the >0.85 AP on noteheads and clefs. The low global mAP is primarily a reflection of the dataset's long-tail distribution (rare classes) and the difficulty of localizing extremely thin/tiny symbols (like dots and ties) at the current 64x64 resolution. DDP provided excellent throughput.
+
+## Experiment 012: Log-Space Shape Prediction
+* **Experiment Name/ID**: `experiments/012_log_space_shapes`
+* **Hypothesis/Goal**: Verify that predicting bounding box width and height in log-space (using `exp` instead of `softplus`) improves the network's ability to regress extreme aspect ratios (like long staff lines) and tiny objects (like dots) by providing better relative precision and scaling.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with log-space shape prediction in `DFINEDenseHead`.
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/012_log_space_shapes \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+* **Results**: TBD
+* **Conclusion**: TBD

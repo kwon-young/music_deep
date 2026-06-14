@@ -110,6 +110,7 @@ class DFINEDenseHead(nn.Module):
         self.num_shapes = num_shapes
         self.reg_max = reg_max
         self.num_bins = reg_max + 1
+        self.base_anchor_size = base_anchor_size
 
         # C (classes) + 4 (cx, cy, w, h) + 4*N (edge bins)
         self.preds_per_shape = num_classes + 4 + (4 * self.num_bins)
@@ -130,10 +131,9 @@ class DFINEDenseHead(nn.Module):
         cls_bias_init = -math.log((1 - prior_prob) / prior_prob)
         nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
 
-        # Initialize the bias for the width/height predictions so they start at base_anchor_size
-        init_val = math.log(math.exp(base_anchor_size) - 1)
+        # Initialize the bias for the width/height predictions to 0.0 for log-space
         nn.init.constant_(
-            bias_view[:, num_classes + 2 : num_classes + 4], init_val
+            bias_view[:, num_classes + 2 : num_classes + 4], 0.0
         )
 
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
@@ -151,9 +151,10 @@ class DFINEDenseHead(nn.Module):
         classes = preds[..., : self.num_classes]
         center_offsets = preds[..., self.num_classes : self.num_classes + 2]
 
-        # --- Dynamically predict shapes ---
+        # --- Dynamically predict shapes in LOG SPACE ---
         shapes_raw = preds[..., self.num_classes + 2 : self.num_classes + 4]
-        shapes = F.softplus(shapes_raw)  # Ensure strictly positive
+        shapes_raw = torch.clamp(shapes_raw, min=-10.0, max=10.0)
+        shapes = self.base_anchor_size * torch.exp(shapes_raw)
         w_k, h_k = shapes[..., 0], shapes[..., 1]
         # ---------------------------------------
 
