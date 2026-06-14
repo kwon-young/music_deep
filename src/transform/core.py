@@ -105,10 +105,10 @@ def decode_nvimgcodec_img(
 ) -> TensorImage[CHW, RGB, Int255]:
     """Decodes a LazyImage directly to GPU VRAM and formats it as a CHW RGB tensor."""
     import time
-    
+
     device_id = device.index if device.index is not None else 0
     decoder = get_nv_decoder(device_id)
-    
+
     max_retries = 10
     for attempt in range(max_retries):
         try:
@@ -117,7 +117,7 @@ def decode_nvimgcodec_img(
             break  # Success
         except Exception as e:
             if attempt < max_retries - 1:
-                # VRAM is likely full. Clear cache and wait for the training thread 
+                # VRAM is likely full. Clear cache and wait for the training thread
                 # to finish its backward pass and free intermediate activations.
                 torch.cuda.empty_cache()
                 time.sleep(0.5)

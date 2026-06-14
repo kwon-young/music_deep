@@ -12,20 +12,25 @@ def main():
         description="Evaluate COCO metrics with custom maxDets for OMR"
     )
     parser.add_argument(
-        "--anno_path", type=Path, required=True, help="Path to ground truth JSON"
+        "--anno_path",
+        type=Path,
+        required=True,
+        help="Path to ground truth JSON",
     )
     parser.add_argument(
         "--pred_path", type=Path, required=True, help="Path to predictions JSON"
     )
     parser.add_argument(
-        "--out_dir", 
-        type=Path, 
-        default=None, 
-        help="Directory to save detailed results. Defaults to pred_path's directory."
+        "--out_dir",
+        type=Path,
+        default=None,
+        help="Directory to save detailed results. Defaults to pred_path's directory.",
     )
     args = parser.parse_args()
 
-    out_dir = args.out_dir if args.out_dir is not None else args.pred_path.parent
+    out_dir = (
+        args.out_dir if args.out_dir is not None else args.pred_path.parent
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load ground truth
@@ -53,7 +58,7 @@ def main():
     cats = coco_gt.loadCats(cat_ids)
 
     print("\n--- Per-Category mAP@0.5 (area=all, maxDets=5000) ---")
-    
+
     per_cat_stats = {}
     for i, cat in enumerate(cats):
         # T=0 is IoU=0.5
@@ -63,7 +68,7 @@ def main():
         # M=2 is maxDets=5000 (since we set maxDets = [1, 100, 5000])
         p_50 = precisions[0, :, i, 0, 2]
         p_50 = p_50[p_50 > -1]
-        
+
         p_all = precisions[:, :, i, 0, 2]
         p_all = p_all[p_all > -1]
 
@@ -85,18 +90,17 @@ def main():
     out_pkl = out_dir / "coco_eval_raw.pkl"
     print(f"\nSaving full raw evaluation arrays to {out_pkl}...")
     with open(out_pkl, "wb") as f:
-        pickle.dump({
-            "eval": coco_eval.eval,
-            "stats": coco_eval.stats
-        }, f)
+        pickle.dump({"eval": coco_eval.eval, "stats": coco_eval.stats}, f)
 
     # Save human-readable summary (JSON)
     out_json = out_dir / "coco_eval_summary.json"
     print(f"Saving human-readable summary to {out_json}...")
-    
+
     summary = {
-        "global_stats": coco_eval.stats.tolist() if coco_eval.stats is not None else [],
-        "per_category": per_cat_stats
+        "global_stats": coco_eval.stats.tolist()
+        if coco_eval.stats is not None
+        else [],
+        "per_category": per_cat_stats,
     }
     with open(out_json, "w") as f:
         json.dump(summary, f, indent=4)

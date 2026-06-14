@@ -132,9 +132,7 @@ class DFINEDenseHead(nn.Module):
         nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
 
         # Initialize the bias for the width/height predictions to 0.0 for log-space
-        nn.init.constant_(
-            bias_view[:, num_classes + 2 : num_classes + 4], 0.0
-        )
+        nn.init.constant_(bias_view[:, num_classes + 2 : num_classes + 4], 0.0)
 
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
