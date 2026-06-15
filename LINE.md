@@ -72,3 +72,85 @@ Because lines no longer use bounding boxes, standard COCO `mAP` (which relies on
 3. **Criterion (`criterion.py`):** Create a `loss_line_l1` for endpoints. Drop GIoU for lines. Apply the FGL loss to the endpoint bins using the new `S1/S2` reference scales. Add a weighting factor to balance line loss vs. symbol loss.
 4. **Matcher (`matcher.py`):** Split the matching logic. Use GIoU cost for symbols, and Endpoint L1 cost for lines.
 5. **Inference & Eval:** Split prediction outputs and implement dual `COCOeval` runs.
+
+## 7. Detailed Implementation Plan
+
+### Step 1: Type Definitions (`src/music_types.py`)
+We need to distinguish between Symbol outputs and Line outputs, as well as their respective ground truths.
+1. **Add Keypoint Types:** Create `Keypoints` (same shape as `BoundingBoxes` but semantically different).
+2. **Update `DetectionTarget`:** Add a `keypoints` field. A target will now hold `boxes` (for symbols) and `keypoints` (for lines).
+3. **Update `DetectionOutput`:** Split the output into two distinct dataclasses: `SymbolOutput` and `LineOutput`. `DetectionOutput` will contain both.
+   * `SymbolOutput`: `pred_logits`, `pred_boxes`, `pred_edge_logits`, `absolute_centers`, `learnable_shapes`.
+   * `LineOutput`: `pred_logits`, `pred_keypoints`, `pred_endpoint_logits`, `absolute_centers`, `log_scales`, `raw_directions`.
+
+### Step 2: Dataset Parsing (`src/dataset/coco.py`)
+We must extract the keypoints and categorize the classes.
+1. **Identify Line Categories:** During `parse_coco`, inspect the `keypoints` field of each category. If it contains `["start", "end"]`, mark its ID as a line category. Store a `set` of line category IDs in `CocoDataset`.
+2. **Extract Keypoints:** In `load_coco_sample`, when iterating over annotations:
+   * If the category is a symbol, append to `boxes` and pad `keypoints` with NaNs.
+   * If the category is a line, extract the `[x1, y1, v1, x2, y2, v2]` keypoints, convert to `[x1, y1, x2, y2]`, append to `keypoints`, and pad `boxes` with NaNs.
+3. **Return Dual Modalities:** `DetectionSample` now returns both `boxes` and `keypoints` tensors.
+
+### Step 3: Transforms (`src/transform/det.py`)
+The geometric transformations must apply to both boxes and keypoints.
+1. **Crop & Shift:** Update `crop_boxes_xyxy` to also shift the keypoints by `(x, y)`. Unlike boxes, if a keypoint falls outside the crop, we might still want to keep it if the other endpoint is inside (or we can strictly clip them).
+2. **Normalization:** Update `normalize_boxes_img` to divide keypoint coordinates by `(width, height)` so they are in `[0, 1]` Float1 space.
+3. **Collation:** Update `collate` to stack the new keypoint tensors.
+
+### Step 4: Model Architecture (`src/model/detector.py`)
+This is where the core mathematical changes happen.
+1. **Split the Head:** Rename `DFINEDenseHead` to `SymbolHead`. Create a new `LineHead`.
+2. **Implement `LineHead`:**
+   * **MLP Output:** `[Classes, log_scale1, log_scale2, raw_dx1, raw_dy1, raw_dx2, raw_dy2, 4x D-FINE Bins]`.
+   * **Decoding Math:**
+     ```python
+     # 1. Log Scales
+     S1 = base_anchor_size * torch.exp(log_scale1)
+     S2 = base_anchor_size * torch.exp(log_scale2)
+     
+     # 2. D-FINE Residuals (using the existing DFINEWeightingFunction)
+     res = self.weighting_fn(edge_probs) # Shape: (..., 4) -> [res_x1, res_y1, res_x2, res_y2]
+     
+     # 3. Final Absolute Endpoints
+     x1 = patch_cx + (raw_dx1 + res[..., 0]) * S1
+     y1 = patch_cy + (raw_dy1 + res[..., 1]) * S1
+     x2 = patch_cx + (raw_dx2 + res[..., 2]) * S2
+     y2 = patch_cy + (raw_dy2 + res[..., 3]) * S2
+     ```
+3. **Update `OMRDetector`:** Forward the `patch_tokens` through both `SymbolHead` and `LineHead`. Return the combined `DetectionOutput`.
+
+### Step 5: Bipartite Matching (`src/model/matcher.py`)
+The matcher must independently match symbols to symbols, and lines to lines.
+1. **Split Targets:** Separate the ground truth into `symbol_targets` and `line_targets` using the category IDs.
+2. **Symbol Matching:** Match `SymbolOutput` against `symbol_targets` using the existing GIoU + L1 cost matrix.
+3. **Line Matching:** Match `LineOutput` against `line_targets` using **only L1 distance** on the endpoints (no GIoU).
+4. **Return:** Return two sets of `MatchIndices` (one for symbols, one for lines).
+
+### Step 6: Loss Computation (`src/model/criterion.py`)
+The criterion applies the specific losses to the matched pairs.
+1. **Symbol Losses:** Unchanged (Focal Loss, Box L1, Box GIoU, Box FGL).
+2. **Line Losses:**
+   * **Focal Loss:** Applied to all line queries.
+   * **Endpoint L1:** `F.l1_loss(pred_keypoints, gt_keypoints)`.
+   * **Endpoint FGL:** Reverse the decoding math to find the target residuals:
+     `target_res_x1 = (gt_x1 - patch_cx) / S1 - raw_dx1`
+     Pass these target residuals into the D-FINE soft cross-entropy logic.
+3. **Total Loss:** Combine all losses. You may need a new weight in `DetectionLossWeights` (e.g., `loss_line_l1`).
+
+### Step 7: Inference (`scripts/inference_coco.py`)
+The inference script must output two separate JSON files to prevent evaluation conflicts.
+1. **Filter by Confidence:** Apply the confidence threshold to both `SymbolOutput` and `LineOutput`.
+2. **Format Symbols:** Convert to `[x, y, w, h]` and append to `preds_symbols.json`.
+3. **Format Lines:** Convert to COCO keypoint format `[x1, y1, 1, x2, y2, 1]` (where 1 means visible) and append to `preds_lines.json`.
+
+### Step 8: Evaluation (`scripts/evaluate_coco.py`)
+Standard COCO mAP will fail for lines, so we must run two separate evaluations.
+1. **Symbol Evaluation:** 
+   * Load `preds_symbols.json`.
+   * Run `COCOeval(iouType='bbox')`.
+   * **Crucial:** Filter the evaluation to only consider symbol `catIds` to prevent it from penalizing the model for "missing" the lines.
+2. **Line Evaluation:**
+   * Load `preds_lines.json`.
+   * Run `COCOeval(iouType='keypoints')`.
+   * Filter by line `catIds`.
+   * *Note:* Keypoint evaluation requires defining `sigmas` for the Object Keypoint Similarity (OKS). We will need to define a custom sigma array for the start/end points (e.g., `[0.1, 0.1]`).
