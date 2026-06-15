@@ -5,7 +5,6 @@ from typing import (
     Concatenate,
     Literal,
     TypeVar,
-    Any,
 )
 from functools import wraps, cache
 from dataclasses import replace
@@ -45,12 +44,18 @@ from music_types import (
     EmbedDim,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     NumBoxes,
+    NumKeypoints,
     BoxDim,
+    KeypointDim,
     BoxRange,
+    KeypointRange,
     Origin,
-    NumClasses,
+    NumLineClasses,
+    NumSymbolClasses,
     XYXY,
+    X1Y1X2Y2,
     Absolute,
     RGB,
 )
@@ -213,7 +218,7 @@ def to_float1_img[L: AnyLayouts, M: Mode](
     return TensorImage(image.data.float() / 255.0)
 
 
-def to_device[I: TensorImage | BoundingBoxes | ClassLabels](
+def to_device[I: TensorImage | BoundingBoxes | ClassLabels | Keypoints](
     image: I, device: torch.device
 ) -> I:
     return replace(image, data=image.data.to(device))
@@ -358,7 +363,7 @@ def crop_boxes_xyxy[
     D: BoxDim,
     R: BoxRange,
     O: Origin,
-    C: NumClasses,
+    C: NumSymbolClasses,
 ](
     boxes: BoundingBoxes[tuple[B, D], XYXY, R, O],
     labels: ClassLabels[tuple[B], C],
@@ -392,6 +397,52 @@ def crop_boxes_xyxy[
 
     return (
         replace(boxes, data=new_boxes_data[valid]),
+        replace(labels, data=labels.data[valid]),
+    )
+
+
+def crop_keypoints[
+    K: NumKeypoints,
+    D: KeypointDim,
+    R: KeypointRange,
+    O: Origin,
+    C: NumLineClasses,
+](
+    keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, R, O],
+    labels: ClassLabels[tuple[K], C],
+    x: int,
+    y: int,
+    crop_size: int,
+) -> tuple[
+    Keypoints[tuple[NumKeypoints, D], X1Y1X2Y2, R, O],
+    ClassLabels[tuple[NumKeypoints], C],
+]:
+    """Shifts keypoints by (x, y), clips them to crop_size, and removes invalid ones."""
+    if len(keypoints.data) == 0:
+        return keypoints, labels
+
+    new_kp_data = keypoints.data.clone()
+    new_kp_data[:, 0] -= x
+    new_kp_data[:, 1] -= y
+    new_kp_data[:, 2] -= x
+    new_kp_data[:, 3] -= y
+
+    # Clip to crop boundaries
+    new_kp_data[:, 0] = new_kp_data[:, 0].clamp(min=0, max=crop_size)
+    new_kp_data[:, 1] = new_kp_data[:, 1].clamp(min=0, max=crop_size)
+    new_kp_data[:, 2] = new_kp_data[:, 2].clamp(min=0, max=crop_size)
+    new_kp_data[:, 3] = new_kp_data[:, 3].clamp(min=0, max=crop_size)
+
+    # Keep only keypoints where at least one endpoint is inside the crop
+    valid = (
+        ~((new_kp_data[:, 0] == 0) & (new_kp_data[:, 2] == 0))
+        & ~((new_kp_data[:, 0] == crop_size) & (new_kp_data[:, 2] == crop_size))
+        & ~((new_kp_data[:, 1] == 0) & (new_kp_data[:, 3] == 0))
+        & ~((new_kp_data[:, 1] == crop_size) & (new_kp_data[:, 3] == crop_size))
+    )
+
+    return (
+        replace(keypoints, data=new_kp_data[valid]),
         replace(labels, data=labels.data[valid]),
     )
 
@@ -496,3 +547,16 @@ def normalize_boxes_img[B: NumBoxes, D: BoxDim, O: Origin](
         new_data[:, [0, 2]] /= w
         new_data[:, [1, 3]] /= h
     return BoundingBoxes(data=new_data)
+
+
+def normalize_keypoints_img[K: NumKeypoints, D: KeypointDim, O: Origin](
+    keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, Absolute, O],
+    image_shape: tuple[int, int],
+) -> Keypoints[tuple[K, D], X1Y1X2Y2, Float1, O]:
+    """Normalizes absolute pixel coordinates to [0, 1] based on image shape."""
+    h, w = image_shape
+    new_data = keypoints.data.clone()
+    if len(new_data) > 0:
+        new_data[:, [0, 2]] /= w
+        new_data[:, [1, 3]] /= h
+    return Keypoints(data=new_data)
