@@ -71,7 +71,10 @@ Because lines no longer use bounding boxes, standard COCO `mAP` (which relies on
 2. **Detector (`detector.py`):** Split `DFINEDenseHead` into `symbol_mlp` and `line_mlp`. Implement the Signed Cartesian + Log Scale decoding math for the line branch.
 3. **Criterion (`criterion.py`):** Create a `loss_line_l1` for endpoints. Drop GIoU for lines. Apply the FGL loss to the endpoint bins using the new `S1/S2` reference scales. Add a weighting factor to balance line loss vs. symbol loss.
 4. **Matcher (`matcher.py`):** Split the matching logic. Use GIoU cost for symbols, and Endpoint L1 cost for lines.
-5. **Inference & Eval:** Split prediction outputs and implement dual `COCOeval` runs.
+5. **In-Training Metrics (`metric.py`):** Update box metrics to only process symbols, and add a new endpoint error metric for lines.
+6. **Training Script & Logging (`train_detection.py`):** Update metrics dataclass and logging to track the new line losses and metrics.
+7. **Visualization (`visualization.py`):** Update plotting to draw both bounding boxes (for symbols) and line segments (for lines).
+8. **Inference & Eval:** Split prediction outputs and implement dual `COCOeval` runs.
 
 ## 7. Detailed Implementation Plan
 
@@ -154,13 +157,30 @@ The criterion applies the specific losses to the matched pairs.
      Pass these target residuals into the D-FINE soft cross-entropy logic.
 3. **Total Loss:** Combine all losses. You may need a new weight in `DetectionLossWeights` (e.g., `loss_line_l1`).
 
-### Step 7: Inference (`scripts/inference_coco.py`)
+### Step 7: In-Training Metrics (`src/metric.py`)
+The metrics must be updated to handle the dual modalities correctly.
+1. **Update Box Metrics:** Modify `compute_map_50` and `compute_mean_iou` to only process the `SymbolOutput` and the `box` targets.
+2. **Add Line Metrics:** Create a new metric function, e.g., `compute_mean_endpoint_error`, which calculates the average L2 distance between the predicted endpoints and the ground truth endpoints for the matched `LineOutput` and `keypoint` targets.
+
+### Step 8: Training Script & Logging (`src/train_detection.py`)
+The training loop needs to track and log the new line-specific losses and metrics.
+1. **Update Metrics Dataclass:** Add fields to `DetectionMetrics` for `loss_line_l1`, `loss_line_fgl`, and the new line metric (e.g., `line_error`).
+2. **Update Pipeline:** In `train_step_pipeline`, unpack the new line losses from the updated `DetectionLosses` dataclass and include them in the total loss calculation.
+3. **Update Logging:** Modify the console print statements and the `log_and_save_checkpoint` function to display the new line losses and metrics alongside the symbol metrics.
+
+### Step 9: Visualization (`src/visualization.py`)
+The plotting utility must be able to draw both bounding boxes and lines.
+1. **Update `update_plot`:** Modify the function to accept both `SymbolOutput` and `LineOutput` (or the combined `DetectionOutput`), as well as both sets of targets.
+2. **Draw Symbols:** Continue drawing bounding boxes (rectangles) for the symbol predictions and ground truth.
+3. **Draw Lines:** Add logic to draw line segments (e.g., using `ax.plot([x1, x2], [y1, y2])`) for the line predictions and ground truth keypoints. Use distinct colors or styles to differentiate them from symbols.
+
+### Step 10: Inference (`scripts/inference_coco.py`)
 The inference script must output two separate JSON files to prevent evaluation conflicts.
 1. **Filter by Confidence:** Apply the confidence threshold to both `SymbolOutput` and `LineOutput`.
 2. **Format Symbols:** Convert to `[x, y, w, h]` and append to `preds_symbols.json`.
 3. **Format Lines:** Convert to COCO keypoint format `[x1, y1, 1, x2, y2, 1]` (where 1 means visible) and append to `preds_lines.json`.
 
-### Step 8: Evaluation (`scripts/evaluate_coco.py`)
+### Step 11: Evaluation (`scripts/evaluate_coco.py`)
 Standard COCO mAP will fail for lines, so we must run two separate evaluations.
 1. **Symbol Evaluation:** 
    * Load `preds_symbols.json`.
