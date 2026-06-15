@@ -10,20 +10,24 @@ from music_types import (
     DetectionLossWeights,
     MatchIndices,
     FlattenedIndices,
-    MatchedTargets,
     MatchedOutputs,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     BoxShape,
     LabelShape,
+    KeypointShape,
     XYXY,
+    X1Y1X2Y2,
     Float1,
     TopLeft,
     Batch,
     NumQueries,
     BoxDim,
+    KeypointDim,
     CoordDim,
-    NumClasses,
+    NumSymbolClasses,
+    NumLineClasses,
 )
 
 
@@ -70,17 +74,18 @@ def flatten_indices(indices: list[MatchIndices]) -> FlattenedIndices:
 
 class DFINECriterion(nn.Module):
     """
-    This class computes the 4 losses for our Dense Patch-as-Predictor model:
+    This class computes the losses for our Dense Patch-as-Predictor model:
     1. Focal Loss (Classification)
-    2. L1 Loss (Bounding Box)
-    3. GIoU Loss (Bounding Box)
+    2. L1 Loss (Bounding Box / Keypoints)
+    3. GIoU Loss (Bounding Box only)
     4. FGL Loss (D-FINE Fine-Grained Localization for edge distributions)
     """
 
     def __init__(
         self,
         matcher,
-        num_classes: int,
+        num_symbol_classes: int,
+        num_line_classes: int,
         weights: DetectionLossWeights,
         reg_max: int = 32,
         alpha: float = 0.25,
@@ -88,7 +93,8 @@ class DFINECriterion(nn.Module):
     ):
         super().__init__()
         self.matcher = matcher
-        self.num_classes = num_classes
+        self.num_symbol_classes = num_symbol_classes
+        self.num_line_classes = num_line_classes
         self.weights = weights
         self.reg_max = reg_max
         self.alpha = alpha
@@ -149,7 +155,7 @@ class DFINECriterion(nn.Module):
 
         return loss_bbox, loss_giou
 
-    def loss_fgl(
+    def loss_fgl_symbols(
         self,
         src_edge_logits: torch.Tensor,
         src_centers: torch.Tensor,
@@ -209,71 +215,197 @@ class DFINECriterion(nn.Module):
 
         return loss_fgl
 
+    def loss_fgl_lines(
+        self,
+        src_edge_logits: torch.Tensor,
+        src_centers: torch.Tensor,
+        src_scales: torch.Tensor,
+        src_raw_dirs: torch.Tensor,
+        matched_keypoints: torch.Tensor,
+        num_lines: float,
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            cx, cy = src_centers[:, 0], src_centers[:, 1]
+            S1, S2 = src_scales[:, 0], src_scales[:, 1]
+            raw_dx1, raw_dy1, raw_dx2, raw_dy2 = (
+                src_raw_dirs[:, 0],
+                src_raw_dirs[:, 1],
+                src_raw_dirs[:, 2],
+                src_raw_dirs[:, 3],
+            )
+            x1, y1, x2, y2 = (
+                matched_keypoints[:, 0],
+                matched_keypoints[:, 1],
+                matched_keypoints[:, 2],
+                matched_keypoints[:, 3],
+            )
+
+            res_x1 = (x1 - cx) / S1 - raw_dx1
+            res_y1 = (y1 - cy) / S1 - raw_dy1
+            res_x2 = (x2 - cx) / S2 - raw_dx2
+            res_y2 = (y2 - cy) / S2 - raw_dy2
+
+            target_res = torch.stack([res_x1, res_y1, res_x2, res_y2], dim=-1)
+
+            W = self.weighting_fn.w.to(target_res.device)
+            target_res = target_res.clamp(W[0].item(), W[-1].item())
+
+            idx_right = torch.searchsorted(W, target_res).clamp(1, self.reg_max)
+            idx_left = idx_right - 1
+
+            W_left = W[idx_left]
+            W_right = W[idx_right]
+
+            w_left = (W_right - target_res) / (W_right - W_left + 1e-6)
+            w_right = (target_res - W_left) / (W_right - W_left + 1e-6)
+
+        log_probs = F.log_softmax(src_edge_logits, dim=-1)
+        loss_left = (
+            -torch.gather(log_probs, -1, idx_left.unsqueeze(-1)).squeeze(-1)
+            * w_left
+        )
+        loss_right = (
+            -torch.gather(log_probs, -1, idx_right.unsqueeze(-1)).squeeze(-1)
+            * w_right
+        )
+
+        loss_fgl = (loss_left + loss_right).sum() / num_lines
+
+        return loss_fgl
+
     def forward(
         self,
-        outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
+        outputs: DetectionOutput[
+            Batch, NumQueries, BoxDim, KeypointDim, CoordDim
+        ],
         targets: list[
             DetectionTarget[
                 BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
-                ClassLabels[LabelShape, NumClasses],
+                ClassLabels[LabelShape, NumSymbolClasses],
+                Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+                ClassLabels[LabelShape, NumLineClasses],
             ]
         ],
     ) -> DetectionLosses:
-        """
-        outputs: DetectionOutput
-        targets: list of DetectionTarget
-        """
-        # 1. Run Hungarian Matcher
-        indices = self.matcher(outputs, targets)
+        sym_indices, line_indices = self.matcher(outputs, targets)
 
-        # 2. Compute normalization factor (number of ground truth boxes)
-        num_boxes = max(1, sum(len(t.labels.data) for t in targets))
+        num_symbols = max(1, sum(len(t.box_labels.data) for t in targets))
+        num_lines = max(1, sum(len(t.keypoint_labels.data) for t in targets))
 
-        # 3. Pre-extract matched targets and flatten indices ONCE
-        flat_idx = flatten_indices(indices)
-
-        labels = []
-        boxes = []
-        for t, match in zip(targets, indices):
-            labels.append(t.labels.data[match.target_indices])
-            boxes.append(t.boxes.data[match.target_indices])
-        matched_targets = MatchedTargets(
-            labels=torch.cat(labels),
-            boxes=torch.cat(boxes, dim=0),
+        # --- Symbols ---
+        sym_flat_idx = flatten_indices(sym_indices)
+        sym_labels = []
+        sym_boxes = []
+        for t, match in zip(targets, sym_indices):
+            sym_labels.append(t.box_labels.data[match.target_indices])
+            sym_boxes.append(t.boxes.data[match.target_indices])
+        matched_sym_labels = torch.cat(sym_labels)
+        matched_sym_boxes = (
+            torch.cat(sym_boxes, dim=0)
+            if sym_boxes
+            else torch.empty(
+                (0, 4), device=outputs.symbols.pred_boxes.data.device
+            )
         )
 
-        # 4. Pre-extract matched predictions for box and fgl losses
-        matched_outputs = MatchedOutputs(
-            boxes=outputs.pred_boxes.data[flat_idx.batch, flat_idx.src],
-            edge_logits=outputs.pred_edge_logits.data[
-                flat_idx.batch, flat_idx.src
+        matched_sym_outputs = MatchedOutputs(
+            boxes=outputs.symbols.pred_boxes.data[
+                sym_flat_idx.batch, sym_flat_idx.src
             ],
-            centers=outputs.absolute_centers.data[flat_idx.batch, flat_idx.src],
-            shapes=outputs.learnable_shapes.data[flat_idx.batch, flat_idx.src],
+            edge_logits=outputs.symbols.pred_edge_logits.data[
+                sym_flat_idx.batch, sym_flat_idx.src
+            ],
+            centers=outputs.symbols.absolute_centers.data[
+                sym_flat_idx.batch, sym_flat_idx.src
+            ],
+            shapes=outputs.symbols.learnable_shapes.data[
+                sym_flat_idx.batch, sym_flat_idx.src
+            ],
         )
 
-        # 5. Compute all raw losses
-        raw_loss_ce = self.loss_labels(
-            outputs.pred_logits.data,
-            flat_idx,
-            matched_targets.labels,
-            num_boxes,
+        loss_ce_sym = self.loss_labels(
+            outputs.symbols.pred_logits.data,
+            sym_flat_idx,
+            matched_sym_labels,
+            num_symbols,
         )
-        raw_loss_bbox, raw_loss_giou = self.loss_boxes(
-            matched_outputs.boxes, matched_targets.boxes, num_boxes
-        )
-        raw_loss_fgl = self.loss_fgl(
-            matched_outputs.edge_logits,
-            matched_outputs.centers,
-            matched_outputs.shapes,
-            matched_targets.boxes,
-            num_boxes,
+        if len(matched_sym_boxes) > 0:
+            loss_bbox_sym, loss_giou_sym = self.loss_boxes(
+                matched_sym_outputs.boxes, matched_sym_boxes, num_symbols
+            )
+            loss_fgl_sym = self.loss_fgl_symbols(
+                matched_sym_outputs.edge_logits,
+                matched_sym_outputs.centers,
+                matched_sym_outputs.shapes,
+                matched_sym_boxes,
+                num_symbols,
+            )
+        else:
+            loss_bbox_sym = torch.tensor(0.0, device=loss_ce_sym.device)
+            loss_giou_sym = torch.tensor(0.0, device=loss_ce_sym.device)
+            loss_fgl_sym = torch.tensor(0.0, device=loss_ce_sym.device)
+
+        # --- Lines ---
+        line_flat_idx = flatten_indices(line_indices)
+        line_labels = []
+        line_keypoints = []
+        for t, match in zip(targets, line_indices):
+            line_labels.append(t.keypoint_labels.data[match.target_indices])
+            line_keypoints.append(t.keypoints.data[match.target_indices])
+        matched_line_labels = torch.cat(line_labels)
+        matched_line_keypoints = (
+            torch.cat(line_keypoints, dim=0)
+            if line_keypoints
+            else torch.empty(
+                (0, 4), device=outputs.lines.pred_keypoints.data.device
+            )
         )
 
-        # 6. Apply weights and return dataclass
+        loss_ce_line = self.loss_labels(
+            outputs.lines.pred_logits.data,
+            line_flat_idx,
+            matched_line_labels,
+            num_lines,
+        )
+
+        if len(matched_line_keypoints) > 0:
+            matched_line_kp_preds = outputs.lines.pred_keypoints.data[
+                line_flat_idx.batch, line_flat_idx.src
+            ]
+            loss_l1_line = (
+                F.l1_loss(
+                    matched_line_kp_preds,
+                    matched_line_keypoints,
+                    reduction="none",
+                ).sum()
+                / num_lines
+            )
+
+            loss_fgl_line = self.loss_fgl_lines(
+                outputs.lines.pred_endpoint_logits.data[
+                    line_flat_idx.batch, line_flat_idx.src
+                ],
+                outputs.lines.absolute_centers.data[
+                    line_flat_idx.batch, line_flat_idx.src
+                ],
+                outputs.lines.log_scales.data[
+                    line_flat_idx.batch, line_flat_idx.src
+                ],
+                outputs.lines.raw_directions.data[
+                    line_flat_idx.batch, line_flat_idx.src
+                ],
+                matched_line_keypoints,
+                num_lines,
+            )
+        else:
+            loss_l1_line = torch.tensor(0.0, device=loss_ce_line.device)
+            loss_fgl_line = torch.tensor(0.0, device=loss_ce_line.device)
+
         return DetectionLosses(
-            loss_ce=raw_loss_ce * self.weights.loss_ce,
-            loss_bbox=raw_loss_bbox * self.weights.loss_bbox,
-            loss_giou=raw_loss_giou * self.weights.loss_giou,
-            loss_fgl=raw_loss_fgl * self.weights.loss_fgl,
+            loss_ce=(loss_ce_sym + loss_ce_line) * self.weights.loss_ce,
+            loss_bbox=loss_bbox_sym * self.weights.loss_bbox,
+            loss_giou=loss_giou_sym * self.weights.loss_giou,
+            loss_fgl=loss_fgl_sym * self.weights.loss_fgl,
+            loss_line_l1=loss_l1_line * self.weights.loss_line_l1,
+            loss_line_fgl=loss_fgl_line * self.weights.loss_fgl,
         )

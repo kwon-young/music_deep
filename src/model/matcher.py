@@ -10,16 +10,21 @@ from music_types import (
     MatchIndices,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     BoxShape,
     LabelShape,
+    KeypointShape,
     XYXY,
+    X1Y1X2Y2,
     Float1,
     TopLeft,
     Batch,
     NumQueries,
     BoxDim,
+    KeypointDim,
     CoordDim,
-    NumClasses,
+    NumSymbolClasses,
+    NumLineClasses,
 )
 
 
@@ -122,13 +127,11 @@ class HungarianMatcher(nn.Module):
             "all costs can't be 0"
         )
 
-    def _get_valid_pairs(
+    def _get_valid_pairs_boxes(
         self, out_bbox: torch.Tensor, tgt_bbox: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Computes the dense distance matrix to find valid pairs.
-        Because this is a separate function, the massive NxM matrices are
-        automatically destroyed and their VRAM freed the exact moment this function returns.
+        Computes the dense distance matrix to find valid pairs for boxes.
         """
         dx = torch.clamp(
             torch.max(
@@ -157,138 +160,201 @@ class HungarianMatcher(nn.Module):
 
         return torch.where(valid_mask)
 
-    @torch.no_grad()
-    def forward(
+    def _get_valid_pairs_keypoints(
+        self, out_kp: torch.Tensor, tgt_kp: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the dense distance matrix to find valid pairs for keypoints.
+        Uses L2 distance between endpoints.
+        """
+        # out_kp: [N, 4], tgt_kp: [M, 4]
+        # We can just use the L1 or L2 distance of the 4 coordinates
+        diff = out_kp[:, None, :] - tgt_kp[None, :, :]
+        kp_distances = torch.norm(diff, p=2, dim=-1)
+
+        valid_mask = kp_distances <= self.normalized_radius * 2.0
+
+        topk = min(self.top_k, len(out_kp))
+        topk_idx = torch.topk(
+            kp_distances, k=topk, dim=0, largest=False
+        ).indices
+        valid_mask.scatter_(0, topk_idx, True)
+
+        return torch.where(valid_mask)
+
+    def _match_modality(
         self,
-        outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
-        targets: list[
-            DetectionTarget[
-                BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
-                ClassLabels[LabelShape, NumClasses],
-            ]
-        ],
-    ) -> list[MatchIndices]:
-        bs, num_queries = outputs.pred_logits.data.shape[:2]
-        calc_device = (
-            self.calc_device
-            if self.calc_device is not None
-            else outputs.pred_logits.data.device
+        out_prob: torch.Tensor,
+        out_coords: torch.Tensor,
+        tgt_ids: torch.Tensor,
+        tgt_coords: torch.Tensor,
+        is_box: bool,
+        calc_device: torch.device,
+    ) -> MatchIndices:
+        num_queries = len(out_prob)
+        num_targets = len(tgt_ids)
+
+        if num_targets == 0:
+            return MatchIndices(
+                pred_indices=torch.empty(0, dtype=torch.int64),
+                target_indices=torch.empty(0, dtype=torch.int64),
+            )
+
+        if is_box:
+            row_idx, col_idx = self._get_valid_pairs_boxes(
+                out_coords, tgt_coords
+            )
+        else:
+            row_idx, col_idx = self._get_valid_pairs_keypoints(
+                out_coords, tgt_coords
+            )
+
+        valid_out_prob = out_prob[row_idx]
+        valid_tgt_ids = tgt_ids[col_idx]
+        valid_out_coords = out_coords[row_idx]
+        valid_tgt_coords = tgt_coords[col_idx]
+
+        # Classification Cost
+        prob_for_target = valid_out_prob[
+            torch.arange(len(row_idx)), valid_tgt_ids
+        ]
+        neg_cost_class = (
+            (1 - self.alpha)
+            * (prob_for_target**self.gamma)
+            * (-(1 - prob_for_target + 1e-8).log())
         )
+        pos_cost_class = (
+            self.alpha
+            * ((1 - prob_for_target) ** self.gamma)
+            * (-(prob_for_target + 1e-8).log())
+        )
+        cost_class_1d = pos_cost_class - neg_cost_class
 
-        out_prob = F.sigmoid(outputs.pred_logits.data).to(calc_device)
-        out_bbox = outputs.pred_boxes.data.to(calc_device)
-
-        indices = []
-
-        for b in range(bs):
-            tgt_ids = targets[b].labels.data.to(calc_device)
-            tgt_bbox = targets[b].boxes.data.to(calc_device)
-            num_targets = len(tgt_ids)
-
-            if num_targets == 0:
-                indices.append(
-                    MatchIndices(
-                        pred_indices=torch.empty(0, dtype=torch.int64),
-                        target_indices=torch.empty(0, dtype=torch.int64),
-                    )
-                )
-                continue
-
-            # 1. Get sparse indices (VRAM spike is contained here)
-            row_idx, col_idx = self._get_valid_pairs(out_bbox[b], tgt_bbox)
-
-            # 2. Gather 1D tensors using the indices
-            valid_out_prob = out_prob[b][row_idx]
-            valid_tgt_ids = tgt_ids[col_idx]
-            valid_out_bbox = out_bbox[b][row_idx]
-            valid_tgt_bbox = tgt_bbox[col_idx]
-
-            # 3. Compute 1D costs
-            # Classification Cost
-            prob_for_target = valid_out_prob[
-                torch.arange(len(row_idx)), valid_tgt_ids
-            ]
-            neg_cost_class = (
-                (1 - self.alpha)
-                * (prob_for_target**self.gamma)
-                * (-(1 - prob_for_target + 1e-8).log())
-            )
-            pos_cost_class = (
-                self.alpha
-                * ((1 - prob_for_target) ** self.gamma)
-                * (-(prob_for_target + 1e-8).log())
-            )
-            cost_class_1d = pos_cost_class - neg_cost_class
-
+        if is_box:
             # BBox L1 Cost
-            valid_out_cxcywh = box_xyxy_to_cxcywh(valid_out_bbox)
-            valid_tgt_cxcywh = box_xyxy_to_cxcywh(valid_tgt_bbox)
-            cost_bbox_1d = F.l1_loss(
+            valid_out_cxcywh = box_xyxy_to_cxcywh(valid_out_coords)
+            valid_tgt_cxcywh = box_xyxy_to_cxcywh(valid_tgt_coords)
+            cost_coord_1d = F.l1_loss(
                 valid_out_cxcywh, valid_tgt_cxcywh, reduction="none"
             ).sum(dim=-1)
 
             # GIoU Cost
             cost_giou_1d = -elementwise_generalized_box_iou(
-                valid_out_bbox, valid_tgt_bbox
+                valid_out_coords, valid_tgt_coords
             )
 
-            # 4. Combine 1D costs
             valid_costs = (
-                self.cost_bbox * cost_bbox_1d
+                self.cost_bbox * cost_coord_1d
                 + self.cost_class * cost_class_1d
                 + self.cost_giou * cost_giou_1d
             )
+        else:
+            # Keypoint L1 Cost
+            cost_coord_1d = F.l1_loss(
+                valid_out_coords, valid_tgt_coords, reduction="none"
+            ).sum(dim=-1)
 
-            if self.matcher_type == "scipy":
-                # 5. Build SciPy Sparse Matrix and solve
-                sparse_cost_matrix = csr_matrix(
-                    (
-                        valid_costs.cpu().numpy(),
-                        (row_idx.cpu().numpy(), col_idx.cpu().numpy()),
-                    ),
-                    shape=(num_queries, num_targets),
-                )
+            valid_costs = (
+                self.cost_bbox * cost_coord_1d + self.cost_class * cost_class_1d
+            )
 
-                row_ind, col_ind = min_weight_full_bipartite_matching(
-                    sparse_cost_matrix
-                )
+        if self.matcher_type == "scipy":
+            sparse_cost_matrix = csr_matrix(
+                (
+                    valid_costs.cpu().numpy(),
+                    (row_idx.cpu().numpy(), col_idx.cpu().numpy()),
+                ),
+                shape=(num_queries, num_targets),
+            )
 
-                indices.append(
-                    MatchIndices(
-                        pred_indices=torch.as_tensor(
-                            row_ind, dtype=torch.int64
-                        ),
-                        target_indices=torch.as_tensor(
-                            col_ind, dtype=torch.int64
-                        ),
-                    )
-                )
-            elif self.matcher_type == "greedy":
-                if len(valid_costs) == 0:
-                    row_ind = torch.empty(
-                        0, dtype=torch.int64, device=calc_device
-                    )
-                    col_ind = torch.empty(
-                        0, dtype=torch.int64, device=calc_device
-                    )
-                else:
-                    # Sort on GPU
-                    _, sort_idx = torch.sort(valid_costs)
-                    sorted_rows = row_idx[sort_idx]
-                    sorted_cols = col_idx[sort_idx]
+            row_ind, col_ind = min_weight_full_bipartite_matching(
+                sparse_cost_matrix
+            )
 
-                    # Execute compiled GPU kernel
-                    row_ind, col_ind = greedy_matcher_gpu(
-                        sorted_rows, sorted_cols, num_queries, num_targets
-                    )
-
-                indices.append(
-                    MatchIndices(
-                        pred_indices=row_ind,
-                        target_indices=col_ind,
-                    )
-                )
+            return MatchIndices(
+                pred_indices=torch.as_tensor(row_ind, dtype=torch.int64),
+                target_indices=torch.as_tensor(col_ind, dtype=torch.int64),
+            )
+        elif self.matcher_type == "greedy":
+            if len(valid_costs) == 0:
+                row_ind = torch.empty(0, dtype=torch.int64, device=calc_device)
+                col_ind = torch.empty(0, dtype=torch.int64, device=calc_device)
             else:
-                raise ValueError(f"Unknown matcher_type: {self.matcher_type}")
+                _, sort_idx = torch.sort(valid_costs)
+                sorted_rows = row_idx[sort_idx]
+                sorted_cols = col_idx[sort_idx]
 
-        return indices
+                row_ind, col_ind = greedy_matcher_gpu(
+                    sorted_rows, sorted_cols, num_queries, num_targets
+                )
+
+            return MatchIndices(
+                pred_indices=row_ind,
+                target_indices=col_ind,
+            )
+        else:
+            raise ValueError(f"Unknown matcher_type: {self.matcher_type}")
+
+    @torch.no_grad()
+    def forward(
+        self,
+        outputs: DetectionOutput[
+            Batch, NumQueries, BoxDim, KeypointDim, CoordDim
+        ],
+        targets: list[
+            DetectionTarget[
+                BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+                ClassLabels[LabelShape, NumSymbolClasses],
+                Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+                ClassLabels[LabelShape, NumLineClasses],
+            ]
+        ],
+    ) -> tuple[list[MatchIndices], list[MatchIndices]]:
+        bs = outputs.symbols.pred_logits.data.shape[0]
+        calc_device = (
+            self.calc_device
+            if self.calc_device is not None
+            else outputs.symbols.pred_logits.data.device
+        )
+
+        sym_out_prob = F.sigmoid(outputs.symbols.pred_logits.data).to(
+            calc_device
+        )
+        sym_out_bbox = outputs.symbols.pred_boxes.data.to(calc_device)
+
+        line_out_prob = F.sigmoid(outputs.lines.pred_logits.data).to(
+            calc_device
+        )
+        line_out_kp = outputs.lines.pred_keypoints.data.to(calc_device)
+
+        sym_indices = []
+        line_indices = []
+
+        for b in range(bs):
+            # Symbols
+            sym_tgt_ids = targets[b].box_labels.data.to(calc_device)
+            sym_tgt_bbox = targets[b].boxes.data.to(calc_device)
+            sym_match = self._match_modality(
+                sym_out_prob[b],
+                sym_out_bbox[b],
+                sym_tgt_ids,
+                sym_tgt_bbox,
+                True,
+                calc_device,
+            )
+            sym_indices.append(sym_match)
+
+            # Lines
+            line_tgt_ids = targets[b].keypoint_labels.data.to(calc_device)
+            line_tgt_kp = targets[b].keypoints.data.to(calc_device)
+            line_match = self._match_modality(
+                line_out_prob[b],
+                line_out_kp[b],
+                line_tgt_ids,
+                line_tgt_kp,
+                False,
+                calc_device,
+            )
+            line_indices.append(line_match)
+
+        return sym_indices, line_indices
