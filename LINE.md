@@ -17,26 +17,37 @@ To solve this, we will split the `DFINEDenseHead` into two specialized branches 
 * **Matching & Loss:** GIoU + L1 (on box centers/shapes) + FGL (D-FINE edge distributions).
 
 ### B. The Line Head
-* **Representation:** Start and End Keypoints (Directed Vectors).
-* **Outputs:** `[Classes, dx1, dy1, dx2, dy2, 4x D-FINE Keypoint Bins]`
+* **Representation:** Start and End Keypoints (Directed Vectors anchored to the patch center).
+* **Outputs:** `[Classes, log_scale1, log_scale2, raw_dx1, raw_dy1, raw_dx2, raw_dy2, 4x D-FINE Keypoint Bins]`
 * **Matching & Loss:** **No GIoU.** Matched and penalized using L1 distance on the absolute endpoints, plus FGL for sub-pixel refinement.
 
-## 3. Applying D-FINE to Line Keypoints
-We discovered that the D-FINE logic (Fine-grained Distribution Refinement) can be applied to keypoints with almost zero architectural changes. 
+## 3. The "Signed Cartesian + Log Scale" Keypoint Formulation
+Lines in music scores can be extremely long (staff lines) or very short (barlines), and they can point in any direction. Furthermore, the midpoint of a line is often empty white space, meaning the ViT patch at that location has no visual evidence to predict the line. Therefore, predictions must be anchored strictly to the patch center where the visual evidence exists.
 
-The Line Head directly predicts coarse offsets for the start (`dx1, dy1`) and end (`dx2, dy2`) points relative to the fixed patch center (`patch_cx, patch_cy`). 
+To handle unbounded scaling while allowing lines to point in any direction, we separate the **Scale** from the **Direction** using a Signed Cartesian + Log Scale approach:
 
-We pass the 4 sets of keypoint logits through the exact same `DFINEWeightingFunction` to get relative residuals `[-a, a]`. We scale these residuals by a reference length and add them to the coarse endpoints:
+1. **Predict Log-Scale Magnitudes (The Reference Scales):**
+   For each endpoint, the network predicts a log-space scale. This allows the network to easily reach endpoints that span the entire page without gradient explosion.
+   ```python
+   S1 = base_anchor_size * torch.exp(log_scale1)
+   S2 = base_anchor_size * torch.exp(log_scale2)
+   ```
 
-```python
-# Absolute endpoints = Fixed Patch Center + Coarse Offset + D-FINE Residual
-x1 = patch_cx + dx1 + (x1_res * ref_scale)
-y1 = patch_cy + dy1 + (y1_res * ref_scale)
-x2 = patch_cx + dx2 + (x2_res * ref_scale)
-y2 = patch_cy + dy2 + (y2_res * ref_scale)
-```
+2. **Predict Raw Cartesian Directions:**
+   The network predicts raw linear offsets (`raw_dx1, raw_dy1`, etc.). Because these are linear, they can be positive or negative, allowing the vector to point in any direction without the instability of polar coordinates (angles).
 
-This perfectly aligns with the ground truth (which only has start/end points) and keeps the math clean and anchored to the patch grid.
+3. **Apply D-FINE Residuals:**
+   The D-FINE bins output a residual in the range `[-a, a]`. We add this residual to the raw direction, and scale the entire vector by the log-magnitude. Finally, we anchor it to the patch center.
+   ```python
+   # Final Absolute Endpoints
+   x1 = patch_cx + (raw_dx1 + res_x1) * S1
+   y1 = patch_cy + (raw_dy1 + res_y1) * S1
+   
+   x2 = patch_cx + (raw_dx2 + res_x2) * S2
+   y2 = patch_cy + (raw_dy2 + res_y2) * S2
+   ```
+
+This formulation is mathematically robust: it provides a perfect reference scale (`S1`, `S2`) for the D-FINE sub-pixel refinement, handles extreme aspect ratios via `exp()`, and maintains stable gradients by avoiding angles or arbitrary midpoints.
 
 ## 4. Operational Implications
 Splitting the head is practically "free" and actually improves system efficiency.
@@ -56,8 +67,8 @@ Because lines no longer use bounding boxes, standard COCO `mAP` (which relies on
   2. **Lines:** `COCOeval(iouType='keypoints')` filtered by `catIds` of lines. This uses OKS (Object Keypoint Similarity) instead of IoU.
 
 ## 6. Summary of Required Code Changes
-1. **Dataset:** Compute `cx, cy` for GT lines on-the-fly `(x1+x2)/2, (y1+y2)/2` so the matcher can find the closest patches.
-2. **Detector (`detector.py`):** Split `DFINEDenseHead` into `symbol_mlp` and `line_mlp`. Route outputs to their respective decoding math.
-3. **Criterion (`criterion.py`):** Create a `loss_line_l1` for endpoints. Drop GIoU for lines. Apply the FGL loss to the endpoint bins. Add a weighting factor to balance line loss vs. symbol loss.
+1. **Dataset:** Ensure the dataset loader extracts and provides the `keypoints` field for line categories.
+2. **Detector (`detector.py`):** Split `DFINEDenseHead` into `symbol_mlp` and `line_mlp`. Implement the Signed Cartesian + Log Scale decoding math for the line branch.
+3. **Criterion (`criterion.py`):** Create a `loss_line_l1` for endpoints. Drop GIoU for lines. Apply the FGL loss to the endpoint bins using the new `S1/S2` reference scales. Add a weighting factor to balance line loss vs. symbol loss.
 4. **Matcher (`matcher.py`):** Split the matching logic. Use GIoU cost for symbols, and Endpoint L1 cost for lines.
 5. **Inference & Eval:** Split prediction outputs and implement dual `COCOeval` runs.
