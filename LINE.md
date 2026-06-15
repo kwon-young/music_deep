@@ -77,10 +77,24 @@ Because lines no longer use bounding boxes, standard COCO `mAP` (which relies on
 
 ### Step 1: Type Definitions (`src/music_types.py`)
 We need to distinguish between Symbol outputs and Line outputs, as well as their respective ground truths.
-1. **Add Keypoint Types:** Create `Keypoints` (same shape as `BoundingBoxes` but semantically different).
+1. **Add Keypoint Types:** Parameterize `Keypoints` exactly like `BoundingBoxes` to track shape, format, range, and origin.
+   ```python
+   type NumKeypoints = int
+   type KeypointDim = int  # 4 for [x1, y1, x2, y2]
+   type KeypointShape = tuple[NumKeypoints, KeypointDim]
+   type BatchedKeypointShape = tuple[Batch, NumKeypoints, KeypointDim]
+   type AnyKeypointShape = KeypointShape | BatchedKeypointShape
+   type X1Y1X2Y2 = Literal["x1y1x2y2"]
+   type KeypointFormat = X1Y1X2Y2
+   type KeypointRange = Float1 | Absolute
+   
+   @dataclass
+   class Keypoints[L: AnyKeypointShape, F: KeypointFormat, R: KeypointRange, O: Origin](TensorData[L]):
+       pass
+   ```
 2. **Update `DetectionTarget` & `DetectionSample`:** Separate the modalities completely to avoid NaN padding.
-   * `DetectionSample` will hold `boxes`, `box_labels`, `keypoints`, and `keypoint_labels`.
-   * `DetectionTarget` will similarly hold `boxes`, `box_labels`, `keypoints`, and `keypoint_labels`.
+   * `DetectionSample[I, Bx, BxLbl, Kp, KpLbl]` will hold `boxes`, `box_labels`, `keypoints`, and `keypoint_labels`.
+   * `DetectionTarget[Bx, BxLbl, Kp, KpLbl]` will similarly hold `boxes`, `box_labels`, `keypoints`, and `keypoint_labels`.
 3. **Update `DetectionOutput`:** Split the output into two distinct dataclasses: `SymbolOutput` and `LineOutput`. `DetectionOutput` will contain both.
    * `SymbolOutput`: `pred_logits`, `pred_boxes`, `pred_edge_logits`, `absolute_centers`, `learnable_shapes`.
    * `LineOutput`: `pred_logits`, `pred_keypoints`, `pred_endpoint_logits`, `absolute_centers`, `log_scales`, `raw_directions`.
@@ -93,11 +107,12 @@ We must extract the keypoints and categorize the classes, keeping symbols and li
    * If the category is a symbol, extract the `bbox`, convert to `[x1, y1, x2, y2]`, and append to `symbol_boxes` and `symbol_labels`.
 3. **Return Dual Modalities:** `DetectionSample` now returns the separated tensors for boxes and keypoints.
 
-### Step 3: Transforms (`src/transform/det.py`)
-The geometric transformations must apply to both boxes and keypoints.
-1. **Crop & Shift:** Update `crop_boxes_xyxy` to also shift the keypoints by `(x, y)`. Unlike boxes, if a keypoint falls outside the crop, we might still want to keep it if the other endpoint is inside (or we can strictly clip them).
-2. **Normalization:** Update `normalize_boxes_img` to divide keypoint coordinates by `(width, height)` so they are in `[0, 1]` Float1 space.
-3. **Collation:** Update `collate` to stack the new keypoint tensors alongside the box tensors.
+### Step 3: Transforms (`src/transform/det.py` & `src/transform/core.py`)
+The geometric transformations must be extended to handle the new keypoint modality using dedicated, strictly-typed functions.
+1. **Crop & Shift:** Create a new `crop_keypoints(keypoints, labels, x, y, crop_size)` function in `core.py`. It will subtract `(x, y)` from `x1, y1, x2, y2`. If a keypoint falls outside the crop, we clip it to the boundaries (or drop if both endpoints are outside). Update `random_crop` and `decode_and_crop_pyvips` to call both `crop_boxes_xyxy` and `crop_keypoints`.
+2. **Normalization:** Create a new `normalize_keypoints` transform to divide keypoint coordinates by `(width, height)` so they transition from `Absolute` to `Float1` space. Keep it strictly separated from `normalize_boxes`.
+3. **Collation:** Update `collate` to stack the new `keypoints` and `keypoint_labels` lists alongside the box tensors.
+4. **Device Transfer:** Update `to` and `to_patches` to also move the `keypoints` and `keypoint_labels` tensors to the target device.
 
 ### Step 4: Model Architecture (`src/model/detector.py`)
 This is where the core mathematical changes happen.
