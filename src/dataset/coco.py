@@ -14,10 +14,15 @@ from music_types import (
     DetectionSample,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     NumBoxes,
-    NumClasses,
+    NumKeypoints,
+    NumSymbolClasses,
+    NumLineClasses,
     BoxDim,
+    KeypointDim,
     XYXY,
+    X1Y1X2Y2,
     Absolute,
     TopLeft,
 )
@@ -32,15 +37,26 @@ class CocoMetadata:
 
 
 @dataclass
-class CocoParsedAnnotation:
+class CocoSymbolAnnotation:
     bbox: list[float]
     category_id: int
 
 
 @dataclass
+class CocoLineAnnotation:
+    keypoints: list[float]
+    category_id: int
+
+
+type CocoParsedAnnotation = CocoSymbolAnnotation | CocoLineAnnotation
+
+
+@dataclass
 class CocoDataset:
-    num_classes: int
-    cat_id_to_idx: dict[int, int]
+    num_symbol_classes: int
+    num_line_classes: int
+    symbol_cat_id_to_idx: dict[int, int]
+    line_cat_id_to_idx: dict[int, int]
     images: list[CocoMetadata]
     annotations: dict[int, list[CocoParsedAnnotation]]
 
@@ -73,8 +89,30 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
     # Extract categories and create a 0-indexed contiguous mapping
     categories = coco_data.get("categories", [])
     categories.sort(key=lambda x: x["id"])
-    cat_id_to_idx = {cat["id"]: idx for idx, cat in enumerate(categories)}
-    num_classes = len(categories)
+
+    line_category_ids = set()
+    for cat in categories:
+        if (
+            "keypoints" in cat
+            and "start" in cat["keypoints"]
+            and "end" in cat["keypoints"]
+        ):
+            line_category_ids.add(cat["id"])
+
+    # Split categories and create separate 0-indexed contiguous mappings
+    symbol_categories = [
+        cat for cat in categories if cat["id"] not in line_category_ids
+    ]
+    line_categories = [
+        cat for cat in categories if cat["id"] in line_category_ids
+    ]
+
+    symbol_cat_id_to_idx = {
+        cat["id"]: idx for idx, cat in enumerate(symbol_categories)
+    }
+    line_cat_id_to_idx = {
+        cat["id"]: idx for idx, cat in enumerate(line_categories)
+    }
 
     images = [
         CocoMetadata(
@@ -89,14 +127,31 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
     annotations: dict[int, list[CocoParsedAnnotation]] = {}
     for ann in coco_data["annotations"]:
         img_id = ann["image_id"]
-        parsed_ann = CocoParsedAnnotation(
-            bbox=ann["bbox"], category_id=ann["category_id"]
-        )
+        cat_id = ann["category_id"]
+
+        parsed_ann: CocoParsedAnnotation
+        if (
+            cat_id in line_category_ids
+            and "keypoints" in ann
+            and len(ann["keypoints"]) >= 6
+        ):
+            # Extract [x1, y1, v1, x2, y2, v2] -> [x1, y1, x2, y2]
+            x1, y1, _, x2, y2, _ = ann["keypoints"][:6]
+            parsed_ann = CocoLineAnnotation(
+                keypoints=[x1, y1, x2, y2], category_id=cat_id
+            )
+        else:
+            parsed_ann = CocoSymbolAnnotation(
+                bbox=ann["bbox"], category_id=cat_id
+            )
+
         annotations.setdefault(img_id, []).append(parsed_ann)
 
     dataset = CocoDataset(
-        num_classes=num_classes,
-        cat_id_to_idx=cat_id_to_idx,
+        num_symbol_classes=len(symbol_categories),
+        num_line_classes=len(line_categories),
+        symbol_cat_id_to_idx=symbol_cat_id_to_idx,
+        line_cat_id_to_idx=line_cat_id_to_idx,
         images=images,
         annotations=annotations,
     )
@@ -116,7 +171,11 @@ def load_coco_sample(
     DetectionSample[
         LazyImage,
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
-        ClassLabels[tuple[NumBoxes], NumClasses],
+        ClassLabels[tuple[NumBoxes], NumSymbolClasses],
+        Keypoints[
+            tuple[NumKeypoints, KeypointDim], X1Y1X2Y2, Absolute, TopLeft
+        ],
+        ClassLabels[tuple[NumKeypoints], NumLineClasses],
     ],
 ]:
     """Loads a single COCO sample by its index in the dataset."""
@@ -128,19 +187,30 @@ def load_coco_sample(
 
     anns = dataset.annotations.get(img_meta.img_id, [])
 
-    labels: list[int] = []
+    box_labels: list[int] = []
     boxes: list[list[float]] = []
+    keypoint_labels: list[int] = []
+    keypoints: list[list[float]] = []
+
     for ann in anns:
-        x, y, w, h = ann.bbox
-        # Map the raw category_id to the 0-indexed contiguous ID
-        mapped_label = dataset.cat_id_to_idx[ann.category_id]
-        labels.append(mapped_label)
-        # Convert COCO [x, y, w, h] to [x1, y1, x2, y2]
-        boxes.append([x, y, x + w, y + h])
+        if isinstance(ann, CocoLineAnnotation):
+            mapped_label = dataset.line_cat_id_to_idx[ann.category_id]
+            keypoints.append(ann.keypoints)
+            keypoint_labels.append(mapped_label)
+        else:
+            mapped_label = dataset.symbol_cat_id_to_idx[ann.category_id]
+            x, y, w, h = ann.bbox
+            boxes.append([x, y, x + w, y + h])
+            box_labels.append(mapped_label)
 
     # Use reshape to ensure correct dimensions even if empty
     boxes_tensor = torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4)
-    labels_tensor = torch.tensor(labels, dtype=torch.int64)
+    box_labels_tensor = torch.tensor(box_labels, dtype=torch.int64)
+
+    keypoints_tensor = torch.tensor(keypoints, dtype=torch.float32).reshape(
+        -1, 4
+    )
+    keypoint_labels_tensor = torch.tensor(keypoint_labels, dtype=torch.int64)
 
     return Data(
         metadata=img_meta,
@@ -149,6 +219,8 @@ def load_coco_sample(
                 path=img_path, width=img_meta.width, height=img_meta.height
             ),
             boxes=BoundingBoxes(boxes_tensor),
-            labels=ClassLabels(labels_tensor),
+            box_labels=ClassLabels(box_labels_tensor),
+            keypoints=Keypoints(keypoints_tensor),
+            keypoint_labels=ClassLabels(keypoint_labels_tensor),
         ),
     )

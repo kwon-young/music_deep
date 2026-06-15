@@ -198,6 +198,7 @@ class DetectionLossWeights:
     loss_bbox: float = 5.0
     loss_giou: float = 2.0
     loss_fgl: float = 0.15
+    loss_line_l1: float = 5.0
 
 
 @dataclass
@@ -208,6 +209,8 @@ class DetectionLosses(DetachMixin):
     loss_bbox: torch.Tensor
     loss_giou: torch.Tensor
     loss_fgl: torch.Tensor
+    loss_line_l1: torch.Tensor
+    loss_line_fgl: torch.Tensor
 
 
 @dataclass
@@ -268,7 +271,8 @@ type BatchedLabelShape = tuple[Batch, NumBoxes]
 type AnyLabelShape = LabelShape | BatchedLabelShape
 
 
-type NumClasses = int
+type NumSymbolClasses = int
+type NumLineClasses = int
 
 
 @dataclass
@@ -279,7 +283,29 @@ class BoundingBoxes[L: AnyBoxShape, F: BoxFormat, R: BoxRange, O: Origin](
 
 
 @dataclass
-class ClassLabels[L: AnyLabelShape, C: NumClasses](TensorData[L]):
+class ClassLabels[L: AnyLabelShape, C: NumSymbolClasses | NumLineClasses](
+    TensorData[L]
+):
+    pass
+
+
+type NumKeypoints = int
+type KeypointDim = int  # 4 for [x1, y1, x2, y2]
+type KeypointShape = tuple[NumKeypoints, KeypointDim]
+type BatchedKeypointShape = tuple[Batch, NumKeypoints, KeypointDim]
+type AnyKeypointShape = KeypointShape | BatchedKeypointShape
+type X1Y1X2Y2 = Literal["x1y1x2y2"]
+type KeypointFormat = X1Y1X2Y2
+type KeypointRange = Float1 | Absolute
+
+
+@dataclass
+class Keypoints[
+    L: AnyKeypointShape,
+    F: KeypointFormat,
+    R: KeypointRange,
+    O: Origin,
+](TensorData[L]):
     pass
 
 
@@ -290,8 +316,8 @@ type NumQueries = int  # NumQueries = NumPatches * NumShapes
 type NumBins = int
 type CoordDim = int
 
-type LogitsShape = tuple[NumQueries, NumClasses]
-type BatchedLogitsShape = tuple[Batch, NumQueries, NumClasses]
+type LogitsShape = tuple[NumQueries, int]
+type BatchedLogitsShape = tuple[Batch, NumQueries, int]
 type AnyLogitsShape = LogitsShape | BatchedLogitsShape
 
 
@@ -314,40 +340,68 @@ type CoordShape = tuple[NumQueries, CoordDim]
 type BatchedCoordShape = tuple[Batch, NumQueries, CoordDim]
 type AnyCoordShape = CoordShape | BatchedCoordShape
 
+type CoordRange = Float1 | Absolute
+
 
 @dataclass
-class Coordinates[L: AnyCoordShape, R: Range](TensorData[L]):
+class Coordinates[L: AnyCoordShape, R: CoordRange](TensorData[L]):
     pass
 
 
 @dataclass
-class Dimensions[L: AnyCoordShape, R: Range](TensorData[L]):
+class Dimensions[L: AnyCoordShape, R: CoordRange](TensorData[L]):
     pass
 
 
 @dataclass
-class DetectionTarget[Bx, Lbl]:
-    """
-    Holds the ground truth bounding boxes and labels for an image.
-    """
-
-    labels: Lbl
-    boxes: Bx
-
-
-@dataclass
-class DetectionOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](
+class SymbolOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](
     DetachMixin
 ):
-    """
-    Holds the predictions from the OMRDetector.
-    """
-
-    pred_logits: ClassLogits[tuple[B, Q, NumClasses]]
+    pred_logits: ClassLogits[tuple[B, Q, NumSymbolClasses]]
     pred_boxes: BoundingBoxes[tuple[B, Q, BD], XYXY, Float1, TopLeft]
     pred_edge_logits: EdgeLogits[tuple[B, Q, BD, NumBins]]
     absolute_centers: Coordinates[tuple[B, Q, CD], Float1]
     learnable_shapes: Dimensions[tuple[B, Q, CD], Float1]
+
+
+@dataclass
+class LineOutput[B: Batch, Q: NumQueries, KD: KeypointDim, CD: CoordDim](
+    DetachMixin
+):
+    pred_logits: ClassLogits[tuple[B, Q, NumLineClasses]]
+    pred_keypoints: Keypoints[tuple[B, Q, KD], X1Y1X2Y2, Float1, TopLeft]
+    pred_endpoint_logits: EdgeLogits[tuple[B, Q, KD, NumBins]]
+    absolute_centers: Coordinates[tuple[B, Q, CD], Float1]
+    log_scales: Dimensions[tuple[B, Q, CD], Absolute]
+    raw_directions: Coordinates[tuple[B, Q, KD], Absolute]
+
+
+@dataclass
+class DetectionTarget[Bx, BxLbl, Kp, KpLbl]:
+    """
+    Holds the ground truth bounding boxes, keypoints, and labels for an image.
+    """
+
+    boxes: Bx
+    box_labels: BxLbl
+    keypoints: Kp
+    keypoint_labels: KpLbl
+
+
+@dataclass
+class DetectionOutput[
+    B: Batch,
+    Q: NumQueries,
+    BD: BoxDim,
+    KD: KeypointDim,
+    CD: CoordDim,
+](DetachMixin):
+    """
+    Holds the predictions from the OMRDetector.
+    """
+
+    symbols: SymbolOutput[B, Q, BD, CD]
+    lines: LineOutput[B, Q, KD, CD]
 
 
 # --- Task-Specific Samples ---
@@ -365,17 +419,32 @@ class ClassificationSample[I, L]:
 
 
 @dataclass
-class DetectionSample[I, B, L]:
+class DetectionSample[I, Bx, BxLbl, Kp, KpLbl]:
     image: I
-    boxes: B
-    labels: L
+    boxes: Bx
+    box_labels: BxLbl
+    keypoints: Kp
+    keypoint_labels: KpLbl
 
     @property
     def num_symbols(self) -> int:
-        if isinstance(self.labels, list):
-            return sum(
-                len(l.data) for l in self.labels if isinstance(l, TensorData)
+        count = 0
+        if isinstance(self.box_labels, list):
+            count += sum(
+                len(l.data)
+                for l in self.box_labels
+                if isinstance(l, TensorData)
             )
-        if isinstance(self.labels, TensorData):
-            return len(self.labels.data)
-        return 0
+        elif isinstance(self.box_labels, TensorData):
+            count += len(self.box_labels.data)
+
+        if isinstance(self.keypoint_labels, list):
+            count += sum(
+                len(l.data)
+                for l in self.keypoint_labels
+                if isinstance(l, TensorData)
+            )
+        elif isinstance(self.keypoint_labels, TensorData):
+            count += len(self.keypoint_labels.data)
+
+        return count

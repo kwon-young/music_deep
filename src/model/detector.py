@@ -6,6 +6,8 @@ from typing import Tuple
 from music_types import (
     Patches,
     DetectionOutput,
+    SymbolOutput,
+    LineOutput,
     Batch,
     NumPatches,
     PatchDim,
@@ -13,11 +15,13 @@ from music_types import (
     Embeddings,
     ClassLogits,
     BoundingBoxes,
+    Keypoints,
     EdgeLogits,
     Coordinates,
     Dimensions,
     NumQueries,
     BoxDim,
+    KeypointDim,
     CoordDim,
 )
 
@@ -96,7 +100,7 @@ class DFINEWeightingFunction(nn.Module):
         return (edge_probs * self.w).sum(dim=-1)
 
 
-class DFINEDenseHead(nn.Module):
+class SymbolHead(nn.Module):
     def __init__(
         self,
         in_dim: int,
@@ -189,11 +193,103 @@ class DFINEDenseHead(nn.Module):
         return classes, center_offsets, shapes, boxes, edge_logits
 
 
+class LineHead(nn.Module):
+    def __init__(
+        self,
+        in_dim: int,
+        num_classes: int,
+        num_shapes: int = 5,
+        reg_max: int = 32,
+        base_anchor_size: float = 1.0,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.num_shapes = num_shapes
+        self.reg_max = reg_max
+        self.num_bins = reg_max + 1
+        self.base_anchor_size = base_anchor_size
+
+        # C (classes) + 2 (log_scale1, log_scale2) + 4 (raw_dx1, raw_dy1, raw_dx2, raw_dy2) + 4*N (edge bins)
+        self.preds_per_shape = num_classes + 2 + 4 + (4 * self.num_bins)
+        self.out_dim = num_shapes * self.preds_per_shape
+
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, in_dim),
+            nn.GELU(),
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, self.out_dim),
+        )
+
+        bias_view = self.mlp[-1].bias.view(num_shapes, self.preds_per_shape)
+
+        # Initialize classification bias for Focal Loss stability
+        prior_prob = 0.01
+        cls_bias_init = -math.log((1 - prior_prob) / prior_prob)
+        nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
+
+        # Initialize the bias for the log_scales and raw_dirs to 0.0
+        nn.init.constant_(bias_view[:, num_classes : num_classes + 6], 0.0)
+
+        self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
+
+    def forward(
+        self, patch_tokens: torch.Tensor
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
+        B, P, _ = patch_tokens.shape
+
+        raw_preds = self.mlp(patch_tokens)
+        preds = raw_preds.view(B, P, self.num_shapes, self.preds_per_shape)
+
+        classes = preds[..., : self.num_classes]
+
+        # --- Predict Log-Scale Magnitudes ---
+        log_scales_raw = preds[..., self.num_classes : self.num_classes + 2]
+        log_scales_raw = torch.clamp(log_scales_raw, min=-10.0, max=10.0)
+        scales = self.base_anchor_size * torch.exp(log_scales_raw)
+        S1 = scales[..., 0]
+        S2 = scales[..., 1]
+
+        # --- Predict Raw Cartesian Directions ---
+        raw_dirs = preds[..., self.num_classes + 2 : self.num_classes + 6]
+        raw_dx1, raw_dy1, raw_dx2, raw_dy2 = (
+            raw_dirs[..., 0],
+            raw_dirs[..., 1],
+            raw_dirs[..., 2],
+            raw_dirs[..., 3],
+        )
+
+        # --- D-FINE Residuals ---
+        edge_logits = preds[..., -4 * self.num_bins :]
+        edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
+        edge_probs = F.softmax(edge_logits, dim=-1)
+
+        res = self.weighting_fn(edge_probs)
+        res_x1, res_y1, res_x2, res_y2 = (
+            res[..., 0],
+            res[..., 1],
+            res[..., 2],
+            res[..., 3],
+        )
+
+        # --- Final Endpoints (Relative to Patch Center) ---
+        x1 = (raw_dx1 + res_x1) * S1
+        y1 = (raw_dy1 + res_y1) * S1
+        x2 = (raw_dx2 + res_x2) * S2
+        y2 = (raw_dy2 + res_y2) * S2
+
+        keypoints = torch.stack([x1, y1, x2, y2], dim=-1)
+
+        return classes, scales, raw_dirs, keypoints, edge_logits
+
+
 class OMRDetector(nn.Module):
     def __init__(
         self,
         vit_backbone: nn.Module,
-        num_classes: int,
+        num_symbol_classes: int,
+        num_line_classes: int,
         num_shapes: int = 5,
         base_anchor_size: float = 1.0,
     ):
@@ -202,9 +298,16 @@ class OMRDetector(nn.Module):
 
         in_dim = self.backbone.patch_embed[1].out_features
 
-        self.head = DFINEDenseHead(
+        self.symbol_head = SymbolHead(
             in_dim=in_dim,
-            num_classes=num_classes,
+            num_classes=num_symbol_classes,
+            num_shapes=num_shapes,
+            base_anchor_size=base_anchor_size,
+        )
+
+        self.line_head = LineHead(
+            in_dim=in_dim,
+            num_classes=num_line_classes,
             num_shapes=num_shapes,
             base_anchor_size=base_anchor_size,
         )
@@ -212,7 +315,7 @@ class OMRDetector(nn.Module):
     def forward[B: Batch](
         self,
         patches: Patches[B, NumPatches, PatchDim],
-    ) -> DetectionOutput[B, NumQueries, BoxDim, CoordDim]:
+    ) -> DetectionOutput[B, NumQueries, BoxDim, KeypointDim, CoordDim]:
         """
         Returns a DetectionOutput ready for DFINECriterion.
         """
@@ -220,14 +323,25 @@ class OMRDetector(nn.Module):
 
         # Compute centers dynamically based on the kept patches
         patch_centers = compute_centers(features)
-
-        # Pass the actual tensor data to the dense head
         patch_tokens = features.data
-        classes, center_offsets, shapes, boxes, edge_logits = self.head(
-            patch_tokens
-        )
 
-        B, P, K, _ = boxes.shape
+        # --- Forward through both heads ---
+        (
+            sym_classes,
+            sym_center_offsets,
+            sym_shapes,
+            sym_boxes,
+            sym_edge_logits,
+        ) = self.symbol_head(patch_tokens)
+        (
+            line_classes,
+            line_scales,
+            line_raw_dirs,
+            line_keypoints,
+            line_edge_logits,
+        ) = self.line_head(patch_tokens)
+
+        B, P, K, _ = sym_boxes.shape
 
         # --- Scale from Patch Units to Image Units [0, 1] ---
         _, h, w = features.image_shape
@@ -235,36 +349,65 @@ class OMRDetector(nn.Module):
         grid_h, grid_w = h // ph, w // pw
 
         scale_xy = torch.tensor(
-            [1.0 / grid_w, 1.0 / grid_h], dtype=boxes.dtype, device=boxes.device
+            [1.0 / grid_w, 1.0 / grid_h],
+            dtype=sym_boxes.dtype,
+            device=sym_boxes.device,
         ).view(1, 1, 1, 2)
-
-        center_offsets = center_offsets * scale_xy
-
         scale_xyxy = scale_xy.repeat(1, 1, 1, 2)
-        boxes = boxes * scale_xyxy
 
-        # Scale dynamic shapes to Image Units for the FGL loss
-        expanded_shapes = shapes * scale_xy
+        # Scale Symbol Outputs
+        sym_center_offsets = sym_center_offsets * scale_xy
+        sym_boxes = sym_boxes * scale_xyxy
+        sym_expanded_shapes = sym_shapes * scale_xy
+
+        # Scale Line Outputs
+        line_keypoints = line_keypoints * scale_xyxy
+        # Note: line_scales and line_raw_dirs are kept in Patch Units for the loss function
         # ---------------------------------------------------------
 
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
         patch_centers_expanded = patch_centers.unsqueeze(2)
 
-        # Add absolute patch centers to the predicted center offsets
-        absolute_centers = patch_centers_expanded + center_offsets
+        # --- Absolute Positioning for Symbols ---
+        sym_absolute_centers = patch_centers_expanded + sym_center_offsets
+        sym_boxes[..., 0] += patch_centers_expanded[..., 0]  # x1
+        sym_boxes[..., 1] += patch_centers_expanded[..., 1]  # y1
+        sym_boxes[..., 2] += patch_centers_expanded[..., 0]  # x2
+        sym_boxes[..., 3] += patch_centers_expanded[..., 1]  # y2
 
-        # Shift the boxes to absolute coordinates
-        boxes[..., 0] += patch_centers_expanded[..., 0]  # x1
-        boxes[..., 1] += patch_centers_expanded[..., 1]  # y1
-        boxes[..., 2] += patch_centers_expanded[..., 0]  # x2
-        boxes[..., 3] += patch_centers_expanded[..., 1]  # y2
+        # --- Absolute Positioning for Lines ---
+        # Lines are anchored exactly to the patch center (no offset)
+        line_absolute_centers = patch_centers_expanded.expand(-1, -1, K, -1)
+        line_keypoints[..., 0] += patch_centers_expanded[..., 0]  # x1
+        line_keypoints[..., 1] += patch_centers_expanded[..., 1]  # y1
+        line_keypoints[..., 2] += patch_centers_expanded[..., 0]  # x2
+        line_keypoints[..., 3] += patch_centers_expanded[..., 1]  # y2
 
         # Flatten P and K dimensions into a single "num_queries" dimension
-        # and return the dataclass expected by the criterion
         return DetectionOutput(
-            pred_logits=ClassLogits(classes.view(B, P * K, -1)),
-            pred_boxes=BoundingBoxes(boxes.view(B, P * K, 4)),
-            pred_edge_logits=EdgeLogits(edge_logits.view(B, P * K, 4, -1)),
-            absolute_centers=Coordinates(absolute_centers.view(B, P * K, 2)),
-            learnable_shapes=Dimensions(expanded_shapes.reshape(B, P * K, 2)),
+            symbols=SymbolOutput(
+                pred_logits=ClassLogits(sym_classes.view(B, P * K, -1)),
+                pred_boxes=BoundingBoxes(sym_boxes.view(B, P * K, 4)),
+                pred_edge_logits=EdgeLogits(
+                    sym_edge_logits.view(B, P * K, 4, -1)
+                ),
+                absolute_centers=Coordinates(
+                    sym_absolute_centers.view(B, P * K, 2)
+                ),
+                learnable_shapes=Dimensions(
+                    sym_expanded_shapes.reshape(B, P * K, 2)
+                ),
+            ),
+            lines=LineOutput(
+                pred_logits=ClassLogits(line_classes.view(B, P * K, -1)),
+                pred_keypoints=Keypoints(line_keypoints.view(B, P * K, 4)),
+                pred_endpoint_logits=EdgeLogits(
+                    line_edge_logits.view(B, P * K, 4, -1)
+                ),
+                absolute_centers=Coordinates(
+                    line_absolute_centers.reshape(B, P * K, 2)
+                ),
+                log_scales=Dimensions(line_scales.view(B, P * K, 2)),
+                raw_directions=Coordinates(line_raw_dirs.view(B, P * K, 4)),
+            ),
         )
