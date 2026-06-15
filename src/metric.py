@@ -6,33 +6,40 @@ from music_types import (
     MatchIndices,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     Batch,
     NumQueries,
     BoxDim,
+    KeypointDim,
     CoordDim,
     BoxShape,
     LabelShape,
+    KeypointShape,
     XYXY,
+    X1Y1X2Y2,
     TopLeft,
     Float1,
-    NumClasses,
+    NumSymbolClasses,
+    NumLineClasses,
 )
 
 
 @torch.no_grad()
 def compute_map_50(
-    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     targets: list[
         DetectionTarget[
             BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
-            ClassLabels[LabelShape, NumClasses],
+            ClassLabels[LabelShape, NumSymbolClasses],
+            Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+            ClassLabels[LabelShape, NumLineClasses],
         ]
     ],
     num_classes: int,
 ) -> float:
-    """Computes the Mean Average Precision at IoU threshold 0.5."""
-    pred_logits = outputs.pred_logits.data
-    pred_boxes = outputs.pred_boxes.data
+    """Computes the Mean Average Precision at IoU threshold 0.5 for symbols."""
+    pred_logits = outputs.symbols.pred_logits.data
+    pred_boxes = outputs.symbols.pred_boxes.data
     probs = torch.sigmoid(pred_logits)
     max_probs, pred_labels = probs.max(dim=-1)
 
@@ -59,7 +66,7 @@ def compute_map_50(
 
         # Gather all ground truth boxes for class c
         for b, target in enumerate(targets):
-            gt_labels = target.labels.data
+            gt_labels = target.box_labels.data
             gt_boxes = target.boxes.data
             mask = gt_labels == c
             c_gt_boxes = gt_boxes[mask]
@@ -119,18 +126,20 @@ def compute_map_50(
 
 @torch.no_grad()
 def compute_mean_iou(
-    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     targets: list[
         DetectionTarget[
             BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
-            ClassLabels[LabelShape, NumClasses],
+            ClassLabels[LabelShape, NumSymbolClasses],
+            Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+            ClassLabels[LabelShape, NumLineClasses],
         ]
     ],
     indices: list[MatchIndices],
 ) -> float:
-    """Computes the average IoU of the Hungarian-matched boxes."""
+    """Computes the average IoU of the Hungarian-matched boxes (symbols)."""
     ious = []
-    pred_boxes = outputs.pred_boxes.data
+    pred_boxes = outputs.symbols.pred_boxes.data
 
     for b, (target, match) in enumerate(zip(targets, indices)):
         if len(match.pred_indices) == 0:
@@ -144,3 +153,33 @@ def compute_mean_iou(
         ious.append(torch.diag(iou_matrix).mean().item())
 
     return sum(ious) / len(ious) if ious else 0.0
+
+
+@torch.no_grad()
+def compute_mean_endpoint_error(
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
+    targets: list[
+        DetectionTarget[
+            BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+            ClassLabels[LabelShape, NumSymbolClasses],
+            Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+            ClassLabels[LabelShape, NumLineClasses],
+        ]
+    ],
+    indices: list[MatchIndices],
+) -> float:
+    """Computes the average L2 distance of the Hungarian-matched keypoints (lines)."""
+    errors = []
+    pred_keypoints = outputs.lines.pred_keypoints.data
+
+    for b, (target, match) in enumerate(zip(targets, indices)):
+        if len(match.pred_indices) == 0:
+            continue
+
+        matched_preds = pred_keypoints[b][match.pred_indices]
+        matched_gts = target.keypoints.data[match.target_indices]
+
+        dist = torch.norm(matched_preds - matched_gts, p=2, dim=-1)
+        errors.append(dist.mean().item())
+
+    return sum(errors) / len(errors) if errors else 0.0

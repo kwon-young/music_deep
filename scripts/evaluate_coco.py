@@ -7,65 +7,31 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate COCO metrics with custom maxDets for OMR"
-    )
-    parser.add_argument(
-        "--anno_path",
-        type=Path,
-        required=True,
-        help="Path to ground truth JSON",
-    )
-    parser.add_argument(
-        "--pred_path", type=Path, required=True, help="Path to predictions JSON"
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=Path,
-        default=None,
-        help="Directory to save detailed results. Defaults to pred_path's directory.",
-    )
-    args = parser.parse_args()
+def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
+    print(f"\n--- Evaluating {prefix} ({iou_type}) ---")
+    if not pred_path.exists():
+        print(f"Prediction file {pred_path} not found. Skipping.")
+        return {}
 
-    out_dir = (
-        args.out_dir if args.out_dir is not None else args.pred_path.parent
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
+    coco_dt = coco_gt.loadRes(str(pred_path))
+    coco_eval = COCOeval(coco_gt, coco_dt, iou_type)
 
-    # Load ground truth
-    print("Loading ground truth...")
-    coco_gt = COCO(str(args.anno_path))
-
-    # Load predictions
-    print("Loading predictions...")
-    coco_dt = coco_gt.loadRes(str(args.pred_path))
-
-    # Run evaluation
-    print("Running evaluation...")
-    coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
-
-    # Override the default maxDets [1, 10, 100] to handle thousands of symbols per page
+    coco_eval.params.catIds = cat_ids
     coco_eval.params.maxDets = [1, 100, 5000]
+
+    if iou_type == "keypoints":
+        # Custom sigmas for start/end points
+        coco_eval.params.kpt_oks_sigmas = np.array([0.1, 0.1])
 
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
 
-    # Extract detailed metrics
     precisions = coco_eval.eval["precision"]
-    cat_ids = coco_gt.getCatIds()
     cats = coco_gt.loadCats(cat_ids)
-
-    print("\n--- Per-Category mAP@0.5 (area=all, maxDets=5000) ---")
 
     per_cat_stats = {}
     for i, cat in enumerate(cats):
-        # T=0 is IoU=0.5
-        # R=: is all recalls
-        # K=i is the specific category
-        # A=0 is area='all'
-        # M=2 is maxDets=5000 (since we set maxDets = [1, 100, 5000])
         p_50 = precisions[0, :, i, 0, 2]
         p_50 = p_50[p_50 > -1]
 
@@ -86,22 +52,78 @@ def main():
         else:
             print(f"{cat['name']:<30}: N/A (No ground truth)")
 
-    # Save full raw evaluation results (Pickle)
-    out_pkl = out_dir / "coco_eval_raw.pkl"
-    print(f"\nSaving full raw evaluation arrays to {out_pkl}...")
+    out_pkl = out_dir / f"coco_eval_raw_{prefix}.pkl"
     with open(out_pkl, "wb") as f:
         pickle.dump({"eval": coco_eval.eval, "stats": coco_eval.stats}, f)
 
-    # Save human-readable summary (JSON)
-    out_json = out_dir / "coco_eval_summary.json"
-    print(f"Saving human-readable summary to {out_json}...")
-
-    summary = {
+    return {
         "global_stats": coco_eval.stats.tolist()
         if coco_eval.stats is not None
         else [],
         "per_category": per_cat_stats,
     }
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Evaluate COCO metrics for Symbols and Lines"
+    )
+    parser.add_argument(
+        "--anno_path",
+        type=Path,
+        required=True,
+        help="Path to ground truth JSON",
+    )
+    parser.add_argument(
+        "--pred_dir",
+        type=Path,
+        required=True,
+        help="Directory containing preds_symbols.json and preds_lines.json",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=Path,
+        default=None,
+        help="Directory to save detailed results. Defaults to pred_dir.",
+    )
+    args = parser.parse_args()
+
+    out_dir = args.out_dir if args.out_dir is not None else args.pred_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Loading ground truth...")
+    coco_gt = COCO(str(args.anno_path))
+
+    # Separate categories
+    cats = coco_gt.loadCats(coco_gt.getCatIds())
+    line_cat_ids = []
+    sym_cat_ids = []
+    for cat in cats:
+        if (
+            "keypoints" in cat
+            and "start" in cat["keypoints"]
+            and "end" in cat["keypoints"]
+        ):
+            line_cat_ids.append(cat["id"])
+        else:
+            sym_cat_ids.append(cat["id"])
+
+    summary = {}
+
+    # Evaluate Symbols
+    sym_pred_path = args.pred_dir / "preds_symbols.json"
+    summary["symbols"] = evaluate_modality(
+        coco_gt, sym_pred_path, "bbox", sym_cat_ids, out_dir, "symbols"
+    )
+
+    # Evaluate Lines
+    line_pred_path = args.pred_dir / "preds_lines.json"
+    summary["lines"] = evaluate_modality(
+        coco_gt, line_pred_path, "keypoints", line_cat_ids, out_dir, "lines"
+    )
+
+    out_json = out_dir / "coco_eval_summary.json"
+    print(f"\nSaving human-readable summary to {out_json}...")
     with open(out_json, "w") as f:
         json.dump(summary, f, indent=4)
 

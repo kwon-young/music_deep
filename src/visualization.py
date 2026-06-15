@@ -9,6 +9,7 @@ from music_types import (
     Batch,
     NumQueries,
     BoxDim,
+    KeypointDim,
     CoordDim,
     Patches,
     NumPatches,
@@ -51,10 +52,10 @@ def update_plot(
     ax: plt.Axes,
     image_tensor: torch.Tensor,
     targets: list[DetectionTarget],
-    outputs: DetectionOutput[Batch, NumQueries, BoxDim, CoordDim],
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     epoch: int | str,
     conf_thresh: float = 0.5,
-    indices: list[MatchIndices] | None = None,
+    indices: tuple[list[MatchIndices], list[MatchIndices]] | None = None,
 ):
     import matplotlib.patches as patches
 
@@ -76,9 +77,7 @@ def update_plot(
     gt_boxes = targets[0].boxes.data.cpu().numpy() * np.array(
         [img_w, img_h, img_w, img_h]
     )
-    gt_labels = targets[0].labels.data.cpu().numpy()
-
-    for box, label in zip(gt_boxes, gt_labels):
+    for box in gt_boxes:
         x1, y1, x2, y2 = box
         rect = patches.Rectangle(
             (x1, y1),
@@ -88,43 +87,32 @@ def update_plot(
             edgecolor="g",
             facecolor="none",
         )
-        # ax.add_patch(rect)
-        # Add GT label text
-        # ax.text(
-        #     x1,
-        #     y1 - 2,
-        #     f"GT:{label}",
-        #     color="g",
-        #     fontsize=8,
-        #     bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
-        # )
+        ax.add_patch(rect)
 
-    # Plot Predicted boxes (Red)
-    pred_logits = outputs.pred_logits.data[0].detach().cpu()  # (P*K, C)
-    pred_boxes = outputs.pred_boxes.data[0].detach().cpu().numpy() * np.array(
+    # Plot Ground Truth keypoints (Blue)
+    gt_keypoints = targets[0].keypoints.data.cpu().numpy() * np.array(
         [img_w, img_h, img_w, img_h]
     )
+    for kp in gt_keypoints:
+        x1, y1, x2, y2 = kp
+        ax.plot([x1, x2], [y1, y2], color="b", linewidth=2)
 
-    # Apply sigmoid to get probabilities and find max class prob
-    probs = torch.sigmoid(pred_logits)
-    max_probs, pred_labels = probs.max(dim=-1)
+    # Plot Predicted boxes (Red)
+    sym_logits = outputs.symbols.pred_logits.data[0].detach().cpu()
+    sym_boxes = outputs.symbols.pred_boxes.data[
+        0
+    ].detach().cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    sym_probs = torch.sigmoid(sym_logits)
+    sym_max_probs, _ = sym_probs.max(dim=-1)
 
     if indices is not None:
-        # Use Hungarian matched indices (batch size is 1, so we take indices[0])
-        src_idx = indices[0].pred_indices.cpu().numpy()
-        pred_boxes_kept = pred_boxes[src_idx]
-        pred_probs_kept = max_probs[src_idx].numpy()
-        pred_labels_kept = pred_labels[src_idx].numpy()
+        sym_idx = indices[0][0].pred_indices.cpu().numpy()
+        sym_boxes_kept = sym_boxes[sym_idx]
     else:
-        # Filter by confidence threshold
-        keep = (max_probs > conf_thresh).numpy()
-        pred_boxes_kept = pred_boxes[keep]
-        pred_probs_kept = max_probs[keep].numpy()
-        pred_labels_kept = pred_labels[keep].numpy()
+        keep = (sym_max_probs > conf_thresh).numpy()
+        sym_boxes_kept = sym_boxes[keep]
 
-    for box, prob, label in zip(
-        pred_boxes_kept, pred_probs_kept, pred_labels_kept
-    ):
+    for box in sym_boxes_kept:
         x1, y1, x2, y2 = box
         rect = patches.Rectangle(
             (x1, y1),
@@ -136,15 +124,24 @@ def update_plot(
             linestyle="--",
         )
         ax.add_patch(rect)
-        # Add Pred label and confidence text
-        # ax.text(
-        #     x1,
-        #     y2 + 2,
-        #     f"P:{label} {prob:.2f}",
-        #     color="r",
-        #     fontsize=8,
-        #     verticalalignment="top",
-        #     bbox=dict(facecolor="white", alpha=0.7, pad=0, edgecolor="none"),
-        # )
+
+    # Plot Predicted keypoints (Orange)
+    line_logits = outputs.lines.pred_logits.data[0].detach().cpu()
+    line_kps = outputs.lines.pred_keypoints.data[
+        0
+    ].detach().cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    line_probs = torch.sigmoid(line_logits)
+    line_max_probs, _ = line_probs.max(dim=-1)
+
+    if indices is not None:
+        line_idx = indices[1][0].pred_indices.cpu().numpy()
+        line_kps_kept = line_kps[line_idx]
+    else:
+        keep = (line_max_probs > conf_thresh).numpy()
+        line_kps_kept = line_kps[keep]
+
+    for kp in line_kps_kept:
+        x1, y1, x2, y2 = kp
+        ax.plot([x1, x2], [y1, y2], color="orange", linewidth=2, linestyle="--")
 
     ax.axis("off")

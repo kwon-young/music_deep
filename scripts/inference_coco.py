@@ -14,7 +14,9 @@ from dataset.coco import parse_coco, load_coco_sample
 import transform.det as det_tf
 
 
-def process_single_image(i, dataset, args, model, device, idx_to_cat_id):
+def process_single_image(
+    i, dataset, args, model, device, sym_idx_to_cat_id, line_idx_to_cat_id
+):
     img_meta = dataset.images[i]
 
     # Load sample
@@ -55,48 +57,79 @@ def process_single_image(i, dataset, args, model, device, idx_to_cat_id):
     ):
         outputs = model(dropped_item.sample.image)
 
-    # Post-process outputs
-    pred_logits = outputs.pred_logits.data[0]  # (P*K, C)
-    pred_boxes = outputs.pred_boxes.data[0]  # (P*K, 4)
+    # --- Process Symbols ---
+    sym_logits = outputs.symbols.pred_logits.data[0]
+    sym_boxes = outputs.symbols.pred_boxes.data[0]
 
-    probs = torch.sigmoid(pred_logits)
-    max_probs, pred_labels = probs.max(dim=-1)
+    sym_probs = torch.sigmoid(sym_logits)
+    sym_max_probs, sym_labels = sym_probs.max(dim=-1)
 
-    # Filter by confidence threshold
-    keep = max_probs > args.conf_thresh
-    pred_boxes_kept = pred_boxes[keep]
-    pred_probs_kept = max_probs[keep]
-    pred_labels_kept = pred_labels[keep]
+    sym_keep = sym_max_probs > args.conf_thresh
+    sym_boxes_kept = sym_boxes[sym_keep]
+    sym_probs_kept = sym_max_probs[sym_keep]
+    sym_labels_kept = sym_labels[sym_keep]
 
-    # Convert boxes from [0, 1] (relative to padded image) to absolute pixels
-    pred_boxes_kept[:, [0, 2]] *= padded_w
-    pred_boxes_kept[:, [1, 3]] *= padded_h
+    sym_boxes_kept[:, [0, 2]] *= padded_w
+    sym_boxes_kept[:, [1, 3]] *= padded_h
 
-    results = []
-    # Convert to COCO format [x, y, width, height] and append
+    sym_results = []
     for box, prob, label in zip(
-        pred_boxes_kept, pred_probs_kept, pred_labels_kept
+        sym_boxes_kept, sym_probs_kept, sym_labels_kept
     ):
         x1, y1, x2, y2 = box.tolist()
         w = x2 - x1
         h = y2 - y1
 
-        # Clip to original image dimensions
         x1 = max(0.0, min(x1, float(img_meta.width)))
         y1 = max(0.0, min(y1, float(img_meta.height)))
         w = max(0.0, min(w, float(img_meta.width - x1)))
         h = max(0.0, min(h, float(img_meta.height - y1)))
 
-        results.append(
+        sym_results.append(
             {
                 "image_id": img_meta.img_id,
-                "category_id": idx_to_cat_id[label.item()],
+                "category_id": sym_idx_to_cat_id[label.item()],
                 "bbox": [x1, y1, w, h],
                 "score": prob.item(),
             }
         )
 
-    return results
+    # --- Process Lines ---
+    line_logits = outputs.lines.pred_logits.data[0]
+    line_kps = outputs.lines.pred_keypoints.data[0]
+
+    line_probs = torch.sigmoid(line_logits)
+    line_max_probs, line_labels = line_probs.max(dim=-1)
+
+    line_keep = line_max_probs > args.conf_thresh
+    line_kps_kept = line_kps[line_keep]
+    line_probs_kept = line_max_probs[line_keep]
+    line_labels_kept = line_labels[line_keep]
+
+    line_kps_kept[:, [0, 2]] *= padded_w
+    line_kps_kept[:, [1, 3]] *= padded_h
+
+    line_results = []
+    for kp, prob, label in zip(
+        line_kps_kept, line_probs_kept, line_labels_kept
+    ):
+        x1, y1, x2, y2 = kp.tolist()
+
+        x1 = max(0.0, min(x1, float(img_meta.width)))
+        y1 = max(0.0, min(y1, float(img_meta.height)))
+        x2 = max(0.0, min(x2, float(img_meta.width)))
+        y2 = max(0.0, min(y2, float(img_meta.height)))
+
+        line_results.append(
+            {
+                "image_id": img_meta.img_id,
+                "category_id": line_idx_to_cat_id[label.item()],
+                "keypoints": [x1, y1, 1, x2, y2, 1],
+                "score": prob.item(),
+            }
+        )
+
+    return sym_results, line_results
 
 
 def run_inference(args):
@@ -105,8 +138,8 @@ def run_inference(args):
 
     # 1. Load dataset to get metadata and category mappings
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
-    # Create reverse mapping from 0-indexed contiguous IDs back to original COCO category IDs
-    idx_to_cat_id = {v: k for k, v in dataset.cat_id_to_idx.items()}
+    sym_idx_to_cat_id = {v: k for k, v in dataset.symbol_cat_id_to_idx.items()}
+    line_idx_to_cat_id = {v: k for k, v in dataset.line_cat_id_to_idx.items()}
 
     # 2. Setup model
     backbone = vit_nano(
@@ -116,7 +149,8 @@ def run_inference(args):
     )
     model = OMRDetector(
         backbone,
-        num_classes=dataset.num_classes,
+        num_symbol_classes=dataset.num_symbol_classes,
+        num_line_classes=dataset.num_line_classes,
         num_shapes=args.num_shapes,
         base_anchor_size=args.base_anchor_size,
     ).to(device)
@@ -129,7 +163,8 @@ def run_inference(args):
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
-    coco_results = []
+    all_sym_results = []
+    all_line_results = []
 
     # Determine indices to process
     num_images = len(dataset.images)
@@ -144,21 +179,34 @@ def run_inference(args):
     print("Running inference...")
     with torch.no_grad():
         for i in tqdm(indices):
-            # Process image in a separate function so local tensors go out of scope
-            results = process_single_image(
-                i, dataset, args, model, device, idx_to_cat_id
+            sym_res, line_res = process_single_image(
+                i,
+                dataset,
+                args,
+                model,
+                device,
+                sym_idx_to_cat_id,
+                line_idx_to_cat_id,
             )
-            coco_results.extend(results)
+            all_sym_results.extend(sym_res)
+            all_line_results.extend(line_res)
 
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
     # Save results
-    out_path = args.output_json
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Saving {len(coco_results)} predictions to {out_path}")
-    with open(out_path, "w") as f:
-        json.dump(coco_results, f)
+    out_dir = args.output_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sym_out = out_dir / "preds_symbols.json"
+    print(f"Saving {len(all_sym_results)} symbol predictions to {sym_out}")
+    with open(sym_out, "w") as f:
+        json.dump(all_sym_results, f)
+
+    line_out = out_dir / "preds_lines.json"
+    print(f"Saving {len(all_line_results)} line predictions to {line_out}")
+    with open(line_out, "w") as f:
+        json.dump(all_line_results, f)
 
 
 if __name__ == "__main__":
@@ -172,10 +220,10 @@ if __name__ == "__main__":
         help="Path to the trained model checkpoint (e.g., latest_model.pt)",
     )
     parser.add_argument(
-        "--output_json",
+        "--output_dir",
         type=Path,
-        default=Path("predictions.json"),
-        help="Path to save the COCO format predictions JSON",
+        default=Path("predictions"),
+        help="Directory to save the COCO format predictions JSONs",
     )
     parser.add_argument(
         "--anno_path",

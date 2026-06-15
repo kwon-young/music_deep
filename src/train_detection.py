@@ -20,7 +20,7 @@ from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
 import transform.det as det_tf
 from threaded_generator import ThreadedGenerator, Monitor
-from metric import compute_map_50, compute_mean_iou
+from metric import compute_map_50, compute_mean_iou, compute_mean_endpoint_error
 from visualization import update_plot, reconstruct_image_from_patches
 from logger import ExperimentLogger, BaseMetrics
 from music_types import (
@@ -36,6 +36,7 @@ from music_types import (
     Float1,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     BatchedData,
     Patches,
     Batch,
@@ -53,8 +54,11 @@ class DetectionMetrics(BaseMetrics):
     loss_bbox: float
     loss_giou: float
     loss_fgl: float
+    loss_line_l1: float
+    loss_line_fgl: float
     map50: float
     miou: float
+    line_error: float
     speed: float
 
 
@@ -71,7 +75,8 @@ class TrainParams:
     patch_size: int
     crop_size: int | None
     channels: int
-    num_classes: int
+    num_symbol_classes: int
+    num_line_classes: int
     num_shapes: int
     base_anchor_size: float
     cost_class: float
@@ -84,6 +89,7 @@ class TrainParams:
     loss_bbox: float
     loss_giou: float
     loss_fgl: float
+    loss_line_l1: float
     lr: float
     warmup_ratio: float
     min_lr_ratio: float
@@ -128,7 +134,13 @@ def transform_image(
     prep_device: torch.device,
 ) -> Data[
     CocoMetadata,
-    DetectionSample[TensorImage[CHW, RGB, Float1], BoundingBoxes, ClassLabels],
+    DetectionSample[
+        TensorImage[CHW, RGB, Float1],
+        BoundingBoxes,
+        ClassLabels,
+        Keypoints,
+        ClassLabels,
+    ],
 ]:
     """Preprocessing: Load -> Decode/Crop -> Float1 -> Pad -> Normalize."""
     item = load_coco_sample(dataset, img_dir, index)
@@ -152,8 +164,8 @@ def transform_image(
         item_tf, patch_size=(patch_size, patch_size)
     )
 
-    # Normalize boxes using the final padded image dimensions
-    item_normalized = det_tf.normalize_boxes(item_padded)
+    # Normalize boxes and keypoints using the final padded image dimensions
+    item_normalized = det_tf.normalize_targets(item_padded)
 
     return item_normalized
 
@@ -175,6 +187,8 @@ def create_detection_iterator(
         DetectionSample[
             Patches[Batch, NumPatches, PatchDim],
             list[BoundingBoxes],
+            list[ClassLabels],
+            list[Keypoints],
             list[ClassLabels],
         ],
     ],
@@ -231,6 +245,8 @@ def train_step_pipeline(
                 Patches[Batch, NumPatches, PatchDim],
                 list[BoundingBoxes],
                 list[ClassLabels],
+                list[Keypoints],
+                list[ClassLabels],
             ],
         ]
     ],
@@ -260,8 +276,15 @@ def train_step_pipeline(
         is_accumulating = (global_step % params.accumulation_steps) != 0
 
         targets = [
-            DetectionTarget(labels=l, boxes=b)
-            for b, l in zip(batch.sample.boxes, batch.sample.labels)
+            DetectionTarget(
+                boxes=b, box_labels=bl, keypoints=k, keypoint_labels=kl
+            )
+            for b, bl, k, kl in zip(
+                batch.sample.boxes,
+                batch.sample.box_labels,
+                batch.sample.keypoints,
+                batch.sample.keypoint_labels,
+            )
         ]
 
         # Prevent DDP from synchronizing gradients during accumulation steps
@@ -284,6 +307,8 @@ def train_step_pipeline(
                     + losses.loss_bbox
                     + losses.loss_giou
                     + losses.loss_fgl
+                    + losses.loss_line_l1
+                    + losses.loss_line_fgl
                 )
 
             # Scale the loss to average gradients over the accumulation steps
@@ -359,11 +384,14 @@ def log_and_save_checkpoint(
     """Handles metrics computation, visualization, and saving the model state."""
     # 1. Compute Metrics
     with torch.no_grad():
-        indices_match = matcher(result.outputs, result.targets)
+        sym_indices, line_indices = matcher(result.outputs, result.targets)
         map50 = compute_map_50(
-            result.outputs, result.targets, params.num_classes
+            result.outputs, result.targets, params.num_symbol_classes
         )
-        miou = compute_mean_iou(result.outputs, result.targets, indices_match)
+        miou = compute_mean_iou(result.outputs, result.targets, sym_indices)
+        line_error = compute_mean_endpoint_error(
+            result.outputs, result.targets, line_indices
+        )
 
     metrics = DetectionMetrics(
         step=result.step,
@@ -374,8 +402,11 @@ def log_and_save_checkpoint(
         loss_bbox=result.losses.loss_bbox.item(),
         loss_giou=result.losses.loss_giou.item(),
         loss_fgl=result.losses.loss_fgl.item(),
+        loss_line_l1=result.losses.loss_line_l1.item(),
+        loss_line_fgl=result.losses.loss_line_fgl.item(),
         map50=map50,
         miou=miou,
+        line_error=line_error,
         speed=speed,
     )
     logger.log_metrics(metrics)
@@ -386,7 +417,8 @@ def log_and_save_checkpoint(
         f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
         f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
         f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
-        f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | "
+        f"LineL1: {result.losses.loss_line_l1.item():.4f} | LineFGL: {result.losses.loss_line_fgl.item():.4f} | "
+        f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | LineErr: {line_error:.4f} | "
         f"Speed: {speed:.1f} symbols/s"
     )
 
@@ -398,7 +430,7 @@ def log_and_save_checkpoint(
         result.targets,
         result.outputs,
         f"Epoch: {result.epoch:.2f}",
-        indices=indices_match,
+        indices=(sym_indices, line_indices),
     )
 
     vis_path = (
@@ -501,7 +533,8 @@ def train(params: TrainParams):
 
     raw_model = OMRDetector(
         backbone,
-        num_classes=params.num_classes,
+        num_symbol_classes=params.num_symbol_classes,
+        num_line_classes=params.num_line_classes,
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
     ).to(params.train_device)
@@ -537,9 +570,13 @@ def train(params: TrainParams):
         loss_bbox=params.loss_bbox,
         loss_giou=params.loss_giou,
         loss_fgl=params.loss_fgl,
+        loss_line_l1=params.loss_line_l1,
     )
     criterion = DFINECriterion(
-        matcher, num_classes=params.num_classes, weights=weights
+        matcher,
+        num_symbol_classes=params.num_symbol_classes,
+        num_line_classes=params.num_line_classes,
+        weights=weights,
     ).to(params.train_device)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
@@ -769,6 +806,7 @@ if __name__ == "__main__":
     parser.add_argument("--loss_bbox", type=float, default=5.0)
     parser.add_argument("--loss_giou", type=float, default=2.0)
     parser.add_argument("--loss_fgl", type=float, default=0.15)
+    parser.add_argument("--loss_line_l1", type=float, default=5.0)
 
     # Training params
     parser.add_argument(
@@ -887,7 +925,8 @@ if __name__ == "__main__":
         patch_size=args.patch_size,
         crop_size=args.crop_size,
         channels=args.channels,
-        num_classes=dataset.num_classes,
+        num_symbol_classes=dataset.num_symbol_classes,
+        num_line_classes=dataset.num_line_classes,
         num_shapes=args.num_shapes,
         base_anchor_size=args.base_anchor_size,
         cost_class=args.cost_class,
@@ -900,6 +939,7 @@ if __name__ == "__main__":
         loss_bbox=args.loss_bbox,
         loss_giou=args.loss_giou,
         loss_fgl=args.loss_fgl,
+        loss_line_l1=args.loss_line_l1,
         lr=args.lr,
         warmup_ratio=args.warmup_ratio,
         min_lr_ratio=args.min_lr_ratio,
