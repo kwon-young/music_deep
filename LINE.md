@@ -78,24 +78,26 @@ Because lines no longer use bounding boxes, standard COCO `mAP` (which relies on
 ### Step 1: Type Definitions (`src/music_types.py`)
 We need to distinguish between Symbol outputs and Line outputs, as well as their respective ground truths.
 1. **Add Keypoint Types:** Create `Keypoints` (same shape as `BoundingBoxes` but semantically different).
-2. **Update `DetectionTarget`:** Add a `keypoints` field. A target will now hold `boxes` (for symbols) and `keypoints` (for lines).
+2. **Update `DetectionTarget` & `DetectionSample`:** Separate the modalities completely to avoid NaN padding.
+   * `DetectionSample` will hold `boxes`, `box_labels`, `keypoints`, and `keypoint_labels`.
+   * `DetectionTarget` will similarly hold `boxes`, `box_labels`, `keypoints`, and `keypoint_labels`.
 3. **Update `DetectionOutput`:** Split the output into two distinct dataclasses: `SymbolOutput` and `LineOutput`. `DetectionOutput` will contain both.
    * `SymbolOutput`: `pred_logits`, `pred_boxes`, `pred_edge_logits`, `absolute_centers`, `learnable_shapes`.
    * `LineOutput`: `pred_logits`, `pred_keypoints`, `pred_endpoint_logits`, `absolute_centers`, `log_scales`, `raw_directions`.
 
 ### Step 2: Dataset Parsing (`src/dataset/coco.py`)
-We must extract the keypoints and categorize the classes.
+We must extract the keypoints and categorize the classes, keeping symbols and lines in separate lists.
 1. **Identify Line Categories:** During `parse_coco`, inspect the `keypoints` field of each category. If it contains `["start", "end"]`, mark its ID as a line category. Store a `set` of line category IDs in `CocoDataset`.
 2. **Extract Keypoints:** In `load_coco_sample`, when iterating over annotations:
-   * If the category is a symbol, append to `boxes` and pad `keypoints` with NaNs.
-   * If the category is a line, extract the `[x1, y1, v1, x2, y2, v2]` keypoints, convert to `[x1, y1, x2, y2]`, append to `keypoints`, and pad `boxes` with NaNs.
-3. **Return Dual Modalities:** `DetectionSample` now returns both `boxes` and `keypoints` tensors.
+   * If the category is a line (in the line category set), extract the `[x1, y1, v1, x2, y2, v2]` keypoints, convert to `[x1, y1, x2, y2]`, and append to `line_keypoints` and `line_labels`.
+   * If the category is a symbol, extract the `bbox`, convert to `[x1, y1, x2, y2]`, and append to `symbol_boxes` and `symbol_labels`.
+3. **Return Dual Modalities:** `DetectionSample` now returns the separated tensors for boxes and keypoints.
 
 ### Step 3: Transforms (`src/transform/det.py`)
 The geometric transformations must apply to both boxes and keypoints.
 1. **Crop & Shift:** Update `crop_boxes_xyxy` to also shift the keypoints by `(x, y)`. Unlike boxes, if a keypoint falls outside the crop, we might still want to keep it if the other endpoint is inside (or we can strictly clip them).
 2. **Normalization:** Update `normalize_boxes_img` to divide keypoint coordinates by `(width, height)` so they are in `[0, 1]` Float1 space.
-3. **Collation:** Update `collate` to stack the new keypoint tensors.
+3. **Collation:** Update `collate` to stack the new keypoint tensors alongside the box tensors.
 
 ### Step 4: Model Architecture (`src/model/detector.py`)
 This is where the core mathematical changes happen.
@@ -121,9 +123,9 @@ This is where the core mathematical changes happen.
 
 ### Step 5: Bipartite Matching (`src/model/matcher.py`)
 The matcher must independently match symbols to symbols, and lines to lines.
-1. **Split Targets:** Separate the ground truth into `symbol_targets` and `line_targets` using the category IDs.
-2. **Symbol Matching:** Match `SymbolOutput` against `symbol_targets` using the existing GIoU + L1 cost matrix.
-3. **Line Matching:** Match `LineOutput` against `line_targets` using **only L1 distance** on the endpoints (no GIoU).
+1. **Split Targets:** Because the targets are already split in `DetectionTarget` (`boxes` vs `keypoints`), we don't need to filter them by category ID here.
+2. **Symbol Matching:** Match `SymbolOutput` against `box` targets using the existing GIoU + L1 cost matrix.
+3. **Line Matching:** Match `LineOutput` against `keypoint` targets using **only L1 distance** on the endpoints (no GIoU).
 4. **Return:** Return two sets of `MatchIndices` (one for symbols, one for lines).
 
 ### Step 6: Loss Computation (`src/model/criterion.py`)
