@@ -44,7 +44,6 @@ from music_types import (
     LabelShape,
     XYXY,
     TopLeft,
-    NumClasses,
 )
 
 
