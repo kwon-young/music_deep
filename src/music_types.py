@@ -1,4 +1,4 @@
-from typing import Literal, Self
+from typing import Literal, Self, cast
 from dataclasses import dataclass, replace, fields
 from pathlib import Path
 from PIL import Image as Image_
@@ -95,7 +95,7 @@ class BatchedTensorImage[
 ](TensorImage[tuple[B, *CHW], M, R]):
     @property
     def batch_size(self) -> B:
-        return self.data.shape[0]
+        return cast(B, self.data.shape[0])
 
 
 @dataclass
@@ -111,7 +111,7 @@ class FlatViewTensorImage[
 
     @property
     def batch_size(self) -> B:
-        return self.data.shape[0]
+        return cast(B, self.data.shape[0])
 
 
 type Image[L: Layout, M, R] = (
@@ -149,7 +149,7 @@ class Embeddings[B: Batch, N: NumPatches, D: EmbedDim](
 
     @property
     def batch_size(self) -> B:
-        return self.data.shape[0]
+        return cast(B, self.data.shape[0])
 
 
 type Patches[B: Batch, N: NumPatches, P: PatchDim] = Embeddings[B, N, P]
@@ -182,7 +182,7 @@ class ViewEmbeddings[B: Batch, V: View, N: NumPatches, D: EmbedDim | PatchDim](
 ):
     @property
     def num_views(self) -> V:
-        return self.data.shape[1]
+        return cast(V, self.data.shape[1])
 
 
 type ViewPatches[B: Batch, V: View, N: NumPatches, P: PatchDim] = (
