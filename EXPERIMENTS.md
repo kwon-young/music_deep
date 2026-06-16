@@ -166,3 +166,27 @@ An initial attempt at this experiment using `--use_amp` (FP16) combined with gra
     ```
 * **Results**: The training metrics showed noticeable improvement in localization: `loss_bbox` dropped to 0.092 (from 0.126 in Exp 011) and `loss_fgl` dropped to 1.246 (from 1.410). The in-training batch `mAP@0.5` peaked higher at 0.262. The official `pycocotools` global `mAP@0.5` increased from 0.047 to **0.0577**. We saw massive jumps in specific classes: `fClef` (0.3645 -> 0.9479), `noteheadBlack` (0.9296 -> 0.9437), `accidentalSharp` (0.1691 -> 0.2437), `flag8thUp` (0.0455 -> 0.1577), and `ledgerLines` (0.0817 -> 0.1577). However, extremely thin objects like `staff` lines dropped to 0.0000.
 * **Conclusion**: Log-space shape prediction successfully improved overall localization and global mAP. It relieved the mathematical bottleneck on bounding box regression, allowing the network to scale predictions much more naturally. The trade-off observed on extremely thin objects (staff lines) suggests that while log-space is the correct mathematical approach for general shapes, predicting pixel-perfect boundaries for 4-pixel thick lines from a coarse 64x64 patch grid remains fundamentally difficult. This reinforces the need for specialized representations (like keypoints) for lines, or higher spatial resolution.
+
+## Experiment 013: Dual-Head Architecture for Symbols and Lines
+* **Experiment Name/ID**: `experiments/013_dual_head_lines_and_symbols`
+* **Hypothesis/Goal**: Verify that the new dual-head architecture (separating symbols as bounding boxes and lines as keypoints) resolves the mathematical bottleneck for extremely thin/long objects (like staff lines and stems). By using the Signed Cartesian + Log Scale formulation for lines, the network should be able to regress extreme aspect ratios without destroying the GIoU metric, leading to a higher mAP for both modalities.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/013_dual_head_lines_and_symbols \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+* **Results**: [TBD - Run the experiment and evaluate using `scripts/evaluate_coco.py`]
+* **Conclusion**: [TBD]
