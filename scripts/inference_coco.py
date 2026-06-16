@@ -6,12 +6,25 @@ from pathlib import Path
 from tqdm import tqdm
 from model.vit import vit_nano
 from model.detector import OMRDetector
-from dataset.coco import parse_coco, load_coco_sample
+from dataset.coco import (
+    parse_coco,
+    load_coco_sample,
+    CocoSymbolAnnotation,
+    CocoLineAnnotation,
+)
 import transform.det as det_tf
 
 
 def process_single_image(
-    i, dataset, args, model, device, sym_idx_to_cat_id, line_idx_to_cat_id
+    i,
+    dataset,
+    args,
+    model,
+    device,
+    sym_idx_to_cat_id,
+    line_idx_to_cat_id,
+    max_symbols,
+    max_lines,
 ):
     img_meta = dataset.images[i]
 
@@ -60,7 +73,7 @@ def process_single_image(
     sym_probs = torch.sigmoid(sym_logits)
     sym_max_probs, sym_labels = sym_probs.max(dim=-1)
 
-    k_sym = min(args.top_k, sym_max_probs.shape[0])
+    k_sym = min(max_symbols, sym_max_probs.shape[0])
     sym_probs_kept, sym_keep = torch.topk(sym_max_probs, k_sym)
     sym_boxes_kept = sym_boxes[sym_keep]
     sym_labels_kept = sym_labels[sym_keep]
@@ -97,7 +110,7 @@ def process_single_image(
     line_probs = torch.sigmoid(line_logits)
     line_max_probs, line_labels = line_probs.max(dim=-1)
 
-    k_line = min(args.top_k, line_max_probs.shape[0])
+    k_line = min(max_lines, line_max_probs.shape[0])
     line_probs_kept, line_keep = torch.topk(line_max_probs, k_line)
     line_kps_kept = line_kps[line_keep]
     line_labels_kept = line_labels[line_keep]
@@ -136,6 +149,20 @@ def run_inference(args):
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
     sym_idx_to_cat_id = {v: k for k, v in dataset.symbol_cat_id_to_idx.items()}
     line_idx_to_cat_id = {v: k for k, v in dataset.line_cat_id_to_idx.items()}
+
+    # Dynamically compute the maximum objects per image
+    max_symbols = 0
+    max_lines = 0
+    for anns in dataset.annotations.values():
+        sym_count = sum(1 for a in anns if isinstance(a, CocoSymbolAnnotation))
+        line_count = sum(1 for a in anns if isinstance(a, CocoLineAnnotation))
+        max_symbols = max(max_symbols, sym_count)
+        max_lines = max(max_lines, line_count)
+
+    # Add a small safety buffer
+    max_symbols += 100
+    max_lines += 100
+    print(f"Dynamic Top-K limits -> Symbols: {max_symbols}, Lines: {max_lines}")
 
     # 2. Setup model
     backbone = vit_nano(
@@ -183,6 +210,8 @@ def run_inference(args):
                 device,
                 sym_idx_to_cat_id,
                 line_idx_to_cat_id,
+                max_symbols,
+                max_lines,
             )
             all_sym_results.extend(sym_res)
             all_line_results.extend(line_res)
@@ -236,12 +265,6 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument("--base_anchor_size", type=float, default=1.0)
-    parser.add_argument(
-        "--top_k",
-        type=int,
-        default=5000,
-        help="Number of top predictions to keep per image per modality",
-    )
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")

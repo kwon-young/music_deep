@@ -17,7 +17,8 @@ def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
     coco_eval = COCOeval(coco_gt, coco_dt, iou_type)
 
     coco_eval.params.catIds = cat_ids
-    coco_eval.params.maxDets = [1, 100, 5000]
+    # Lowered maxDets to 2000 to speed up evaluation
+    coco_eval.params.maxDets = [1, 100, 2000]
 
     if iou_type == "keypoints":
         # Custom sigmas for start/end points
