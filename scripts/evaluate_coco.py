@@ -7,6 +7,52 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 
+def fast_computeOks(self, imgId, catId):
+    """Vectorized OKS computation to replace the slow pycocotools double for-loop."""
+    p = self.params
+    gts = self._gts[imgId, catId]
+    dts = self._dts[imgId, catId]
+    inds = np.argsort([-d['score'] for d in dts], kind='mergesort')
+    dts = [dts[i] for i in inds]
+    if len(dts) > p.maxDets[-1]:
+        dts = dts[0:p.maxDets[-1]]
+    if len(gts) == 0 or len(dts) == 0:
+        return []
+
+    sigmas = p.kpt_oks_sigmas
+    vars = (sigmas * 2)**2
+
+    # Extract all GT data -> Shape: (M, k)
+    xg = np.array([gt['keypoints'][0::3] for gt in gts])
+    yg = np.array([gt['keypoints'][1::3] for gt in gts])
+    vg = np.array([gt['keypoints'][2::3] for gt in gts])
+    areas = np.array([gt['area'] for gt in gts])
+
+    # Extract all DT data -> Shape: (N, k)
+    xd = np.array([dt['keypoints'][0::3] for dt in dts])
+    yd = np.array([dt['keypoints'][1::3] for dt in dts])
+
+    # Broadcasting to compute all pairwise distances -> Shape: (N, M, k)
+    dx = xd[:, np.newaxis, :] - xg[np.newaxis, :, :]
+    dy = yd[:, np.newaxis, :] - yg[np.newaxis, :, :]
+
+    # Compute OKS components
+    e = (dx**2 + dy**2) / vars / (areas[np.newaxis, :, np.newaxis] + np.spacing(1)) / 2
+    
+    # Mask out invisible keypoints
+    vg_mask = vg[np.newaxis, :, :] > 0
+    oks_all = np.exp(-e) * vg_mask
+
+    # Sum over keypoints and divide by number of visible keypoints
+    num_visible = np.sum(vg > 0, axis=1)
+    valid_gt = num_visible > 0
+    
+    ious = np.zeros((len(dts), len(gts)))
+    ious[:, valid_gt] = np.sum(oks_all[:, valid_gt, :], axis=2) / num_visible[valid_gt]
+    
+    return ious
+
+
 def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
     print(f"\n--- Evaluating {prefix} ({iou_type}) ---")
     if not pred_path.exists():
@@ -15,6 +61,10 @@ def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
 
     coco_dt = coco_gt.loadRes(str(pred_path))
     coco_eval = COCOeval(coco_gt, coco_dt, iou_type)
+
+    # Monkey-patch the slow OKS function
+    if iou_type == "keypoints":
+        coco_eval.computeOks = fast_computeOks.__get__(coco_eval, COCOeval)
 
     coco_eval.params.catIds = cat_ids
     # Lowered maxDets to 2000 to speed up evaluation
