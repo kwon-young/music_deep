@@ -168,7 +168,7 @@ def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
 
     if iou_type == "keypoints":
         # Custom sigmas for start/end points
-        coco_eval.params.kpt_oks_sigmas = np.array([0.5, 0.5])
+        coco_eval.params.kpt_oks_sigmas = np.array([0.1, 0.1])
 
     coco_eval.evaluate()
     coco_eval.accumulate()

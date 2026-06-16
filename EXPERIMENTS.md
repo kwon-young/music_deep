@@ -135,11 +135,6 @@
         --compile \
         --log_epoch_interval 0.5
     ```
-    *(Note: `--use_amp` disabled, see note below).*
-
-### Interim Note: AMP (FP16) Numerical Instability
-An initial attempt at this experiment using `--use_amp` (FP16) combined with gradient accumulation yielded extremely poor results. This is highly likely due to FP16's limited precision (11 bits of mantissa). In OMR, a 4-pixel thick staff line on a 3584x3584 image has a normalized dimension of `4 / 3584 ≈ 0.0011`. When the network regresses fine-grained edge offsets or computes IoU for these microscopic values, FP16 suffers from catastrophic cancellation and underflow. Dividing the loss by `accumulation_steps` exacerbates this by pushing gradients even closer to the underflow limit. The official run for Exp 011 will proceed in pure FP32.
-
 * **Results**: The experiment successfully completed all 10 epochs. While the in-training batch-level `mAP@0.5` peaked at ~0.2356, the official full-dataset `pycocotools` evaluation yielded a global `mAP@0.5` of **0.047**. This discrepancy is due to `pycocotools` macro-averaging across all ~70 categories: over 40 rare or tiny classes scored 0.0000, heavily penalizing the global average. However, performance on common, distinct symbols was excellent: `noteheadBlack` (**0.9296**), `gClef` (**0.8549**), `stem` (**0.4428**), `accidentalFlat` (**0.4003**), and `fClef` (**0.3645**).
 * **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format allowed the model to learn meaningful localizations, as evidenced by the >0.85 AP on noteheads and clefs. The low global mAP is primarily a reflection of the dataset's long-tail distribution (rare classes) and the difficulty of localizing extremely thin/tiny symbols (like dots and ties) at the current 64x64 resolution. DDP provided excellent throughput.
 
@@ -188,5 +183,29 @@ An initial attempt at this experiment using `--use_amp` (FP16) combined with gra
         --compile \
         --log_epoch_interval 0.5
     ```
-* **Results**: [TBD - Run the experiment and evaluate using `scripts/evaluate_coco.py`]
+* **Results**: The training completed successfully (`loss_total` dropped to ~1.70, `loss_ce` to ~0.59, `loss_bbox` to ~0.02, `loss_giou` to ~0.32). The in-training batch `mAP@0.5` for symbols reached ~0.304, and `mIoU` reached ~0.842, showing that removing lines from the bounding box head significantly improved symbol localization. However, the line task struggled to converge (`loss_line_l1` hovered around 0.25). During evaluation, the Hungarian Matcher initially crashed with a "no full matching exists" error due to the pigeonhole problem (many long lines competing for the same few patch queries at the center). After fixing the evaluation script (vectorizing OKS, adjusting `maxDets`), the keypoint metrics were still extremely low (e.g., `system` at 0.1750, `stem` at 0.0017).
+* **Conclusion**: The dual-head split successfully unburdened the symbol head, leading to much better bounding box metrics. However, the `LineHead` suffered from two major flaws: 1) The matcher used endpoint-to-endpoint distance, starving patches in the middle of long lines of gradients and causing crashes. This was fixed and the training restarted. 2) The raw direction vectors were not normalized, causing an identifiability problem where the network entangled magnitude between the log-scale and the raw vector, preventing convergence.
+
+## Experiment 014: Line Head L2 Normalization
+* **Experiment Name/ID**: `experiments/014_line_head_l2_norm`
+* **Hypothesis/Goal**: Verify that applying L2 normalization to the raw direction vectors in the `LineHead` solves the identifiability/over-parameterization problem, allowing the log-scale to strictly control magnitude.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with updated `LineHead` (L2 normalized directions).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/014_line_head_l2_norm \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+* **Results**: [TBD]
 * **Conclusion**: [TBD]
