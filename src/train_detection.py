@@ -805,7 +805,7 @@ if __name__ == "__main__":
     parser.add_argument("--loss_ce", type=float, default=2.0)
     parser.add_argument("--loss_bbox", type=float, default=5.0)
     parser.add_argument("--loss_giou", type=float, default=2.0)
-    parser.add_argument("--loss_fgl", type=float, default=0.15)
+    parser.add_argument("--loss_fgl", type=float, default=0.05)
     parser.add_argument("--loss_line_l1", type=float, default=5.0)
 
     # Training params

@@ -197,7 +197,7 @@ class DetectionLossWeights:
     loss_ce: float = 2.0
     loss_bbox: float = 5.0
     loss_giou: float = 2.0
-    loss_fgl: float = 0.15
+    loss_fgl: float = 0.05
     loss_line_l1: float = 5.0
 
 
