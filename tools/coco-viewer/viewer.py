@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
+    QGraphicsLineItem,
     QVBoxLayout,
     QHBoxLayout,
     QWidget,
@@ -63,8 +64,8 @@ class CocoViewer(QMainWindow):
         self.gt_anns = defaultdict(list)
         self.pred_anns = defaultdict(list)
 
-        self.current_pred_items = []  # List of (QGraphicsRectItem, score)
-        self.current_gt_items = []    # List of QGraphicsRectItem
+        self.current_pred_items = []  # List of (QGraphicsItem, score)
+        self.current_gt_items = []    # List of QGraphicsItem
 
         self.setWindowTitle("COCO OMR Viewer")
         self.resize(1280, 720)
@@ -154,10 +155,13 @@ class CocoViewer(QMainWindow):
         if self.pred_path and self.pred_path.exists():
             print(f"Loading Predictions from {self.pred_path}...")
             try:
-                with open(self.pred_path, "r") as f:
-                    preds = json.load(f)
-                for p in preds:
-                    self.pred_anns[p["image_id"]].append(p)
+                # Support loading a directory of JSONs (e.g., preds_symbols.json and preds_lines.json)
+                pred_files = [self.pred_path] if self.pred_path.is_file() else list(self.pred_path.glob("*.json"))
+                for pf in pred_files:
+                    with open(pf, "r") as f:
+                        preds = json.load(f)
+                    for p in preds:
+                        self.pred_anns[p["image_id"]].append(p)
             except Exception as e:
                 print(f"Warning: Failed to load predictions:\n{e}")
 
@@ -197,29 +201,51 @@ class CocoViewer(QMainWindow):
         gt_pen.setCosmetic(True)  # Keeps line width constant regardless of zoom
         
         for ann in self.gt_anns.get(img_id, []):
-            x, y, w, h = ann["bbox"]
             cat_name = self.categories.get(ann["category_id"], "Unknown")
             
-            rect = QGraphicsRectItem(x, y, w, h)
-            rect.setPen(gt_pen)
-            rect.setToolTip(f"GT: {cat_name}")
-            self.scene.addItem(rect)
-            self.current_gt_items.append(rect)
+            if "keypoints" in ann and len(ann["keypoints"]) >= 4:
+                kps = ann["keypoints"]
+                if len(kps) >= 6:
+                    x1, y1, x2, y2 = kps[0], kps[1], kps[3], kps[4]
+                else:
+                    x1, y1, x2, y2 = kps[0], kps[1], kps[2], kps[3]
+                item = QGraphicsLineItem(x1, y1, x2, y2)
+            elif "bbox" in ann:
+                x, y, w, h = ann["bbox"]
+                item = QGraphicsRectItem(x, y, w, h)
+            else:
+                continue
+
+            item.setPen(gt_pen)
+            item.setToolTip(f"GT: {cat_name}")
+            self.scene.addItem(item)
+            self.current_gt_items.append(item)
 
         # Draw Predictions
         pred_pen = QPen(QColor(255, 0, 0, 200), 2, Qt.DashLine)
         pred_pen.setCosmetic(True)
 
         for ann in self.pred_anns.get(img_id, []):
-            x, y, w, h = ann["bbox"]
             score = ann.get("score", 0.0)
             cat_name = self.categories.get(ann["category_id"], "Unknown")
             
-            rect = QGraphicsRectItem(x, y, w, h)
-            rect.setPen(pred_pen)
-            rect.setToolTip(f"Pred: {cat_name}\nScore: {score:.3f}")
-            self.scene.addItem(rect)
-            self.current_pred_items.append((rect, score))
+            if "keypoints" in ann and len(ann["keypoints"]) >= 4:
+                kps = ann["keypoints"]
+                if len(kps) >= 6:
+                    x1, y1, x2, y2 = kps[0], kps[1], kps[3], kps[4]
+                else:
+                    x1, y1, x2, y2 = kps[0], kps[1], kps[2], kps[3]
+                item = QGraphicsLineItem(x1, y1, x2, y2)
+            elif "bbox" in ann:
+                x, y, w, h = ann["bbox"]
+                item = QGraphicsRectItem(x, y, w, h)
+            else:
+                continue
+            
+            item.setPen(pred_pen)
+            item.setToolTip(f"Pred: {cat_name}\nScore: {score:.3f}")
+            self.scene.addItem(item)
+            self.current_pred_items.append((item, score))
 
         # Fit view to image
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
@@ -247,7 +273,7 @@ class CocoViewer(QMainWindow):
 def main():
     parser = argparse.ArgumentParser(description="Fast COCO Viewer with PySide6")
     parser.add_argument("--anno_path", type=Path, required=True, help="Path to ground truth JSON")
-    parser.add_argument("--pred_path", type=Path, default=None, help="Path to predictions JSON")
+    parser.add_argument("--pred_path", type=Path, default=None, help="Path to predictions JSON or directory containing JSONs")
     parser.add_argument("--img_dir", type=Path, required=True, help="Path to image directory")
     args = parser.parse_args()
 
