@@ -36,6 +36,7 @@ from music_types import (
     Mode,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     Batch,
     NumQueries,
     BoxDim,
@@ -67,7 +68,8 @@ class TrainParams:
     img_h: int
     patch_size: int
     channels: int
-    num_classes: int
+    num_symbol_classes: int
+    num_line_classes: int
     num_shapes: int
     base_anchor_size: float
     cost_class: float
@@ -88,10 +90,19 @@ class TrainParams:
     stage_name: str
 
 
-def transform_image[Meta, M: Mode, B: BoundingBoxes, L: ClassLabels](
-    item: Data[Meta, DetectionSample[PILImage[HWC, M, Int255], B, L]],
+def transform_image[
+    Meta,
+    M: Mode,
+    B: BoundingBoxes,
+    L: ClassLabels,
+    Kp: Keypoints,
+    KpLbl: ClassLabels,
+](
+    item: Data[
+        Meta, DetectionSample[PILImage[HWC, M, Int255], B, L, Kp, KpLbl]
+    ],
     device: torch.device,
-) -> Data[Meta, DetectionSample[TensorImage[CHW, M, Float1], B, L]]:
+) -> Data[Meta, DetectionSample[TensorImage[CHW, M, Float1], B, L, Kp, KpLbl]]:
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
     item_t = det_tf.to(item_t, device=device)
@@ -109,7 +120,8 @@ def train(params: TrainParams):
     backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
     model = OMRDetector(
         backbone,
-        num_classes=params.num_classes,
+        num_symbol_classes=params.num_symbol_classes,
+        num_line_classes=params.num_line_classes,
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
     ).to(device)
@@ -131,7 +143,10 @@ def train(params: TrainParams):
         loss_fgl=params.loss_fgl,
     )
     criterion = DFINECriterion(
-        matcher, num_classes=params.num_classes, weights=weights
+        matcher,
+        num_symbol_classes=params.num_symbol_classes,
+        num_line_classes=params.num_line_classes,
+        weights=weights,
     ).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
@@ -169,13 +184,16 @@ def train(params: TrainParams):
 
     # Reconstruct DetectionTarget for the criterion
     targets = [
-        DetectionTarget(labels=l, boxes=b)
-        for b, l in zip(
-            patches_obj_batched.sample.boxes, patches_obj_batched.sample.labels
+        DetectionTarget(box_labels=bl, boxes=b, keypoints=k, keypoint_labels=kl)
+        for b, bl, k, kl in zip(
+            patches_obj_batched.sample.boxes,
+            patches_obj_batched.sample.box_labels,
+            patches_obj_batched.sample.keypoints,
+            patches_obj_batched.sample.keypoint_labels,
         )
     ]
 
-    print(f"Found {len(targets[0].labels.data)} objects in the image.")
+    print(f"Found {len(targets[0].box_labels.data)} objects in the image.")
 
     # 5. Setup Interactive Plotting
     plt.ion()  # Turn on interactive mode
@@ -210,8 +228,10 @@ def train(params: TrainParams):
             # Get matcher indices and mAP for visualization
             with torch.no_grad():
                 indices_match = matcher(outputs, targets)
-                map50 = compute_map_50(outputs, targets, params.num_classes)
-                miou = compute_mean_iou(outputs, targets, indices_match)
+                map50 = compute_map_50(
+                    outputs, targets, params.num_symbol_classes
+                )
+                miou = compute_mean_iou(outputs, targets, indices_match[0])
 
             metrics = SanityCheckMetrics(
                 step=epoch,
@@ -287,7 +307,8 @@ if __name__ == "__main__":
     parser.add_argument("--img_h", type=int, default=256)
     parser.add_argument("--patch_size", type=int, default=16)
     parser.add_argument("--channels", type=int, default=3)
-    parser.add_argument("--num_classes", type=int, default=80)
+    parser.add_argument("--num_symbol_classes", type=int, default=80)
+    parser.add_argument("--num_line_classes", type=int, default=0)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument(
         "--base_anchor_size",
@@ -329,7 +350,8 @@ if __name__ == "__main__":
         img_h=args.img_h,
         patch_size=args.patch_size,
         channels=args.channels,
-        num_classes=args.num_classes,
+        num_symbol_classes=args.num_symbol_classes,
+        num_line_classes=args.num_line_classes,
         num_shapes=args.num_shapes,
         base_anchor_size=args.base_anchor_size,
         cost_class=args.cost_class,

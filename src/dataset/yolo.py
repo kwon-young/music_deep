@@ -13,10 +13,15 @@ from music_types import (
     DetectionSample,
     BoundingBoxes,
     ClassLabels,
+    Keypoints,
     NumBoxes,
-    NumClasses,
+    NumKeypoints,
+    NumSymbolClasses,
+    NumLineClasses,
     BoxDim,
+    KeypointDim,
     XYXY,
+    X1Y1X2Y2,
     Float1,
     TopLeft,
 )
@@ -46,7 +51,9 @@ def load_sample(
     DetectionSample[
         PILImage[HWC, RGB, Int255],
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Float1, TopLeft],
-        ClassLabels[tuple[NumBoxes], NumClasses],
+        ClassLabels[tuple[NumBoxes], NumSymbolClasses],
+        Keypoints[tuple[NumKeypoints, KeypointDim], X1Y1X2Y2, Float1, TopLeft],
+        ClassLabels[tuple[NumKeypoints], NumLineClasses],
     ],
 ]:
     pil_img = (
@@ -74,14 +81,18 @@ def load_sample(
                 labels.append(class_id)
                 boxes.append([x1, y1, x2, y2])
 
-    boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
+    boxes_tensor = torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4)
     labels_tensor = torch.tensor(labels, dtype=torch.int64)
+    keypoints_tensor = torch.empty((0, 4), dtype=torch.float32)
+    keypoint_labels_tensor = torch.empty((0,), dtype=torch.int64)
 
     return Data(
         metadata=metadata,
         sample=DetectionSample(
             image=PILImage(pil_img),
             boxes=BoundingBoxes(boxes_tensor),
-            labels=ClassLabels(labels_tensor),
+            box_labels=ClassLabels(labels_tensor),
+            keypoints=Keypoints(keypoints_tensor),
+            keypoint_labels=ClassLabels(keypoint_labels_tensor),
         ),
     )

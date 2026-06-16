@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 from dataset.imslp import load_imslp, load_image
-from transform import to_numpy, to_tensor, to_float1, random_crop
-from model.vit import vit_nano
+import transform.ssl as ssl_tf
+from transform.core import random_patch_drop_indices
 
 
 def visualize(
@@ -22,13 +22,13 @@ def visualize(
 
     # 1. Reuse the exact preprocessing pipeline up to random_crop
     data = load_image(metadata, image_dir=image_dir)
-    data_np = to_numpy(data)
-    data_t = to_tensor(data_np)
-    data_t = to_float1(data_t)
+    data_np = ssl_tf.to_numpy(data)
+    data_t = ssl_tf.to_tensor(data_np)
+    data_t = ssl_tf.to_float1(data_t)
 
-    full_img = data_t.image.clone()
+    full_img = data_t.sample.image.data.clone()
 
-    # Intercept torch.randint inside transform.py to get the crop coordinates
+    # Intercept torch.randint inside transform.core to get the crop coordinates
     coords = []
     original_randint = torch.randint
 
@@ -37,41 +37,34 @@ def visualize(
         coords.append(val.item())
         return val
 
-    with patch("transform.torch.randint", side_effect=mock_randint):
-        data_t = random_crop(data_t, crop_size=image_size)
+    with patch("transform.core.torch.randint", side_effect=mock_randint):
+        data_t = ssl_tf.random_crop(data_t, crop_size=image_size)
 
     x, y = coords[0], coords[1]
 
-    # 2. Reuse the actual patch dropping code by running the model
-    model = vit_nano(
-        image_size=image_size,
-        patch_size=patch_size,
-        drop_rate=drop_rate,
-    )
+    # 2. Reuse the actual patch dropping code
+    img_batch = data_t.sample.image.data.unsqueeze(0)
 
-    # Intercept torch.rand inside model/vit.py to get the patch drop indices
+    num_patches_x = image_size // patch_size
+    num_patches_y = image_size // patch_size
+    num_patches = num_patches_x * num_patches_y
+
+    # Intercept torch.rand inside transform.core to get the patch drop indices
     captured_rands = []
     original_rand = torch.rand
 
     def mock_rand(*args, **kwargs):
         val = original_rand(*args, **kwargs)
-        if len(args) >= 2 and args[1] == (image_size // patch_size) ** 2:
+        if len(args) >= 2 and args[1] == num_patches:
             captured_rands.append(val)
         return val
 
-    img_batch = data_t.image.unsqueeze(0)
-    with patch("model.vit.torch.rand", side_effect=mock_rand):
-        # Execute the actual forward pass containing the patch drop logic
-        model(img_batch, random_drop=True)
+    with patch("transform.core.torch.rand", side_effect=mock_rand):
+        keep_indices = random_patch_drop_indices(
+            1, num_patches, drop_rate, img_batch.device
+        )[0]
 
-    # Reconstruct the keep mask from the exact random values used by the model
-    num_patches_x = image_size // patch_size
-    num_patches_y = image_size // patch_size
-    num_patches = num_patches_x * num_patches_y
-    num_keep_patches = int(num_patches * (1.0 - drop_rate))
-
-    rand_val = captured_rands[0]
-    keep_indices = rand_val.argsort(dim=-1)[:, :num_keep_patches][0]
+    num_keep_patches = len(keep_indices)
 
     keep_mask = torch.zeros(num_patches, dtype=torch.bool)
     keep_mask[keep_indices] = True
