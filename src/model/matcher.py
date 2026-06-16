@@ -164,15 +164,36 @@ class HungarianMatcher(nn.Module):
         self, out_kp: torch.Tensor, tgt_kp: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Computes the dense distance matrix to find valid pairs for keypoints.
-        Uses L2 distance between endpoints.
+        Computes the true Point-to-Line-Segment distance.
+        Uses the midpoint of the predicted line (patch center) to the GT line segment.
         """
-        # out_kp: [N, 4], tgt_kp: [M, 4]
-        # We can just use the L1 or L2 distance of the 4 coordinates
-        diff = out_kp[:, None, :] - tgt_kp[None, :, :]
-        kp_distances = torch.norm(diff, p=2, dim=-1)
+        # 1. Midpoint of predictions (Patch Centers) -> P: [N, 2]
+        p_x = (out_kp[:, 0] + out_kp[:, 2]) / 2.0
+        p_y = (out_kp[:, 1] + out_kp[:, 3]) / 2.0
+        P = torch.stack([p_x, p_y], dim=-1)
 
-        valid_mask = kp_distances <= self.normalized_radius * 2.0
+        # 2. Target line segments A -> B -> [M, 2]
+        A = tgt_kp[:, :2]
+        B = tgt_kp[:, 2:]
+
+        AB = B - A
+        AB_squared = (
+            (AB**2).sum(dim=-1).clamp(min=1e-6)
+        )  # Avoid division by zero
+
+        # 3. Vectorized projection of all N points onto all M segments
+        AP = P.unsqueeze(1) - A.unsqueeze(0)  # [N, M, 2]
+        dot_AP_AB = (AP * AB.unsqueeze(0)).sum(dim=-1)  # [N, M]
+
+        # Calculate projection scalar 't' and clamp to [0, 1] to keep it on the segment
+        t = (dot_AP_AB / AB_squared.unsqueeze(0)).clamp(min=0.0, max=1.0)
+
+        # 4. Find the exact closest point on the segment and compute distance
+        Proj = A.unsqueeze(0) + t.unsqueeze(-1) * AB.unsqueeze(0)  # [N, M, 2]
+        kp_distances = torch.norm(P.unsqueeze(1) - Proj, p=2, dim=-1)  # [N, M]
+
+        # 5. Apply radius and Top-K fallback
+        valid_mask = kp_distances <= self.normalized_radius
 
         topk = min(self.top_k, len(out_kp))
         topk_idx = torch.topk(
