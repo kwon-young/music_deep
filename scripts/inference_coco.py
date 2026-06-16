@@ -4,10 +4,6 @@ import random
 import torch
 from pathlib import Path
 from tqdm import tqdm
-import sys
-
-sys.path.append("src")
-
 from model.vit import vit_nano
 from model.detector import OMRDetector
 from dataset.coco import parse_coco, load_coco_sample
