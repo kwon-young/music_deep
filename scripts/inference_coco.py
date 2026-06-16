@@ -60,9 +60,9 @@ def process_single_image(
     sym_probs = torch.sigmoid(sym_logits)
     sym_max_probs, sym_labels = sym_probs.max(dim=-1)
 
-    sym_keep = sym_max_probs > args.conf_thresh
+    k_sym = min(args.top_k, sym_max_probs.shape[0])
+    sym_probs_kept, sym_keep = torch.topk(sym_max_probs, k_sym)
     sym_boxes_kept = sym_boxes[sym_keep]
-    sym_probs_kept = sym_max_probs[sym_keep]
     sym_labels_kept = sym_labels[sym_keep]
 
     sym_boxes_kept[:, [0, 2]] *= padded_w
@@ -97,9 +97,9 @@ def process_single_image(
     line_probs = torch.sigmoid(line_logits)
     line_max_probs, line_labels = line_probs.max(dim=-1)
 
-    line_keep = line_max_probs > args.conf_thresh
+    k_line = min(args.top_k, line_max_probs.shape[0])
+    line_probs_kept, line_keep = torch.topk(line_max_probs, k_line)
     line_kps_kept = line_kps[line_keep]
-    line_probs_kept = line_max_probs[line_keep]
     line_labels_kept = line_labels[line_keep]
 
     line_kps_kept[:, [0, 2]] *= padded_w
@@ -236,7 +236,12 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument("--base_anchor_size", type=float, default=1.0)
-    parser.add_argument("--conf_thresh", type=float, default=0.01)
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=5000,
+        help="Number of top predictions to keep per image per modality",
+    )
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")
