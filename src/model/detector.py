@@ -253,12 +253,15 @@ class LineHead(nn.Module):
 
         # --- Predict Raw Cartesian Directions ---
         raw_dirs = preds[..., self.num_classes + 2 : self.num_classes + 6]
-        raw_dx1, raw_dy1, raw_dx2, raw_dy2 = (
-            raw_dirs[..., 0],
-            raw_dirs[..., 1],
-            raw_dirs[..., 2],
-            raw_dirs[..., 3],
-        )
+
+        # NORMALIZE to unit vectors so they only encode direction, not magnitude!
+        dir1 = F.normalize(raw_dirs[..., 0:2], p=2, dim=-1)
+        dir2 = F.normalize(raw_dirs[..., 2:4], p=2, dim=-1)
+
+        raw_dx1, raw_dy1 = dir1[..., 0], dir1[..., 1]
+        raw_dx2, raw_dy2 = dir2[..., 0], dir2[..., 1]
+
+        normalized_dirs = torch.cat([dir1, dir2], dim=-1)
 
         # --- D-FINE Residuals ---
         edge_logits = preds[..., -4 * self.num_bins :]
@@ -281,7 +284,7 @@ class LineHead(nn.Module):
 
         keypoints = torch.stack([x1, y1, x2, y2], dim=-1)
 
-        return classes, scales, raw_dirs, keypoints, edge_logits
+        return classes, scales, normalized_dirs, keypoints, edge_logits
 
 
 class OMRDetector(nn.Module):
