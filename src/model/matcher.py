@@ -106,8 +106,6 @@ class HungarianMatcher(nn.Module):
         calc_device: torch.device | None = None,
         radius_patches: float = 4.0,
         top_k: int = 10,
-        patch_size: int = 64,
-        image_size: int = 3584,
         matcher_type: str = "scipy",
     ):
         super().__init__()

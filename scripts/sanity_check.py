@@ -138,8 +138,6 @@ def train(params: TrainParams):
         cost_giou=params.cost_giou,
         radius_patches=params.radius_patches,
         top_k=params.top_k,
-        patch_size=params.patch_size,
-        image_size=params.img_w,
     )
     weights = DetectionLossWeights(
         loss_ce=params.loss_ce,

@@ -564,8 +564,6 @@ def train(params: TrainParams):
         calc_device=params.match_device,
         radius_patches=params.radius_patches,
         top_k=params.top_k,
-        patch_size=params.patch_size,
-        image_size=params.crop_size if params.crop_size is not None else 3584,
         matcher_type=params.matcher_type,
     )
     weights = DetectionLossWeights(
