@@ -207,5 +207,29 @@
         --compile \
         --log_epoch_interval 0.5
     ```
+* **Results**: The L2 normalization did not solve the underlying instability. The network still suffered from massive gradient spikes. The root cause was identified as a "lever-arm effect": because the final endpoint was calculated as `Scale * Direction`, a small error in the normalized direction or D-FINE residual, when multiplied by a massive scale (e.g., 3000 pixels for a staff line), resulted in huge absolute errors and gradient explosion.
+* **Conclusion**: The explicit separation of scale and direction via multiplication creates a lever-arm effect that is mathematically unstable for extreme aspect ratios. We need to abandon the multiplicative scale/direction split and move to a formulation where X and Y can independently scale to massive distances without multiplying by a shared magnitude.
+
+## Experiment 015: Line Head Signed Log Formulation
+* **Experiment Name/ID**: `experiments/015_line_head_signed_log`
+* **Hypothesis/Goal**: Verify that the new "Signed Log" formulation (`sign(x) * (exp(|x|) - 1)`) for line endpoints resolves the lever-arm gradient instability observed in Exp 014. By allowing independent, unbounded scaling for X and Y without multiplication, and scaling D-FINE residuals strictly by the base anchor size (1 PU), the line head should converge stably and achieve high keypoint mAP.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with updated `LineHead` (Signed Log formulation).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/015_line_head_signed_log \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
 * **Results**: [TBD]
 * **Conclusion**: [TBD]
