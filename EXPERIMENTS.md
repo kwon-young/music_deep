@@ -231,5 +231,5 @@
         --compile \
         --log_epoch_interval 0.5
     ```
-* **Results**: [TBD]
-* **Conclusion**: [TBD]
+* **Results**: Training completed stably with `loss_total` dropping to 8.40 and `loss_line_l1` dropping to 4.46. The `line_error` decreased to 0.63. In evaluation, global mAP@0.5 was 0.0155 for symbols and 0.0230 for lines. For specific line classes, `system` achieved 0.3007 mAP@0.5, `beam` 0.0195, and `stem` 0.0144, while `staff` scored near zero. For symbols, `noteheadBlack` achieved 0.8477 and `gClef` 0.6365.
+* **Conclusion**: The Signed Log formulation successfully stabilized the training gradients for the line head, allowing the losses to converge. However, the overall mAP for both lines and symbols remains low at the current 64x64 patch resolution.
