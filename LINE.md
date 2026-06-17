@@ -191,3 +191,13 @@ Standard COCO mAP will fail for lines, so we must run two separate evaluations.
    * Run `COCOeval(iouType='keypoints')`.
    * Filter by line `catIds`.
    * *Note:* Keypoint evaluation requires defining `sigmas` for the Object Keypoint Similarity (OKS). We will need to define a custom sigma array for the start/end points (e.g., `[0.1, 0.1]`).
+
+## 8. Revision: The Signed Log Formulation
+The initial "Signed Cartesian + Log Scale" formulation suffered from a severe **lever-arm effect**. Because the final endpoint was calculated as `Scale * Direction`, a massive scale (e.g., a 3,000-pixel staff line) would multiply any microscopic error in the predicted direction or D-FINE residual, causing massive gradient instability and training collapse.
+
+To solve this, we completely removed the explicit separation of scale and direction, replacing it with a **Signed Log** formulation:
+`base_dirs = sign(raw_dirs) * (exp(|raw_dirs|) - 1.0)`
+
+This allows the network to predict massive distances in any direction (positive or negative) using small, independent outputs for X and Y, completely eliminating the multiplication trap.
+
+Furthermore, the D-FINE residuals are now scaled strictly by the `base_anchor_size` (1 Patch Unit) instead of the line's total length. This ensures that the D-FINE bins act as a **local, absolute sub-patch refinement**, providing the exact same sub-pixel precision for a 10-pixel line as for a 3,000-pixel line.

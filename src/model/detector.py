@@ -209,8 +209,8 @@ class LineHead(nn.Module):
         self.num_bins = reg_max + 1
         self.base_anchor_size = base_anchor_size
 
-        # C (classes) + 2 (log_scale1, log_scale2) + 4 (raw_dx1, raw_dy1, raw_dx2, raw_dy2) + 4*N (edge bins)
-        self.preds_per_shape = num_classes + 2 + 4 + (4 * self.num_bins)
+        # C (classes) + 4 (raw_dx1, raw_dy1, raw_dx2, raw_dy2) + 4*N (edge bins)
+        self.preds_per_shape = num_classes + 4 + (4 * self.num_bins)
         self.out_dim = num_shapes * self.preds_per_shape
 
         self.mlp = nn.Sequential(
@@ -227,15 +227,15 @@ class LineHead(nn.Module):
         cls_bias_init = -math.log((1 - prior_prob) / prior_prob)
         nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
 
-        # Initialize the bias for the log_scales and raw_dirs to 0.0
-        nn.init.constant_(bias_view[:, num_classes : num_classes + 6], 0.0)
+        # Initialize the bias for the raw_dirs to 0.0 (which maps to 0 distance)
+        nn.init.constant_(bias_view[:, num_classes : num_classes + 4], 0.0)
 
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
     def forward(
         self, patch_tokens: torch.Tensor
     ) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     ]:
         B, P, _ = patch_tokens.shape
 
@@ -244,47 +244,34 @@ class LineHead(nn.Module):
 
         classes = preds[..., : self.num_classes]
 
-        # --- Predict Log-Scale Magnitudes ---
-        log_scales_raw = preds[..., self.num_classes : self.num_classes + 2]
-        log_scales_raw = torch.clamp(log_scales_raw, min=-10.0, max=10.0)
-        scales = self.base_anchor_size * torch.exp(log_scales_raw)
-        S1 = scales[..., 0]
-        S2 = scales[..., 1]
-
-        # --- Predict Raw Cartesian Directions ---
-        raw_dirs = preds[..., self.num_classes + 2 : self.num_classes + 6]
-
-        # NORMALIZE to unit vectors so they only encode direction, not magnitude!
-        dir1 = F.normalize(raw_dirs[..., 0:2], p=2, dim=-1)
-        dir2 = F.normalize(raw_dirs[..., 2:4], p=2, dim=-1)
-
-        raw_dx1, raw_dy1 = dir1[..., 0], dir1[..., 1]
-        raw_dx2, raw_dy2 = dir2[..., 0], dir2[..., 1]
-
-        normalized_dirs = torch.cat([dir1, dir2], dim=-1)
+        # --- Predict Signed Log Cartesian Directions ---
+        raw_dirs = preds[..., self.num_classes : self.num_classes + 4]
+        
+        # Clamp to prevent exp() overflow
+        raw_dirs = torch.clamp(raw_dirs, min=-10.0, max=10.0)
+        
+        # Apply Signed Log formula and scale by base anchor size
+        base_dirs = torch.sign(raw_dirs) * (torch.exp(torch.abs(raw_dirs)) - 1.0)
+        base_dirs = base_dirs * self.base_anchor_size
 
         # --- D-FINE Residuals ---
         edge_logits = preds[..., -4 * self.num_bins :]
         edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
         edge_probs = F.softmax(edge_logits, dim=-1)
 
-        res = self.weighting_fn(edge_probs)
-        res_x1, res_y1, res_x2, res_y2 = (
-            res[..., 0],
-            res[..., 1],
-            res[..., 2],
-            res[..., 3],
-        )
+        # Residuals are scaled by base_anchor_size to act as local sub-patch refinements
+        res = self.weighting_fn(edge_probs) * self.base_anchor_size
 
         # --- Final Endpoints (Relative to Patch Center) ---
-        x1 = (raw_dx1 + res_x1) * S1
-        y1 = (raw_dy1 + res_y1) * S1
-        x2 = (raw_dx2 + res_x2) * S2
-        y2 = (raw_dy2 + res_y2) * S2
+        # No multiplication between direction and scale! Just addition.
+        x1 = base_dirs[..., 0] + res[..., 0]
+        y1 = base_dirs[..., 1] + res[..., 1]
+        x2 = base_dirs[..., 2] + res[..., 2]
+        y2 = base_dirs[..., 3] + res[..., 3]
 
         keypoints = torch.stack([x1, y1, x2, y2], dim=-1)
 
-        return classes, scales, normalized_dirs, keypoints, edge_logits
+        return classes, base_dirs, keypoints, edge_logits
 
 
 class OMRDetector(nn.Module):
@@ -338,8 +325,7 @@ class OMRDetector(nn.Module):
         ) = self.symbol_head(patch_tokens)
         (
             line_classes,
-            line_scales,
-            line_raw_dirs,
+            line_base_dirs,
             line_keypoints,
             line_edge_logits,
         ) = self.line_head(patch_tokens)
@@ -365,7 +351,7 @@ class OMRDetector(nn.Module):
 
         # Scale Line Outputs
         line_keypoints = line_keypoints * scale_xyxy
-        # Note: line_scales and line_raw_dirs are kept in Patch Units for the loss function
+        # Note: line_base_dirs are kept in Patch Units for the loss function
         # ---------------------------------------------------------
 
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
@@ -410,7 +396,6 @@ class OMRDetector(nn.Module):
                 absolute_centers=Coordinates(
                     line_absolute_centers.reshape(B, P * K, 2)
                 ),
-                log_scales=Dimensions(line_scales.view(B, P * K, 2)),
-                raw_directions=Coordinates(line_raw_dirs.view(B, P * K, 4)),
+                raw_directions=Coordinates(line_base_dirs.view(B, P * K, 4)),
             ),
         )

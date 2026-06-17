@@ -87,6 +87,7 @@ class DFINECriterion(nn.Module):
         num_symbol_classes: int,
         num_line_classes: int,
         weights: DetectionLossWeights,
+        base_anchor_size: float = 1.0,
         reg_max: int = 32,
         alpha: float = 0.25,
         gamma: float = 2.0,
@@ -96,6 +97,7 @@ class DFINECriterion(nn.Module):
         self.num_symbol_classes = num_symbol_classes
         self.num_line_classes = num_line_classes
         self.weights = weights
+        self.base_anchor_size = base_anchor_size
         self.reg_max = reg_max
         self.alpha = alpha
         self.gamma = gamma
@@ -219,19 +221,17 @@ class DFINECriterion(nn.Module):
         self,
         src_edge_logits: torch.Tensor,
         src_centers: torch.Tensor,
-        src_scales: torch.Tensor,
-        src_raw_dirs: torch.Tensor,
+        src_base_dirs: torch.Tensor,
         matched_keypoints: torch.Tensor,
         num_lines: float,
     ) -> torch.Tensor:
         with torch.no_grad():
             cx, cy = src_centers[:, 0], src_centers[:, 1]
-            S1, S2 = src_scales[:, 0], src_scales[:, 1]
-            raw_dx1, raw_dy1, raw_dx2, raw_dy2 = (
-                src_raw_dirs[:, 0],
-                src_raw_dirs[:, 1],
-                src_raw_dirs[:, 2],
-                src_raw_dirs[:, 3],
+            base_x1, base_y1, base_x2, base_y2 = (
+                src_base_dirs[:, 0],
+                src_base_dirs[:, 1],
+                src_base_dirs[:, 2],
+                src_base_dirs[:, 3],
             )
             x1, y1, x2, y2 = (
                 matched_keypoints[:, 0],
@@ -240,10 +240,10 @@ class DFINECriterion(nn.Module):
                 matched_keypoints[:, 3],
             )
 
-            res_x1 = (x1 - cx) / S1 - raw_dx1
-            res_y1 = (y1 - cy) / S1 - raw_dy1
-            res_x2 = (x2 - cx) / S2 - raw_dx2
-            res_y2 = (y2 - cy) / S2 - raw_dy2
+            res_x1 = (x1 - cx - base_x1) / self.base_anchor_size
+            res_y1 = (y1 - cy - base_y1) / self.base_anchor_size
+            res_x2 = (x2 - cx - base_x2) / self.base_anchor_size
+            res_y2 = (y2 - cy - base_y2) / self.base_anchor_size
 
             target_res = torch.stack([res_x1, res_y1, res_x2, res_y2], dim=-1)
 
@@ -386,9 +386,6 @@ class DFINECriterion(nn.Module):
                     line_flat_idx.batch, line_flat_idx.src
                 ],
                 outputs.lines.absolute_centers.data[
-                    line_flat_idx.batch, line_flat_idx.src
-                ],
-                outputs.lines.log_scales.data[
                     line_flat_idx.batch, line_flat_idx.src
                 ],
                 outputs.lines.raw_directions.data[

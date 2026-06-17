@@ -372,7 +372,6 @@ class LineOutput[B: Batch, Q: NumQueries, KD: KeypointDim, CD: CoordDim](
     pred_keypoints: Keypoints[tuple[B, Q, KD], X1Y1X2Y2, Float1, TopLeft]
     pred_endpoint_logits: EdgeLogits[tuple[B, Q, KD, NumBins]]
     absolute_centers: Coordinates[tuple[B, Q, CD], Float1]
-    log_scales: Dimensions[tuple[B, Q, CD], Absolute]
     raw_directions: Coordinates[tuple[B, Q, KD], Absolute]
 
 

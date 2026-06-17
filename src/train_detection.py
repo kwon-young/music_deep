@@ -577,6 +577,7 @@ def train(params: TrainParams):
         num_symbol_classes=params.num_symbol_classes,
         num_line_classes=params.num_line_classes,
         weights=weights,
+        base_anchor_size=params.base_anchor_size,
     ).to(params.train_device)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
