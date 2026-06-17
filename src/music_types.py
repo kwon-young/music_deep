@@ -32,7 +32,8 @@ type Mode = Binary | Gray | RGB
 
 type Int255 = Literal["Int255"]
 type Float1 = Literal["Float1"]
-type Range = Int255 | Float1
+type PatchUnit = Literal["PatchUnit"]
+type Range = Int255 | Float1 | PatchUnit
 
 
 @dataclass
@@ -261,7 +262,7 @@ type LTRB = Literal["ltrb"]  # Left Top Right Bottom
 type BoxFormat = XYXY | CXCYWH | LTRB
 type Absolute = Literal["Absolute"]
 type ShapeNormalized = Literal["ShapeNormalized"]
-type BoxRange = Float1 | Absolute | ShapeNormalized
+type BoxRange = Float1 | Absolute | ShapeNormalized | PatchUnit
 type TopLeft = Literal["TopLeft"]
 type Center = Literal["Center"]
 type Origin = TopLeft | Center
@@ -296,7 +297,7 @@ type BatchedKeypointShape = tuple[Batch, NumKeypoints, KeypointDim]
 type AnyKeypointShape = KeypointShape | BatchedKeypointShape
 type X1Y1X2Y2 = Literal["x1y1x2y2"]
 type KeypointFormat = X1Y1X2Y2
-type KeypointRange = Float1 | Absolute
+type KeypointRange = Float1 | Absolute | PatchUnit
 
 
 @dataclass
@@ -340,7 +341,7 @@ type CoordShape = tuple[NumQueries, CoordDim]
 type BatchedCoordShape = tuple[Batch, NumQueries, CoordDim]
 type AnyCoordShape = CoordShape | BatchedCoordShape
 
-type CoordRange = Float1 | Absolute
+type CoordRange = Float1 | Absolute | PatchUnit
 
 
 @dataclass
@@ -358,10 +359,10 @@ class SymbolOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](
     DetachMixin
 ):
     pred_logits: ClassLogits[tuple[B, Q, NumSymbolClasses]]
-    pred_boxes: BoundingBoxes[tuple[B, Q, BD], XYXY, Float1, TopLeft]
+    pred_boxes: BoundingBoxes[tuple[B, Q, BD], XYXY, PatchUnit, TopLeft]
     pred_edge_logits: EdgeLogits[tuple[B, Q, BD, NumBins]]
-    absolute_centers: Coordinates[tuple[B, Q, CD], Float1]
-    learnable_shapes: Dimensions[tuple[B, Q, CD], Float1]
+    absolute_centers: Coordinates[tuple[B, Q, CD], PatchUnit]
+    learnable_shapes: Dimensions[tuple[B, Q, CD], PatchUnit]
 
 
 @dataclass
@@ -369,10 +370,10 @@ class LineOutput[B: Batch, Q: NumQueries, KD: KeypointDim, CD: CoordDim](
     DetachMixin
 ):
     pred_logits: ClassLogits[tuple[B, Q, NumLineClasses]]
-    pred_keypoints: Keypoints[tuple[B, Q, KD], X1Y1X2Y2, Float1, TopLeft]
+    pred_keypoints: Keypoints[tuple[B, Q, KD], X1Y1X2Y2, PatchUnit, TopLeft]
     pred_endpoint_logits: EdgeLogits[tuple[B, Q, KD, NumBins]]
-    absolute_centers: Coordinates[tuple[B, Q, CD], Float1]
-    raw_directions: Coordinates[tuple[B, Q, KD], Absolute]
+    absolute_centers: Coordinates[tuple[B, Q, CD], PatchUnit]
+    raw_directions: Coordinates[tuple[B, Q, KD], PatchUnit]
 
 
 @dataclass

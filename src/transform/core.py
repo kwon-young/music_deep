@@ -22,6 +22,7 @@ from music_types import (
     Range,
     Int255,
     Float1,
+    PatchUnit,
     LazyImage,
     PILImage,
     ArrayImage,
@@ -538,25 +539,25 @@ def patch_drop_img[
 
 def normalize_boxes_img[B: NumBoxes, D: BoxDim, O: Origin](
     boxes: BoundingBoxes[tuple[B, D], XYXY, Absolute, O],
-    image_shape: tuple[int, int],
-) -> BoundingBoxes[tuple[B, D], XYXY, Float1, O]:
-    """Normalizes absolute pixel coordinates to [0, 1] based on image shape."""
-    h, w = image_shape
+    patch_size: tuple[int, int],
+) -> BoundingBoxes[tuple[B, D], XYXY, PatchUnit, O]:
+    """Normalizes absolute pixel coordinates to Patch Units."""
+    ph, pw = patch_size
     new_data = boxes.data.clone()
     if len(new_data) > 0:
-        new_data[:, [0, 2]] /= w
-        new_data[:, [1, 3]] /= h
+        new_data[:, [0, 2]] /= pw
+        new_data[:, [1, 3]] /= ph
     return BoundingBoxes(data=new_data)
 
 
 def normalize_keypoints_img[K: NumKeypoints, D: KeypointDim, O: Origin](
     keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, Absolute, O],
-    image_shape: tuple[int, int],
-) -> Keypoints[tuple[K, D], X1Y1X2Y2, Float1, O]:
-    """Normalizes absolute pixel coordinates to [0, 1] based on image shape."""
-    h, w = image_shape
+    patch_size: tuple[int, int],
+) -> Keypoints[tuple[K, D], X1Y1X2Y2, PatchUnit, O]:
+    """Normalizes absolute pixel coordinates to Patch Units."""
+    ph, pw = patch_size
     new_data = keypoints.data.clone()
     if len(new_data) > 0:
-        new_data[:, [0, 2]] /= w
-        new_data[:, [1, 3]] /= h
+        new_data[:, [0, 2]] /= pw
+        new_data[:, [1, 3]] /= ph
     return Keypoints(data=new_data)

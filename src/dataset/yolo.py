@@ -22,7 +22,7 @@ from music_types import (
     KeypointDim,
     XYXY,
     X1Y1X2Y2,
-    Float1,
+    Absolute,
     TopLeft,
 )
 
@@ -50,9 +50,9 @@ def load_sample(
     YOLOMetadata,
     DetectionSample[
         PILImage[HWC, RGB, Int255],
-        BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Float1, TopLeft],
+        BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
         ClassLabels[tuple[NumBoxes], NumSymbolClasses],
-        Keypoints[tuple[NumKeypoints, KeypointDim], X1Y1X2Y2, Float1, TopLeft],
+        Keypoints[tuple[NumKeypoints, KeypointDim], X1Y1X2Y2, Absolute, TopLeft],
         ClassLabels[tuple[NumKeypoints], NumLineClasses],
     ],
 ]:
@@ -73,10 +73,10 @@ def load_sample(
                 class_id = int(parts[0])
                 cx, cy, w, h = map(float, parts[1:5])
 
-                x1 = cx - w / 2
-                y1 = cy - h / 2
-                x2 = cx + w / 2
-                y2 = cy + h / 2
+                x1 = (cx - w / 2) * metadata.img_w
+                y1 = (cy - h / 2) * metadata.img_h
+                x2 = (cx + w / 2) * metadata.img_w
+                y2 = (cy + h / 2) * metadata.img_h
 
                 labels.append(class_id)
                 boxes.append([x1, y1, x2, y2])

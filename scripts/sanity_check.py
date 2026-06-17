@@ -32,6 +32,7 @@ from music_types import (
     Int255,
     CHW,
     Float1,
+    PatchUnit,
     DetectionSample,
     Mode,
     BoundingBoxes,
@@ -102,12 +103,14 @@ def transform_image[
         Meta, DetectionSample[PILImage[HWC, M, Int255], B, L, Kp, KpLbl]
     ],
     device: torch.device,
+    patch_size: int,
 ) -> Data[Meta, DetectionSample[TensorImage[CHW, M, Float1], B, L, Kp, KpLbl]]:
     item_np = det_tf.to_numpy(item)
     item_t = det_tf.to_tensor(item_np)
     item_t = det_tf.to(item_t, device=device)
     item_tf = det_tf.to_float1(item_t)
-    return item_tf
+    item_norm = det_tf.normalize_targets(item_tf, patch_size=(patch_size, patch_size))
+    return item_norm
 
 
 def train(params: TrainParams):
@@ -171,7 +174,7 @@ def train(params: TrainParams):
     print(f"Loading image: {first_metadata.img_path.name}")
 
     raw_data = load_sample(first_metadata)
-    transformed_data = transform_image(raw_data, device)
+    transformed_data = transform_image(raw_data, device, params.patch_size)
 
     # 4. Prepare Batch, Patches, and Centers
     batched_image = collate((transformed_data,))
@@ -263,6 +266,7 @@ def train(params: TrainParams):
                 targets,
                 outputs,
                 epoch,
+                patch_size=params.patch_size,
                 indices=indices_match,
             )
             fig.canvas.draw()
@@ -284,6 +288,7 @@ def train(params: TrainParams):
             targets,
             outputs,
             epoch=f"Final (Threshold > {params.conf_thresh})",
+            patch_size=params.patch_size,
             conf_thresh=params.conf_thresh,
             indices=None,
         )

@@ -54,6 +54,7 @@ def update_plot(
     targets: list[DetectionTarget],
     outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     epoch: int | str,
+    patch_size: int,
     conf_thresh: float = 0.5,
     indices: tuple[list[MatchIndices], list[MatchIndices]] | None = None,
 ):
@@ -74,9 +75,7 @@ def update_plot(
     ax.imshow(img)
 
     # Plot Ground Truth boxes (Green)
-    gt_boxes = targets[0].boxes.data.cpu().numpy() * np.array(
-        [img_w, img_h, img_w, img_h]
-    )
+    gt_boxes = targets[0].boxes.data.cpu().numpy() * patch_size
     for box in gt_boxes:
         x1, y1, x2, y2 = box
         rect = patches.Rectangle(
@@ -90,9 +89,7 @@ def update_plot(
         ax.add_patch(rect)
 
     # Plot Ground Truth keypoints (Blue)
-    gt_keypoints = targets[0].keypoints.data.cpu().numpy() * np.array(
-        [img_w, img_h, img_w, img_h]
-    )
+    gt_keypoints = targets[0].keypoints.data.cpu().numpy() * patch_size
     for kp in gt_keypoints:
         x1, y1, x2, y2 = kp
         ax.plot([x1, x2], [y1, y2], color="b", linewidth=2)
@@ -101,7 +98,7 @@ def update_plot(
     sym_logits = outputs.symbols.pred_logits.data[0].detach().cpu()
     sym_boxes = outputs.symbols.pred_boxes.data[
         0
-    ].detach().cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    ].detach().cpu().numpy() * patch_size
     sym_probs = torch.sigmoid(sym_logits)
     sym_max_probs, _ = sym_probs.max(dim=-1)
 
@@ -129,7 +126,7 @@ def update_plot(
     line_logits = outputs.lines.pred_logits.data[0].detach().cpu()
     line_kps = outputs.lines.pred_keypoints.data[
         0
-    ].detach().cpu().numpy() * np.array([img_w, img_h, img_w, img_h])
+    ].detach().cpu().numpy() * patch_size
     line_probs = torch.sigmoid(line_logits)
     line_max_probs, _ = line_probs.max(dim=-1)
 

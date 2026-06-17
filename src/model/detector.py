@@ -28,12 +28,12 @@ from music_types import (
 
 def get_2d_patch_centers(grid_h: int, grid_w: int, device: str) -> torch.Tensor:
     """
-    Computes the base normalized (x, y) centers for a full grid.
+    Computes the base (x, y) centers for a full grid in Patch Units.
     """
     torch_device = torch.device(device)
 
-    y_centers = (torch.arange(grid_h, device=torch_device) + 0.5) / grid_h
-    x_centers = (torch.arange(grid_w, device=torch_device) + 0.5) / grid_w
+    y_centers = torch.arange(grid_h, device=torch_device) + 0.5
+    x_centers = torch.arange(grid_w, device=torch_device) + 0.5
     y_grid, x_grid = torch.meshgrid(y_centers, x_centers, indexing="ij")
 
     # Shape: (Total_Patches, 2)
@@ -44,7 +44,7 @@ def compute_centers(
     embeddings: Embeddings[Batch, NumPatches, EmbedDim],
 ) -> torch.Tensor:
     """
-    Computes and gathers normalized (x, y) centers for the given patches.
+    Computes and gathers (x, y) centers for the given patches in Patch Units.
     Uses the indices to ensure centers match even if patches were dropped.
     """
     c, h, w = embeddings.image_shape
@@ -332,28 +332,6 @@ class OMRDetector(nn.Module):
 
         B, P, K, _ = sym_boxes.shape
 
-        # --- Scale from Patch Units to Image Units [0, 1] ---
-        _, h, w = features.image_shape
-        ph, pw = features.patch_size
-        grid_h, grid_w = h // ph, w // pw
-
-        scale_xy = torch.tensor(
-            [1.0 / grid_w, 1.0 / grid_h],
-            dtype=sym_boxes.dtype,
-            device=sym_boxes.device,
-        ).view(1, 1, 1, 2)
-        scale_xyxy = scale_xy.repeat(1, 1, 1, 2)
-
-        # Scale Symbol Outputs
-        sym_center_offsets = sym_center_offsets * scale_xy
-        sym_boxes = sym_boxes * scale_xyxy
-        sym_expanded_shapes = sym_shapes * scale_xy
-
-        # Scale Line Outputs
-        line_keypoints = line_keypoints * scale_xyxy
-        # Note: line_base_dirs are kept in Patch Units for the loss function
-        # ---------------------------------------------------------
-
         # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
         patch_centers_expanded = patch_centers.unsqueeze(2)
 
@@ -384,7 +362,7 @@ class OMRDetector(nn.Module):
                     sym_absolute_centers.view(B, P * K, 2)
                 ),
                 learnable_shapes=Dimensions(
-                    sym_expanded_shapes.reshape(B, P * K, 2)
+                    sym_shapes.reshape(B, P * K, 2)
                 ),
             ),
             lines=LineOutput(

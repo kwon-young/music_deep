@@ -46,9 +46,6 @@ def process_single_image(
         item_tf, patch_size=(args.patch_size, args.patch_size)
     )
 
-    # Get padded dimensions for un-normalizing boxes later
-    _, padded_h, padded_w = item_padded.sample.image.data.shape
-
     # Collate to add batch dimension and extract patches
     batched_item = det_tf.collate((item_padded,))
     patched_item = det_tf.extract_patches(
@@ -78,8 +75,7 @@ def process_single_image(
     sym_boxes_kept = sym_boxes[sym_keep]
     sym_labels_kept = sym_labels[sym_keep]
 
-    sym_boxes_kept[:, [0, 2]] *= padded_w
-    sym_boxes_kept[:, [1, 3]] *= padded_h
+    sym_boxes_kept[:, [0, 1, 2, 3]] *= args.patch_size
 
     sym_results = []
     for box, prob, label in zip(
@@ -115,8 +111,7 @@ def process_single_image(
     line_kps_kept = line_kps[line_keep]
     line_labels_kept = line_labels[line_keep]
 
-    line_kps_kept[:, [0, 2]] *= padded_w
-    line_kps_kept[:, [1, 3]] *= padded_h
+    line_kps_kept[:, [0, 1, 2, 3]] *= args.patch_size
 
     line_results = []
     for kp, prob, label in zip(

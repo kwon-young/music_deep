@@ -33,7 +33,7 @@ from music_types import (
     TensorImage,
     CHW,
     RGB,
-    Float1,
+    PatchUnit,
     BoundingBoxes,
     ClassLabels,
     Keypoints,
@@ -135,7 +135,7 @@ def transform_image(
 ) -> Data[
     CocoMetadata,
     DetectionSample[
-        TensorImage[CHW, RGB, Float1],
+        TensorImage[CHW, RGB, PatchUnit],
         BoundingBoxes,
         ClassLabels,
         Keypoints,
@@ -164,8 +164,10 @@ def transform_image(
         item_tf, patch_size=(patch_size, patch_size)
     )
 
-    # Normalize boxes and keypoints using the final padded image dimensions
-    item_normalized = det_tf.normalize_targets(item_padded)
+    # Normalize boxes and keypoints using the patch size
+    item_normalized = det_tf.normalize_targets(
+        item_padded, patch_size=(patch_size, patch_size)
+    )
 
     return item_normalized
 
@@ -430,6 +432,7 @@ def log_and_save_checkpoint(
         result.targets,
         result.outputs,
         f"Epoch: {result.epoch:.2f}",
+        patch_size=params.patch_size,
         indices=(sym_indices, line_indices),
     )
 

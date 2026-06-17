@@ -16,7 +16,7 @@ from music_types import (
     KeypointShape,
     XYXY,
     X1Y1X2Y2,
-    Float1,
+    PatchUnit,
     TopLeft,
     Batch,
     NumQueries,
@@ -120,8 +120,7 @@ class HungarianMatcher(nn.Module):
         self.calc_device = calc_device
 
         self.top_k = top_k
-        # Convert the radius in patches to a normalized [0, 1] distance
-        self.normalized_radius = radius_patches * (patch_size / image_size)
+        self.radius_patches = radius_patches
 
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, (
             "all costs can't be 0"
@@ -149,7 +148,7 @@ class HungarianMatcher(nn.Module):
         )
         box_distances = torch.sqrt(dx**2 + dy**2)
 
-        valid_mask = box_distances <= self.normalized_radius
+        valid_mask = box_distances <= self.radius_patches
 
         # Top-K Fallback: Ensure every GT box has at least K valid predictions
         topk = min(self.top_k, len(out_bbox))
@@ -193,7 +192,7 @@ class HungarianMatcher(nn.Module):
         kp_distances = torch.norm(P.unsqueeze(1) - Proj, p=2, dim=-1)  # [N, M]
 
         # 5. Apply radius and Top-K fallback
-        valid_mask = kp_distances <= self.normalized_radius
+        valid_mask = kp_distances <= self.radius_patches
 
         topk = min(self.top_k, len(out_kp))
         topk_idx = torch.topk(
@@ -324,9 +323,9 @@ class HungarianMatcher(nn.Module):
         ],
         targets: list[
             DetectionTarget[
-                BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+                BoundingBoxes[BoxShape, XYXY, PatchUnit, TopLeft],
                 ClassLabels[LabelShape, NumSymbolClasses],
-                Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+                Keypoints[KeypointShape, X1Y1X2Y2, PatchUnit, TopLeft],
                 ClassLabels[LabelShape, NumLineClasses],
             ]
         ],

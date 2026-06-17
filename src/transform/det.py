@@ -49,6 +49,7 @@ from music_types import (
     BatchedData,
     Int255,
     Float1,
+    PatchUnit,
     RGB,
     NumBoxes,
     NumKeypoints,
@@ -332,19 +333,19 @@ def normalize_targets[
         Keypoints[tuple[K, KD], X1Y1X2Y2, Absolute, O],
         KpLbl,
     ],
+    patch_size: tuple[int, int],
 ) -> DetectionSample[
     I,
-    BoundingBoxes[tuple[B, D], XYXY, Float1, O],
+    BoundingBoxes[tuple[B, D], XYXY, PatchUnit, O],
     BxLbl,
-    Keypoints[tuple[K, KD], X1Y1X2Y2, Float1, O],
+    Keypoints[tuple[K, KD], X1Y1X2Y2, PatchUnit, O],
     KpLbl,
 ]:
-    h, w = sample.image.data.shape[-2:]
     return DetectionSample(
         image=sample.image,
-        boxes=normalize_boxes_img(sample.boxes, (h, w)),
+        boxes=normalize_boxes_img(sample.boxes, patch_size),
         box_labels=sample.box_labels,
-        keypoints=normalize_keypoints_img(sample.keypoints, (h, w)),
+        keypoints=normalize_keypoints_img(sample.keypoints, patch_size),
         keypoint_labels=sample.keypoint_labels,
     )
 

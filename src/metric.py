@@ -18,7 +18,7 @@ from music_types import (
     XYXY,
     X1Y1X2Y2,
     TopLeft,
-    Float1,
+    PatchUnit,
     NumSymbolClasses,
     NumLineClasses,
 )
@@ -29,9 +29,9 @@ def compute_map_50(
     outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     targets: list[
         DetectionTarget[
-            BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+            BoundingBoxes[BoxShape, XYXY, PatchUnit, TopLeft],
             ClassLabels[LabelShape, NumSymbolClasses],
-            Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+            Keypoints[KeypointShape, X1Y1X2Y2, PatchUnit, TopLeft],
             ClassLabels[LabelShape, NumLineClasses],
         ]
     ],
@@ -129,9 +129,9 @@ def compute_mean_iou(
     outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     targets: list[
         DetectionTarget[
-            BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+            BoundingBoxes[BoxShape, XYXY, PatchUnit, TopLeft],
             ClassLabels[LabelShape, NumSymbolClasses],
-            Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+            Keypoints[KeypointShape, X1Y1X2Y2, PatchUnit, TopLeft],
             ClassLabels[LabelShape, NumLineClasses],
         ]
     ],
@@ -160,9 +160,9 @@ def compute_mean_endpoint_error(
     outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
     targets: list[
         DetectionTarget[
-            BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+            BoundingBoxes[BoxShape, XYXY, PatchUnit, TopLeft],
             ClassLabels[LabelShape, NumSymbolClasses],
-            Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+            Keypoints[KeypointShape, X1Y1X2Y2, PatchUnit, TopLeft],
             ClassLabels[LabelShape, NumLineClasses],
         ]
     ],

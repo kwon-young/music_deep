@@ -19,7 +19,7 @@ from music_types import (
     KeypointShape,
     XYXY,
     X1Y1X2Y2,
-    Float1,
+    PatchUnit,
     TopLeft,
     Batch,
     NumQueries,
@@ -280,9 +280,9 @@ class DFINECriterion(nn.Module):
         ],
         targets: list[
             DetectionTarget[
-                BoundingBoxes[BoxShape, XYXY, Float1, TopLeft],
+                BoundingBoxes[BoxShape, XYXY, PatchUnit, TopLeft],
                 ClassLabels[LabelShape, NumSymbolClasses],
-                Keypoints[KeypointShape, X1Y1X2Y2, Float1, TopLeft],
+                Keypoints[KeypointShape, X1Y1X2Y2, PatchUnit, TopLeft],
                 ClassLabels[LabelShape, NumLineClasses],
             ]
         ],
