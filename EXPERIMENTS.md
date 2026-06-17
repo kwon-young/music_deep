@@ -212,7 +212,7 @@
 
 ## Experiment 015: Line Head Signed Log Formulation
 * **Experiment Name/ID**: `experiments/015_line_head_signed_log`
-* **Hypothesis/Goal**: Verify that the new "Signed Log" formulation (`sign(x) * (exp(|x|) - 1)`) for line endpoints resolves the lever-arm gradient instability observed in Exp 014. By allowing independent, unbounded scaling for X and Y without multiplication, and scaling D-FINE residuals strictly by the base anchor size (1 PU), the line head should converge stably and achieve high keypoint mAP.
+* **Hypothesis/Goal**: Verify that the new "Signed Log" formulation (`sign(x) * (exp(|x|) - 1)`) for line endpoints resolves the lever-arm gradient instability observed in Exp 014. By allowing independent, unbounded scaling for X and Y without multiplication, and scaling D-FINE residuals strictly by the base anchor size (1 PU), the line head should converge stably and achieve high keypoint mAP. Also, all "absolute" losses were converted to patch unit instead of being in image unit. this should improve gradients for massive image sizes.
 * **Setup**: 
   * Model: `vit_nano` (patch_size=64) with updated `LineHead` (Signed Log formulation).
   * Crop Size: Full Image (None)
