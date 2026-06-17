@@ -109,7 +109,9 @@ def transform_image[
     item_t = det_tf.to_tensor(item_np)
     item_t = det_tf.to(item_t, device=device)
     item_tf = det_tf.to_float1(item_t)
-    item_norm = det_tf.normalize_targets(item_tf, patch_size=(patch_size, patch_size))
+    item_norm = det_tf.normalize_targets(
+        item_tf, patch_size=(patch_size, patch_size)
+    )
     return item_norm
 
 
