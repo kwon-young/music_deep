@@ -52,7 +52,9 @@ def load_sample(
         PILImage[HWC, RGB, Int255],
         BoundingBoxes[tuple[NumBoxes, BoxDim], XYXY, Absolute, TopLeft],
         ClassLabels[tuple[NumBoxes], NumSymbolClasses],
-        Keypoints[tuple[NumKeypoints, KeypointDim], X1Y1X2Y2, Absolute, TopLeft],
+        Keypoints[
+            tuple[NumKeypoints, KeypointDim], X1Y1X2Y2, Absolute, TopLeft
+        ],
         ClassLabels[tuple[NumKeypoints], NumLineClasses],
     ],
 ]:

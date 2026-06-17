@@ -158,6 +158,8 @@ class CocoViewer(QMainWindow):
                 # Support loading a directory of JSONs (e.g., preds_symbols.json and preds_lines.json)
                 pred_files = [self.pred_path] if self.pred_path.is_file() else list(self.pred_path.glob("*.json"))
                 for pf in pred_files:
+                    if "preds" not in str(pf):
+                        continue
                     with open(pf, "r") as f:
                         preds = json.load(f)
                     for p in preds:

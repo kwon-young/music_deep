@@ -234,9 +234,7 @@ class LineHead(nn.Module):
 
     def forward(
         self, patch_tokens: torch.Tensor
-    ) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
-    ]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, P, _ = patch_tokens.shape
 
         raw_preds = self.mlp(patch_tokens)
@@ -246,12 +244,14 @@ class LineHead(nn.Module):
 
         # --- Predict Signed Log Cartesian Directions ---
         raw_dirs = preds[..., self.num_classes : self.num_classes + 4]
-        
+
         # Clamp to prevent exp() overflow
         raw_dirs = torch.clamp(raw_dirs, min=-10.0, max=10.0)
-        
+
         # Apply Signed Log formula and scale by base anchor size
-        base_dirs = torch.sign(raw_dirs) * (torch.exp(torch.abs(raw_dirs)) - 1.0)
+        base_dirs = torch.sign(raw_dirs) * (
+            torch.exp(torch.abs(raw_dirs)) - 1.0
+        )
         base_dirs = base_dirs * self.base_anchor_size
 
         # --- D-FINE Residuals ---
@@ -361,9 +361,7 @@ class OMRDetector(nn.Module):
                 absolute_centers=Coordinates(
                     sym_absolute_centers.view(B, P * K, 2)
                 ),
-                learnable_shapes=Dimensions(
-                    sym_shapes.reshape(B, P * K, 2)
-                ),
+                learnable_shapes=Dimensions(sym_shapes.reshape(B, P * K, 2)),
             ),
             lines=LineOutput(
                 pred_logits=ClassLogits(line_classes.view(B, P * K, -1)),

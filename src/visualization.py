@@ -96,9 +96,9 @@ def update_plot(
 
     # Plot Predicted boxes (Red)
     sym_logits = outputs.symbols.pred_logits.data[0].detach().cpu()
-    sym_boxes = outputs.symbols.pred_boxes.data[
-        0
-    ].detach().cpu().numpy() * patch_size
+    sym_boxes = (
+        outputs.symbols.pred_boxes.data[0].detach().cpu().numpy() * patch_size
+    )
     sym_probs = torch.sigmoid(sym_logits)
     sym_max_probs, _ = sym_probs.max(dim=-1)
 
@@ -124,9 +124,9 @@ def update_plot(
 
     # Plot Predicted keypoints (Orange)
     line_logits = outputs.lines.pred_logits.data[0].detach().cpu()
-    line_kps = outputs.lines.pred_keypoints.data[
-        0
-    ].detach().cpu().numpy() * patch_size
+    line_kps = (
+        outputs.lines.pred_keypoints.data[0].detach().cpu().numpy() * patch_size
+    )
     line_probs = torch.sigmoid(line_logits)
     line_max_probs, _ = line_probs.max(dim=-1)
 
