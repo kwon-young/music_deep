@@ -13,7 +13,7 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model.vit import vit_nano
+from model.vit import vit_nano, vit_small, vit_base
 from model.detector import OMRDetector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
@@ -72,6 +72,7 @@ class TrainParams:
     accumulation_steps: int
     loader_maxsize: int
     train_maxsize: int
+    backbone_size: str
     patch_size: int
     crop_size: int | None
     channels: int
@@ -504,7 +505,16 @@ def train(params: TrainParams):
     )
 
     # 1. Setup Model
-    backbone = vit_nano(
+    if params.backbone_size == "nano":
+        vit_fn = vit_nano
+    elif params.backbone_size == "small":
+        vit_fn = vit_small
+    elif params.backbone_size == "base":
+        vit_fn = vit_base
+    else:
+        raise ValueError(f"Unknown backbone size: {params.backbone_size}")
+
+    backbone = vit_fn(
         patch_size=params.patch_size,
         channels=params.channels,
         use_sdpa=params.use_sdpa,
@@ -763,6 +773,13 @@ if __name__ == "__main__":
         default=2,
         help="Maximum number of detached outputs to buffer in the training queue",
     )
+    parser.add_argument(
+        "--backbone_size",
+        type=str,
+        choices=["nano", "small", "base"],
+        default="nano",
+        help="Size of the ViT backbone to use.",
+    )
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument(
         "--crop_size",
@@ -924,6 +941,7 @@ if __name__ == "__main__":
         accumulation_steps=args.accumulation_steps,
         loader_maxsize=args.loader_maxsize,
         train_maxsize=args.train_maxsize,
+        backbone_size=args.backbone_size,
         patch_size=args.patch_size,
         crop_size=args.crop_size,
         channels=args.channels,
