@@ -53,7 +53,9 @@ def process_single_image(
 
     # Apply variance patch dropping (same as training)
     dropped_item = det_tf.variance_patch_drop(
-        patched_item, var_threshold=args.var_threshold
+        patched_item,
+        var_threshold=args.var_threshold,
+        drop_rate=args.drop_rate,
     )
 
     # Forward pass
@@ -264,7 +266,8 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument("--base_anchor_size", type=float, default=1.0)
-    parser.add_argument("--var_threshold", type=float, default=0.001)
+    parser.add_argument("--var_threshold", type=float, default=None)
+    parser.add_argument("--drop_rate", type=float, default=None)
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")
     parser.add_argument(
@@ -280,4 +283,10 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    
+    if args.var_threshold is None and args.drop_rate is None:
+        args.var_threshold = 0.001
+    elif args.var_threshold is not None and args.drop_rate is not None:
+        raise ValueError("Cannot specify both --var_threshold and --drop_rate")
+        
     run_inference(args)

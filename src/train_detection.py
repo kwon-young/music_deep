@@ -96,7 +96,8 @@ class TrainParams:
     running_loss_half_life: float
     epochs: int
     log_epoch_interval: float
-    var_threshold: float
+    var_threshold: float | None
+    drop_rate: float | None
     log_patches: bool
     compile: bool
     use_sdpa: bool
@@ -227,7 +228,9 @@ def create_detection_iterator(
                     patch_size=(params.patch_size, params.patch_size),
                 )
                 dropped_item = det_tf.variance_patch_drop(
-                    patched_item, var_threshold=params.var_threshold
+                    patched_item,
+                    var_threshold=params.var_threshold,
+                    drop_rate=params.drop_rate,
                 )
 
                 # Move the final batch to the training device
@@ -846,7 +849,13 @@ if __name__ == "__main__":
         default=0.1,
         help="Log and save every X epochs",
     )
-    parser.add_argument("--var_threshold", type=float, default=0.001)
+    parser.add_argument("--var_threshold", type=float, default=None)
+    parser.add_argument(
+        "--drop_rate",
+        type=float,
+        default=None,
+        help="Fraction of patches to keep based on variance",
+    )
     parser.add_argument(
         "--log_patches",
         action="store_true",
@@ -912,6 +921,12 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    
+    if args.var_threshold is None and args.drop_rate is None:
+        args.var_threshold = 0.001
+    elif args.var_threshold is not None and args.drop_rate is not None:
+        raise ValueError("Cannot specify both --var_threshold and --drop_rate")
+
     prep_device = torch.device(args.prep_device)
     train_device = torch.device(args.train_device)
     match_device = torch.device(args.match_device)
@@ -954,6 +969,7 @@ if __name__ == "__main__":
         epochs=args.epochs,
         log_epoch_interval=args.log_epoch_interval,
         var_threshold=args.var_threshold,
+        drop_rate=args.drop_rate,
         log_patches=args.log_patches,
         compile=args.compile,
         use_sdpa=args.use_sdpa,

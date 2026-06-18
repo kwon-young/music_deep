@@ -500,25 +500,30 @@ def random_patch_drop_indices(
 
 
 def variance_patch_drop_indices(
-    patches_data: torch.Tensor, var_threshold: float
+    patches_data: torch.Tensor,
+    var_threshold: float | None = None,
+    drop_rate: float | None = None,
 ) -> torch.Tensor:
+    if (var_threshold is None) == (drop_rate is None):
+        raise ValueError("Must provide exactly one of var_threshold or drop_rate")
+
     b, n, d = patches_data.shape
-    # For data in [0, 1], the maximum possible variance is 0.25.
-    # We normalize the variance to [0, 1] for clean threshold bounds.
-    normalized_vars = patches_data.var(dim=-1) / 0.25
 
-    # Find how many patches pass the threshold for each image
-    passing_counts = (normalized_vars > var_threshold).sum(dim=-1)
-
-    # The number of patches to keep is the max passing across the batch (at least 1)
-    max_keep = max(1, passing_counts.max().item())
-
-    # Get the indices of the top `max_keep` patches with the highest variance
-    _, topk_indices = torch.topk(normalized_vars, k=max_keep, dim=-1)
+    if drop_rate is not None:
+        # Fraction-based drop
+        num_keep = max(1, int(n * (1.0 - drop_rate)))
+        patch_vars = patches_data.var(dim=-1)
+        _, topk_indices = torch.topk(patch_vars, k=num_keep, dim=-1)
+    else:
+        # Threshold-based drop
+        assert var_threshold is not None
+        normalized_vars = patches_data.var(dim=-1) / 0.25
+        passing_counts = (normalized_vars > var_threshold).sum(dim=-1)
+        max_keep = max(1, passing_counts.max().item())
+        _, topk_indices = torch.topk(normalized_vars, k=max_keep, dim=-1)
 
     # Sort the indices so they remain in their original spatial order
     sorted_indices, _ = torch.sort(topk_indices, dim=-1)
-
     return sorted_indices
 
 
