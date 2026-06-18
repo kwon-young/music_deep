@@ -233,3 +233,28 @@
     ```
 * **Results**: Training completed stably with `loss_total` dropping to 8.40 and `loss_line_l1` dropping to 4.46. The `line_error` decreased to 0.63. In evaluation, global mAP@0.5 was 0.0155 for symbols and 0.0230 for lines. For specific line classes, `system` achieved 0.3007 mAP@0.5, `beam` 0.0195, and `stem` 0.0144, while `staff` scored near zero. For symbols, `noteheadBlack` achieved 0.8477 and `gClef` 0.6365.
 * **Conclusion**: The Signed Log formulation successfully stabilized the training gradients for the line head, allowing the losses to converge. However, the overall mAP for both lines and symbols remains low at the current 64x64 patch resolution.
+
+## Experiment 016: ViT-Small Baseline
+* **Experiment Name/ID**: `experiments/016_vit_small_baseline`
+* **Hypothesis/Goal**: Verify if scaling up the backbone capacity from `vit-nano` to `vit-small` improves the overall mAP for both symbols and lines. The increased capacity might help the network better resolve fine-grained details and context from the coarse 64x64 patches.
+* **Setup**: 
+  * Model: `vit_small` (patch_size=64) with `SymbolHead` and `LineHead` (Signed Log formulation).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/016_vit_small_baseline \
+        --backbone_size small \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+* **Results**: TBD
+* **Conclusion**: TBD
