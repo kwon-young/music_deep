@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
+from .vit import vit_nano, vit_small, vit_base
 from music_types import (
     Patches,
     DetectionOutput,
@@ -375,3 +376,40 @@ class OMRDetector(nn.Module):
                 raw_directions=Coordinates(line_base_dirs.view(B, P * K, 4)),
             ),
         )
+
+
+def create_detector(
+    backbone_size: str,
+    patch_size: int | tuple[int, int],
+    channels: int,
+    use_sdpa: bool,
+    num_symbol_classes: int,
+    num_line_classes: int,
+    num_shapes: int = 5,
+    base_anchor_size: float = 1.0,
+) -> OMRDetector:
+    """
+    Factory function to create an OMRDetector with the specified backbone size.
+    """
+    if backbone_size == "nano":
+        vit_fn = vit_nano
+    elif backbone_size == "small":
+        vit_fn = vit_small
+    elif backbone_size == "base":
+        vit_fn = vit_base
+    else:
+        raise ValueError(f"Unknown backbone size: {backbone_size}")
+
+    backbone = vit_fn(
+        patch_size=patch_size,
+        channels=channels,
+        use_sdpa=use_sdpa,
+    )
+
+    return OMRDetector(
+        backbone,
+        num_symbol_classes=num_symbol_classes,
+        num_line_classes=num_line_classes,
+        num_shapes=num_shapes,
+        base_anchor_size=base_anchor_size,
+    )

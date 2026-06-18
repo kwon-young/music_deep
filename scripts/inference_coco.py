@@ -4,8 +4,7 @@ import random
 import torch
 from pathlib import Path
 from tqdm import tqdm
-from model.vit import vit_nano
-from model.detector import OMRDetector
+from model.detector import OMRDetector, create_detector
 from dataset.coco import (
     parse_coco,
     load_coco_sample,
@@ -160,13 +159,11 @@ def run_inference(args):
     print(f"Dynamic Top-K limits -> Symbols: {max_symbols}, Lines: {max_lines}")
 
     # 2. Setup model
-    backbone = vit_nano(
+    model = create_detector(
+        backbone_size=args.backbone_size,
         patch_size=args.patch_size,
         channels=args.channels,
         use_sdpa=args.use_sdpa,
-    )
-    model = OMRDetector(
-        backbone,
         num_symbol_classes=dataset.num_symbol_classes,
         num_line_classes=dataset.num_line_classes,
         num_shapes=args.num_shapes,
@@ -255,6 +252,13 @@ if __name__ == "__main__":
     parser.add_argument("--cache_dir", type=Path, default=None)
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
+    )
+    parser.add_argument(
+        "--backbone_size",
+        type=str,
+        choices=["nano", "small", "base"],
+        default="nano",
+        help="Size of the ViT backbone to use.",
     )
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument("--channels", type=int, default=3)

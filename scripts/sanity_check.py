@@ -10,8 +10,7 @@ import sys
 
 sys.path.append("src")
 
-from model.vit import vit_nano
-from model.detector import OMRDetector
+from model.detector import OMRDetector, create_detector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.yolo import load_yolo_metadata, load_sample
@@ -122,9 +121,11 @@ def train(params: TrainParams):
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
     # 1. Setup Model (using vit_nano for speed)
-    backbone = vit_nano(patch_size=params.patch_size, channels=params.channels)
-    model = OMRDetector(
-        backbone,
+    model = create_detector(
+        backbone_size="nano",
+        patch_size=params.patch_size,
+        channels=params.channels,
+        use_sdpa=False,
         num_symbol_classes=params.num_symbol_classes,
         num_line_classes=params.num_line_classes,
         num_shapes=params.num_shapes,

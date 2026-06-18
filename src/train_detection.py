@@ -13,8 +13,7 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model.vit import vit_nano, vit_small, vit_base
-from model.detector import OMRDetector
+from model.detector import OMRDetector, create_detector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
@@ -505,20 +504,16 @@ def train(params: TrainParams):
     )
 
     # 1. Setup Model
-    if params.backbone_size == "nano":
-        vit_fn = vit_nano
-    elif params.backbone_size == "small":
-        vit_fn = vit_small
-    elif params.backbone_size == "base":
-        vit_fn = vit_base
-    else:
-        raise ValueError(f"Unknown backbone size: {params.backbone_size}")
-
-    backbone = vit_fn(
+    raw_model = create_detector(
+        backbone_size=params.backbone_size,
         patch_size=params.patch_size,
         channels=params.channels,
         use_sdpa=params.use_sdpa,
-    )
+        num_symbol_classes=params.num_symbol_classes,
+        num_line_classes=params.num_line_classes,
+        num_shapes=params.num_shapes,
+        base_anchor_size=params.base_anchor_size,
+    ).to(params.train_device)
 
     if params.backbone_checkpoint and params.backbone_checkpoint.exists():
         if is_main_process:
@@ -528,7 +523,7 @@ def train(params: TrainParams):
             map_location=params.train_device,
             weights_only=True,
         )
-        backbone.load_state_dict(checkpoint["backbone"], strict=True)
+        raw_model.backbone.load_state_dict(checkpoint["backbone"], strict=True)
     elif params.backbone_checkpoint:
         if is_main_process:
             print(
@@ -538,19 +533,11 @@ def train(params: TrainParams):
     if params.freeze_backbone:
         if is_main_process:
             print("Freezing backbone parameters (no fine-tuning).")
-        for param in backbone.parameters():
+        for param in raw_model.backbone.parameters():
             param.requires_grad = False
     else:
         if is_main_process:
             print("Fine-tuning backbone parameters.")
-
-    raw_model = OMRDetector(
-        backbone,
-        num_symbol_classes=params.num_symbol_classes,
-        num_line_classes=params.num_line_classes,
-        num_shapes=params.num_shapes,
-        base_anchor_size=params.base_anchor_size,
-    ).to(params.train_device)
 
     model = raw_model
 
