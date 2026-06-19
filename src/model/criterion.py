@@ -34,7 +34,7 @@ from music_types import (
 def sigmoid_focal_loss(
     inputs: torch.Tensor,
     targets: torch.Tensor,
-    alpha: float = 0.25,
+    alpha: float | torch.Tensor = 0.25,
     gamma: float = 2.0,
     reduction: str = "none",
 ) -> torch.Tensor:
@@ -48,7 +48,7 @@ def sigmoid_focal_loss(
     p_t = p * targets + (1 - p) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
 
-    if alpha >= 0:
+    if isinstance(alpha, torch.Tensor) or alpha >= 0:
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
@@ -87,9 +87,10 @@ class DFINECriterion(nn.Module):
         num_symbol_classes: int,
         num_line_classes: int,
         weights: DetectionLossWeights,
+        symbol_weights: list[float],
+        line_weights: list[float],
         base_anchor_size: float = 1.0,
         reg_max: int = 32,
-        alpha: float = 0.25,
         gamma: float = 2.0,
     ):
         super().__init__()
@@ -99,8 +100,10 @@ class DFINECriterion(nn.Module):
         self.weights = weights
         self.base_anchor_size = base_anchor_size
         self.reg_max = reg_max
-        self.alpha = alpha
         self.gamma = gamma
+
+        self.register_buffer("symbol_weights", torch.tensor(symbol_weights, dtype=torch.float32))
+        self.register_buffer("line_weights", torch.tensor(line_weights, dtype=torch.float32))
 
         # We need the weighting function to map target residuals back to discrete bins
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
@@ -111,6 +114,7 @@ class DFINECriterion(nn.Module):
         flat_idx: FlattenedIndices,
         matched_classes: torch.Tensor,
         num_boxes: float,
+        alpha_weights: torch.Tensor,
     ) -> torch.Tensor:
         """Classification loss (Focal Loss) applied to ALL predictions."""
         # Create a target tensor filled with 0s (Background)
@@ -123,7 +127,7 @@ class DFINECriterion(nn.Module):
         loss_ce = sigmoid_focal_loss(
             src_logits,
             target_classes,
-            alpha=self.alpha,
+            alpha=alpha_weights,
             gamma=self.gamma,
             reduction="none",
         )
@@ -134,26 +138,28 @@ class DFINECriterion(nn.Module):
         self,
         src_boxes: torch.Tensor,
         matched_boxes: torch.Tensor,
+        matched_classes: torch.Tensor,
+        class_weights: torch.Tensor,
         num_boxes: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """L1 and GIoU loss applied ONLY to matched predictions."""
+        w = class_weights[matched_classes]
+
         # Convert to CXCYWH for L1 loss
         src_boxes_cxcywh = box_xyxy_to_cxcywh(src_boxes)
         matched_boxes_cxcywh = box_xyxy_to_cxcywh(matched_boxes)
 
         # 1. L1 Loss
-        loss_bbox = (
-            F.l1_loss(
-                src_boxes_cxcywh, matched_boxes_cxcywh, reduction="none"
-            ).sum()
-            / num_boxes
-        )
+        loss_bbox = F.l1_loss(
+            src_boxes_cxcywh, matched_boxes_cxcywh, reduction="none"
+        ).sum(dim=-1)
+        loss_bbox = (loss_bbox * w).sum() / num_boxes
 
         # 2. GIoU Loss
         loss_giou = 1 - torch.diag(
             generalized_box_iou(src_boxes, matched_boxes)
         )
-        loss_giou = loss_giou.sum() / num_boxes
+        loss_giou = (loss_giou * w).sum() / num_boxes
 
         return loss_bbox, loss_giou
 
@@ -163,9 +169,13 @@ class DFINECriterion(nn.Module):
         src_centers: torch.Tensor,
         src_shapes: torch.Tensor,
         matched_boxes: torch.Tensor,
+        matched_classes: torch.Tensor,
+        class_weights: torch.Tensor,
         num_boxes: float,
     ) -> torch.Tensor:
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
+        w_class = class_weights[matched_classes]
+
         # Detach the targets so the network doesn't cheat by shrinking the anchors
         with torch.no_grad():
             cx, cy = src_centers[:, 0], src_centers[:, 1]
@@ -213,7 +223,8 @@ class DFINECriterion(nn.Module):
             * w_right
         )
 
-        loss_fgl = (loss_left + loss_right).sum() / num_boxes
+        loss_fgl = (loss_left + loss_right).sum(dim=-1)
+        loss_fgl = (loss_fgl * w_class).sum() / num_boxes
 
         return loss_fgl
 
@@ -223,8 +234,12 @@ class DFINECriterion(nn.Module):
         src_centers: torch.Tensor,
         src_base_dirs: torch.Tensor,
         matched_keypoints: torch.Tensor,
+        matched_classes: torch.Tensor,
+        class_weights: torch.Tensor,
         num_lines: float,
     ) -> torch.Tensor:
+        w_class = class_weights[matched_classes]
+
         with torch.no_grad():
             cx, cy = src_centers[:, 0], src_centers[:, 1]
             base_x1, base_y1, base_x2, base_y2 = (
@@ -269,7 +284,8 @@ class DFINECriterion(nn.Module):
             * w_right
         )
 
-        loss_fgl = (loss_left + loss_right).sum() / num_lines
+        loss_fgl = (loss_left + loss_right).sum(dim=-1)
+        loss_fgl = (loss_fgl * w_class).sum() / num_lines
 
         return loss_fgl
 
@@ -328,16 +344,23 @@ class DFINECriterion(nn.Module):
             sym_flat_idx,
             matched_sym_labels,
             num_symbols,
+            self.symbol_weights,
         )
         if len(matched_sym_boxes) > 0:
             loss_bbox_sym, loss_giou_sym = self.loss_boxes(
-                matched_sym_outputs.boxes, matched_sym_boxes, num_symbols
+                matched_sym_outputs.boxes, 
+                matched_sym_boxes, 
+                matched_sym_labels,
+                self.symbol_weights,
+                num_symbols
             )
             loss_fgl_sym = self.loss_fgl_symbols(
                 matched_sym_outputs.edge_logits,
                 matched_sym_outputs.centers,
                 matched_sym_outputs.shapes,
                 matched_sym_boxes,
+                matched_sym_labels,
+                self.symbol_weights,
                 num_symbols,
             )
         else:
@@ -366,20 +389,21 @@ class DFINECriterion(nn.Module):
             line_flat_idx,
             matched_line_labels,
             num_lines,
+            self.line_weights,
         )
 
         if len(matched_line_keypoints) > 0:
             matched_line_kp_preds = outputs.lines.pred_keypoints.data[
                 line_flat_idx.batch, line_flat_idx.src
             ]
-            loss_l1_line = (
-                F.l1_loss(
-                    matched_line_kp_preds,
-                    matched_line_keypoints,
-                    reduction="none",
-                ).sum()
-                / num_lines
-            )
+            w_line = self.line_weights[matched_line_labels]
+            
+            loss_l1_line = F.l1_loss(
+                matched_line_kp_preds,
+                matched_line_keypoints,
+                reduction="none",
+            ).sum(dim=-1)
+            loss_l1_line = (loss_l1_line * w_line).sum() / num_lines
 
             loss_fgl_line = self.loss_fgl_lines(
                 outputs.lines.pred_endpoint_logits.data[
@@ -392,6 +416,8 @@ class DFINECriterion(nn.Module):
                     line_flat_idx.batch, line_flat_idx.src
                 ],
                 matched_line_keypoints,
+                matched_line_labels,
+                self.line_weights,
                 num_lines,
             )
         else:

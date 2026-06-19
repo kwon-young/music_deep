@@ -578,6 +578,8 @@ def train(params: TrainParams):
         num_symbol_classes=params.num_symbol_classes,
         num_line_classes=params.num_line_classes,
         weights=weights,
+        symbol_weights=params.dataset.symbol_weights,
+        line_weights=params.dataset.line_weights,
         base_anchor_size=params.base_anchor_size,
     ).to(params.train_device)
 
