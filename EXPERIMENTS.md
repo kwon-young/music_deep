@@ -96,8 +96,8 @@
   * Crop Size: 3584x3584
   * Data: A single image batch repeated infinitely (`repeat(batch)`).
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/009_single_image_overfit_scale_3584_patch_64_symbol_budget --crop_size 3584 --patch_size 64 --base_anchor_size 1.0 --lr 1e-4 --epochs 1000`
-* **Results**: The Symbol Budget LR scheduler worked perfectly, smoothly warming up to 1e-4 and decaying to ~2e-8 over the 1000 epochs (365,000 symbols). Total loss dropped from ~2603 to ~12.7, and CE loss dropped significantly, showing the model learned to classify objects. However, localization metrics plateaued: mIoU reached ~0.28 and mAP@0.5 ended at ~0.0093. Visually, the bounding boxes were reasonable, but the strict 0.5 IoU threshold is highly unforgiving for thin objects (4px staff lines, 5px stems) when predicted from a coarse 64x64 patch grid.
-* **Conclusion**: The engineering components (patch dropping, dynamic shapes, symbol budget scheduler) are fully validated and working as intended. The poor mAP at patch size 64 is a spatial resolution limitation—predicting pixel-perfect boundaries for thin objects from massive 64x64 patches requires longer training and careful LR tuning. Since the primary goal of the overfitting track (sanity checking the architecture and scaling mechanisms) has been achieved, we will conclude this track here rather than over-optimizing hyperparameters for a single image.
+* **Results**: The Symbol Budget LR scheduler worked perfectly, smoothly warming up to 1e-4 and decaying to ~2e-8 over the 1000 epochs (365,000 symbols). Total loss dropped from ~2603 to ~12.7, and CE loss dropped significantly, showing the model learned to classify objects. However, localization metrics plateaued: mIoU reached ~0.28 and mAP@0.5 ended at ~0.0093. Visually, the bounding boxes were reasonable, but the strict 0.5 IoU threshold is highly unforgiving for thin objects (4px staff lines, 5px stems).
+* **Conclusion**: The engineering components (patch dropping, dynamic shapes, symbol budget scheduler) are fully validated and working as intended. Predicting pixel-perfect boundaries for thin objects requires longer training and careful LR tuning. Since the primary goal of the overfitting track (sanity checking the architecture and scaling mechanisms) has been achieved, we will conclude this track here rather than over-optimizing hyperparameters for a single image.
 
 ## Experiment 010: Full Dataset Training Baseline
 * **Experiment Name/ID**: `experiments/010_full_dataset_baseline`
@@ -108,7 +108,7 @@
   * Data: Full Trompa-COCO dataset, iterating over all images with a shuffle buffer.
   * Command: `mamba run -n pytorch python src/train_detection.py --exp_dir experiments/010_full_dataset_baseline --patch_size 64 --epochs 10 --use_sdpa --use_amp --prep_device cuda:0 --train_device cuda:1 --match_device cuda:1`
 * **Results**: The pipeline successfully processed the full dataset without OOM errors, validating the lazy-loading index strategy and the memory efficiency of AMP and SDPA. The Symbol Budget LR scheduler worked perfectly. The model learned effectively, with total loss dropping from ~1988 to ~4.28 (driven mostly by CE loss dropping to ~1.81). Localization improved, with mIoU climbing to ~0.4889. However, `mAP@0.5` remained low at ~0.0181. Processing speed improved to ~1.0 samples/s.
-* **Conclusion**: The full-dataset pipeline, dynamic shapes, patch dropping, and custom LR scheduler work seamlessly at scale. Using full images with AMP and SDPA improved throughput. However, `patch_size=64` is still too coarse for the strict 0.5 IoU threshold required for thin music symbols (staff lines, stems). To achieve high mAP, a smaller patch size (16 or 32) is required, which will necessitate a smaller crop size (896 or 1792) to maintain memory/speed efficiency. This concludes the detection scaling and baseline track.
+* **Conclusion**: The full-dataset pipeline, dynamic shapes, patch dropping, and custom LR scheduler work seamlessly at scale. Using full images with AMP and SDPA improved throughput. However, the strict 0.5 IoU threshold remains challenging for thin music symbols (staff lines, stems). This concludes the detection scaling and baseline track.
 
 ## Experiment 011: Full Dataset Checkpoint (Fixes & DDP)
 * **Experiment Name/ID**: `experiments/011_full_dataset_fixes_and_ddp`
@@ -136,7 +136,7 @@
         --log_epoch_interval 0.5
     ```
 * **Results**: The experiment successfully completed all 10 epochs. While the in-training batch-level `mAP@0.5` peaked at ~0.2356, the official full-dataset `pycocotools` evaluation yielded a global `mAP@0.5` of **0.047**. This discrepancy is due to `pycocotools` macro-averaging across all ~70 categories: over 40 rare or tiny classes scored 0.0000, heavily penalizing the global average. However, performance on common, distinct symbols was excellent: `noteheadBlack` (**0.9296**), `gClef` (**0.8549**), `stem` (**0.4428**), `accidentalFlat` (**0.4003**), and `fClef` (**0.3645**).
-* **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format allowed the model to learn meaningful localizations, as evidenced by the >0.85 AP on noteheads and clefs. The low global mAP is primarily a reflection of the dataset's long-tail distribution (rare classes) and the difficulty of localizing extremely thin/tiny symbols (like dots and ties) at the current 64x64 resolution. DDP provided excellent throughput.
+* **Conclusion**: The bug fixes and infrastructure improvements were highly successful. Merging the buggy `tie` categories and fixing the L1 loss format allowed the model to learn meaningful localizations, as evidenced by the >0.85 AP on noteheads and clefs. The low global mAP is primarily a reflection of the dataset's long-tail distribution (rare classes) and the difficulty of localizing extremely thin/tiny symbols (like dots and ties). DDP provided excellent throughput.
 
 ## Experiment 012: Log-Space Shape Prediction
 * **Experiment Name/ID**: `experiments/012_log_space_shapes`
@@ -160,7 +160,7 @@
         --log_epoch_interval 0.5
     ```
 * **Results**: The training metrics showed noticeable improvement in localization: `loss_bbox` dropped to 0.092 (from 0.126 in Exp 011) and `loss_fgl` dropped to 1.246 (from 1.410). The in-training batch `mAP@0.5` peaked higher at 0.262. The official `pycocotools` global `mAP@0.5` increased from 0.047 to **0.0577**. We saw massive jumps in specific classes: `fClef` (0.3645 -> 0.9479), `noteheadBlack` (0.9296 -> 0.9437), `accidentalSharp` (0.1691 -> 0.2437), `flag8thUp` (0.0455 -> 0.1577), and `ledgerLines` (0.0817 -> 0.1577). However, extremely thin objects like `staff` lines dropped to 0.0000.
-* **Conclusion**: Log-space shape prediction successfully improved overall localization and global mAP. It relieved the mathematical bottleneck on bounding box regression, allowing the network to scale predictions much more naturally. The trade-off observed on extremely thin objects (staff lines) suggests that while log-space is the correct mathematical approach for general shapes, predicting pixel-perfect boundaries for 4-pixel thick lines from a coarse 64x64 patch grid remains fundamentally difficult. This reinforces the need for specialized representations (like keypoints) for lines, or higher spatial resolution.
+* **Conclusion**: Log-space shape prediction successfully improved overall localization and global mAP. It relieved the mathematical bottleneck on bounding box regression, allowing the network to scale predictions much more naturally. The trade-off observed on extremely thin objects (staff lines) suggests that while log-space is the correct mathematical approach for general shapes, predicting pixel-perfect boundaries for 4-pixel thick lines remains fundamentally difficult. This reinforces the need for specialized representations (like keypoints) for lines.
 
 ## Experiment 013: Dual-Head Architecture for Symbols and Lines
 * **Experiment Name/ID**: `experiments/013_dual_head_lines_and_symbols`
@@ -232,11 +232,11 @@
         --log_epoch_interval 0.5
     ```
 * **Results**: Training completed stably with `loss_total` dropping to 8.40 and `loss_line_l1` dropping to 4.46. The `line_error` decreased to 0.63. In evaluation, global mAP@0.5 was 0.0155 for symbols and 0.0230 for lines. For specific line classes, `system` achieved 0.3007 mAP@0.5, `beam` 0.0195, and `stem` 0.0144, while `staff` scored near zero. For symbols, `noteheadBlack` achieved 0.8477 and `gClef` 0.6365.
-* **Conclusion**: The Signed Log formulation successfully stabilized the training gradients for the line head, allowing the losses to converge. However, the overall mAP for both lines and symbols remains low at the current 64x64 patch resolution.
+* **Conclusion**: The Signed Log formulation successfully stabilized the training gradients for the line head, allowing the losses to converge. However, the overall mAP for both lines and symbols remains low and requires further investigation.
 
 ## Experiment 016: ViT-Small Baseline
 * **Experiment Name/ID**: `experiments/016_vit_small_baseline`
-* **Hypothesis/Goal**: Verify if scaling up the backbone capacity from `vit-nano` to `vit-small` improves the overall mAP for both symbols and lines. The increased capacity might help the network better resolve fine-grained details and context from the coarse 64x64 patches.
+* **Hypothesis/Goal**: Verify if scaling up the backbone capacity from `vit-nano` to `vit-small` improves the overall mAP for both symbols and lines. The increased capacity might help the network better resolve fine-grained details and context.
 * **Setup**: 
   * Model: `vit_small` (patch_size=64) with `SymbolHead` and `LineHead` (Signed Log formulation).
   * Crop Size: Full Image (None)

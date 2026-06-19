@@ -48,3 +48,11 @@ $ jq . data/imslp/imslp.jsonl
 }
 ...
 ```
+
+### Trompa-COCO
+
+The Trompa-COCO dataset is a synthetic dataset of full-page music scores. Key characteristics and design decisions for this project include:
+- **Synthetic & Sparse**: The dataset is synthetic, and the visual information is fundamentally very sparse.
+- **Interline Height**: The interline height is ~64 pixels, which perfectly aligns with our chosen patch size of 64.
+- **Full-Page Training**: We train strictly on full pages (resolutions around 6400x8000). This avoids the headache of handling partial/cut symbols at the edges of crops and preserves the true underlying symbol distribution, which is critical for class rebalancing.
+- **Patch Size 64 is Non-Negotiable**: Given the massive full-page resolutions, using a patch size of 64 is the absolute minimum feasible size to fit in memory. Do not attempt to reduce the patch size to solve localization issues; the 64x64 patch size is a strict constraint of the domain.
