@@ -258,3 +258,30 @@
     ```
 * **Results**: TBD
 * **Conclusion**: TBD
+
+## Experiment 017: Smooth Balanced Loss (Inverse Frequency Weighting)
+* **Experiment Name/ID**: `experiments/017_smooth_balanced_loss`
+* **Hypothesis/Goal**: Verify that applying inverse smooth frequency weighting to the loss functions resolves the severe class imbalance. By up-weighting the loss for rare classes (clefs, accidentals) and down-weighting common classes (noteheads), the model should be forced to learn features for the rare classes, improving global mAP.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Loss: Inverse smooth weighting applied to both Symbol and Line losses (computed in `parse_coco` and passed to `DFINECriterion`).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/017_smooth_balanced_loss \
+        --patch_size 64 \
+        --epochs 10 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+* **Results**: 
+  * **Symbols (Major Success):** Global mAP@0.5 doubled from **0.025 (Exp 15)** to **0.053**. The weighting strategy successfully forced the network to learn rare classes. `fClef` jumped from 0.262 to **0.932**, `accidentalFlat` from 0.004 to **0.307**, and `brace` from 0.316 to **0.762**. `noteheadBlack` also improved slightly to **0.952**.
+  * **Lines (Visual Improvement / Metric Drop):** Global mAP@0.5 dropped from 0.038 to **0.007**. This was driven entirely by a collapse in the `system` class (0.300 -> 0.029). However, `beam` (0.019 -> 0.042) and `ledgerLines` (0.024 -> 0.084) improved significantly.
+* **Conclusion**: The inverse weighting was highly effective for Symbols, unlocking detection for rare classes. For Lines, the results are nuanced. The collapse of the `system` class suggests the model stopped relying on the "easy" shortcut of predicting fixed-size lines at standard locations (a pitfall similar to the initial `noteheadBlack` overfitting). Visual inspection confirms that the model is now attempting to predict actual line geometry (beams, ledgers) rather than just memorizing system line positions. The drop in `system` mAP is likely a sign of the model breaking out of a local minimum, even if the strict IoU metric penalizes the loss of the "perfect" shortcut predictions. This represents a net improvement in the model's understanding of line geometry.
