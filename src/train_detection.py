@@ -98,6 +98,10 @@ class TrainParams:
     log_epoch_interval: float
     var_threshold: float | None
     drop_rate: float | None
+    max_translate_frac: float
+    max_angle_deg: float
+    max_shear_deg: float
+    max_scale: float
     log_patches: bool
     compile: bool
     use_sdpa: bool
@@ -133,6 +137,10 @@ def transform_image(
     patch_size: int,
     crop_size: int | None,
     prep_device: torch.device,
+    max_translate_frac: float,
+    max_angle_deg: float,
+    max_shear_deg: float,
+    max_scale: float,
 ) -> Data[
     CocoMetadata,
     DetectionSample[
@@ -143,7 +151,7 @@ def transform_image(
         ClassLabels,
     ],
 ]:
-    """Preprocessing: Load -> Decode/Crop -> Float1 -> Pad -> Normalize."""
+    """Preprocessing: Load -> Decode/Crop -> Float1 -> Augment -> Pad -> Normalize."""
     item = load_coco_sample(dataset, img_dir, index)
 
     if prep_device.type == "cuda":
@@ -161,8 +169,17 @@ def transform_image(
             item_cropped = det_tf.decode_pyvips(item, device=prep_device)
 
     item_tf = det_tf.to_float1(item_cropped)
+    
+    item_aug = det_tf.random_affine(
+        item_tf,
+        max_translate_frac=max_translate_frac,
+        max_angle_deg=max_angle_deg,
+        max_shear_deg=max_shear_deg,
+        max_scale=max_scale,
+    )
+
     item_padded = det_tf.pad_to_patch_size(
-        item_tf, patch_size=(patch_size, patch_size)
+        item_aug, patch_size=(patch_size, patch_size)
     )
 
     # Normalize boxes and keypoints using the patch size
@@ -216,6 +233,10 @@ def create_detection_iterator(
                     params.patch_size,
                     params.crop_size,
                     params.prep_device,
+                    max_translate_frac=params.max_translate_frac,
+                    max_angle_deg=params.max_angle_deg,
+                    max_shear_deg=params.max_shear_deg,
+                    max_scale=params.max_scale,
                 )
                 for idx in indices
             )
@@ -858,6 +879,13 @@ if __name__ == "__main__":
         default=None,
         help="Fraction of patches to keep based on variance",
     )
+    
+    # Augmentation params
+    parser.add_argument("--max_translate_frac", type=float, default=0.05, help="Max translation fraction")
+    parser.add_argument("--max_angle_deg", type=float, default=2.0, help="Max rotation angle in degrees")
+    parser.add_argument("--max_shear_deg", type=float, default=2.0, help="Max shear angle in degrees")
+    parser.add_argument("--max_scale", type=float, default=1.1, help="Max scale factor (e.g. 1.1 for +/- 10%)")
+
     parser.add_argument(
         "--log_patches",
         action="store_true",
@@ -972,6 +1000,10 @@ if __name__ == "__main__":
         log_epoch_interval=args.log_epoch_interval,
         var_threshold=args.var_threshold,
         drop_rate=args.drop_rate,
+        max_translate_frac=args.max_translate_frac,
+        max_angle_deg=args.max_angle_deg,
+        max_shear_deg=args.max_shear_deg,
+        max_scale=args.max_scale,
         log_patches=args.log_patches,
         compile=args.compile,
         use_sdpa=args.use_sdpa,

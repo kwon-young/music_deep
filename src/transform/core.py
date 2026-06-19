@@ -490,6 +490,185 @@ def random_affine_img[B: Batch, M: Mode, R: Range](
     return replace(image, data=transformed_data)
 
 
+def get_random_affine_params(
+    max_translate_frac: float,
+    max_angle_deg: float,
+    max_shear_deg: float,
+    max_scale: float,
+) -> tuple[float, float, float, float, float]:
+    """Generates random parameters for affine augmentation."""
+    apply_trans = random.random() > 0.5
+    tx_frac = random.uniform(-max_translate_frac, max_translate_frac) if apply_trans else 0.0
+    ty_frac = random.uniform(-max_translate_frac, max_translate_frac) if apply_trans else 0.0
+
+    apply_rot = random.random() > 0.5
+    angle_deg = random.uniform(-max_angle_deg, max_angle_deg) if apply_rot else 0.0
+
+    apply_shear = random.random() > 0.5
+    shear_deg = random.uniform(-max_shear_deg, max_shear_deg) if apply_shear else 0.0
+
+    apply_scale = random.random() > 0.5
+    scale = random.uniform(1.0 / max_scale, max_scale) if apply_scale else 1.0
+
+    return tx_frac, ty_frac, angle_deg, shear_deg, scale
+
+
+def get_affine_matrices(
+    img_h: int,
+    img_w: int,
+    tx_frac: float,
+    ty_frac: float,
+    angle_deg: float,
+    shear_deg: float,
+    scale: float,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Computes the forward (for targets) and inverse (for image) affine matrices."""
+    tx_px = tx_frac * img_w
+    ty_px = ty_frac * img_h
+    angle_rad = math.radians(angle_deg)
+    shear_rad = math.radians(shear_deg)
+
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    tan_s = math.tan(shear_rad)
+
+    cx, cy = img_w / 2.0, img_h / 2.0
+
+    t_center = torch.tensor([[1, 0, cx], [0, 1, cy], [0, 0, 1]], dtype=torch.float32, device=device)
+    t_center_inv = torch.tensor([[1, 0, -cx], [0, 1, -cy], [0, 0, 1]], dtype=torch.float32, device=device)
+    s_mat = torch.tensor([[scale, 0, 0], [0, scale, 0], [0, 0, 1]], dtype=torch.float32, device=device)
+    r_mat = torch.tensor([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=torch.float32, device=device)
+    sh_mat = torch.tensor([[1, tan_s, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.float32, device=device)
+    t_offset = torch.tensor([[1, 0, tx_px], [0, 1, ty_px], [0, 0, 1]], dtype=torch.float32, device=device)
+
+    # Forward Matrix: Center -> Scale -> Shear -> Rotate -> Uncenter -> Translate
+    fwd_matrix = t_offset @ t_center @ r_mat @ sh_mat @ s_mat @ t_center_inv
+
+    # Inverse Matrix for grid_sample
+    inv_pixel = torch.inverse(fwd_matrix)
+
+    # Convert to normalized coordinates [-1, 1] for grid_sample
+    n2p = torch.tensor([
+        [img_w / 2.0, 0, img_w / 2.0],
+        [0, img_h / 2.0, img_h / 2.0],
+        [0, 0, 1]
+    ], dtype=torch.float32, device=device)
+    
+    p2n = torch.tensor([
+        [2.0 / img_w, 0, -1.0],
+        [0, 2.0 / img_h, -1.0],
+        [0, 0, 1]
+    ], dtype=torch.float32, device=device)
+    
+    theta_norm = p2n @ inv_pixel @ n2p
+    theta_grid = theta_norm[:2, :].unsqueeze(0)
+    
+    return fwd_matrix, theta_grid
+
+
+def affine_img[C: Channel, M: Mode](
+    image: TensorImage[tuple[C, Height, Width], M, Float1],
+    theta_grid: torch.Tensor,
+) -> TensorImage[tuple[C, Height, Width], M, Float1]:
+    """Applies affine transformation, padding with white (1.0) using in-place ops to save VRAM."""
+    c, h, w = image.data.shape
+    grid = F.affine_grid(theta_grid, [1, c, h, w], align_corners=False)
+    
+    # In-place invert input: 0.0 (black) becomes 1.0, 1.0 (white) becomes 0.0
+    image.data.mul_(-1.0).add_(1.0)
+    
+    # grid_sample allocates the output tensor and pads out-of-bounds with 0.0
+    transformed_data = F.grid_sample(
+        image.data.unsqueeze(0), grid, mode="bilinear", padding_mode="zeros", align_corners=False
+    )
+    
+    # In-place invert output back to normal: 0.0 padding becomes 1.0 (white)
+    transformed_data.mul_(-1.0).add_(1.0)
+    
+    return replace(image, data=transformed_data.squeeze(0))
+
+
+def affine_boxes_xyxy[
+    B: NumBoxes, D: BoxDim, R: BoxRange, O: Origin, C: NumSymbolClasses
+](
+    boxes: BoundingBoxes[tuple[B, D], XYXY, R, O],
+    labels: ClassLabels[tuple[B], C],
+    fwd_matrix: torch.Tensor,
+    img_w: int,
+    img_h: int,
+) -> tuple[BoundingBoxes[tuple[NumBoxes, D], XYXY, R, O], ClassLabels[tuple[NumBoxes], C]]:
+    """Applies affine transformation, clips to image, and filters invalid boxes."""
+    if len(boxes.data) == 0:
+        return boxes, labels
+
+    x1, y1 = boxes.data[:, 0], boxes.data[:, 1]
+    x2, y2 = boxes.data[:, 2], boxes.data[:, 3]
+    
+    corners = torch.stack([
+        torch.stack([x1, y1, torch.ones_like(x1)], dim=-1),
+        torch.stack([x2, y1, torch.ones_like(x1)], dim=-1),
+        torch.stack([x1, y2, torch.ones_like(x1)], dim=-1),
+        torch.stack([x2, y2, torch.ones_like(x1)], dim=-1),
+    ], dim=1)
+
+    transformed_corners = torch.einsum('ij,nkj->nki', fwd_matrix, corners)
+
+    new_x = transformed_corners[:, :, 0]
+    new_y = transformed_corners[:, :, 1]
+
+    new_x1 = new_x.min(dim=1).values.clamp(min=0, max=img_w)
+    new_y1 = new_y.min(dim=1).values.clamp(min=0, max=img_h)
+    new_x2 = new_x.max(dim=1).values.clamp(min=0, max=img_w)
+    new_y2 = new_y.max(dim=1).values.clamp(min=0, max=img_h)
+
+    valid = (new_x2 > new_x1) & (new_y2 > new_y1)
+
+    new_boxes = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
+    
+    return replace(boxes, data=new_boxes[valid]), replace(labels, data=labels.data[valid])
+
+
+def affine_keypoints[
+    K: NumKeypoints, D: KeypointDim, R: KeypointRange, O: Origin, C: NumLineClasses
+](
+    keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, R, O],
+    labels: ClassLabels[tuple[K], C],
+    fwd_matrix: torch.Tensor,
+    img_w: int,
+    img_h: int,
+) -> tuple[Keypoints[tuple[NumKeypoints, D], X1Y1X2Y2, R, O], ClassLabels[tuple[NumKeypoints], C]]:
+    """Applies affine transformation, clips to image, and filters invalid keypoints."""
+    if len(keypoints.data) == 0:
+        return keypoints, labels
+
+    x1, y1 = keypoints.data[:, 0], keypoints.data[:, 1]
+    x2, y2 = keypoints.data[:, 2], keypoints.data[:, 3]
+
+    points = torch.stack([
+        torch.stack([x1, y1, torch.ones_like(x1)], dim=-1),
+        torch.stack([x2, y2, torch.ones_like(x2)], dim=-1),
+    ], dim=1)
+
+    transformed_points = torch.einsum('ij,nkj->nki', fwd_matrix, points)
+
+    new_x1 = transformed_points[:, 0, 0].clamp(min=0, max=img_w)
+    new_y1 = transformed_points[:, 0, 1].clamp(min=0, max=img_h)
+    new_x2 = transformed_points[:, 1, 0].clamp(min=0, max=img_w)
+    new_y2 = transformed_points[:, 1, 1].clamp(min=0, max=img_h)
+
+    valid = ~(
+        ((new_x1 == 0) & (new_x2 == 0)) |
+        ((new_x1 == img_w) & (new_x2 == img_w)) |
+        ((new_y1 == 0) & (new_y2 == 0)) |
+        ((new_y1 == img_h) & (new_y2 == img_h))
+    )
+
+    new_kps = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
+
+    return replace(keypoints, data=new_kps[valid]), replace(labels, data=labels.data[valid])
+
+
 def random_patch_drop_indices(
     bv: int, n: int, drop_rate: float, device: torch.device
 ) -> torch.Tensor:

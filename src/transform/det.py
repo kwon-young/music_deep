@@ -23,6 +23,11 @@ from .core import (
     crop_keypoints,
     normalize_boxes_img,
     normalize_keypoints_img,
+    get_random_affine_params,
+    get_affine_matrices,
+    affine_img,
+    affine_boxes_xyxy,
+    affine_keypoints,
 )
 from music_types import (
     DetectionSample,
@@ -284,6 +289,47 @@ def random_crop[
         box_labels=new_box_labels,
         keypoints=new_keypoints,
         keypoint_labels=new_keypoint_labels,
+    )
+
+
+@transform
+def random_affine[T: DetectionSample](
+    sample: T,
+    max_translate_frac: float,
+    max_angle_deg: float,
+    max_shear_deg: float,
+    max_scale: float,
+) -> T:
+    """Applies random affine augmentation to image and targets."""
+    _, h, w = sample.image.data.shape
+    device = sample.image.data.device
+
+    tx, ty, angle, shear, scale = get_random_affine_params(
+        max_translate_frac, max_angle_deg, max_shear_deg, max_scale
+    )
+
+    fwd_matrix, theta_grid = get_affine_matrices(
+        img_h=h, img_w=w,
+        tx_frac=tx, ty_frac=ty,
+        angle_deg=angle, shear_deg=shear, scale=scale,
+        device=device
+    )
+
+    new_img = affine_img(sample.image, theta_grid)
+    new_boxes, new_box_labels = affine_boxes_xyxy(
+        sample.boxes, sample.box_labels, fwd_matrix, w, h
+    )
+    new_kps, new_kp_labels = affine_keypoints(
+        sample.keypoints, sample.keypoint_labels, fwd_matrix, w, h
+    )
+
+    return replace(
+        sample,
+        image=new_img,
+        boxes=new_boxes,
+        box_labels=new_box_labels,
+        keypoints=new_kps,
+        keypoint_labels=new_kp_labels,
     )
 
 
