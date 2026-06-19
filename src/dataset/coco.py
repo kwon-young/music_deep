@@ -228,7 +228,7 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
 
 
 def load_coco_sample(
-    dataset: CocoDataset, img_dir: Path, index: int
+    dataset: CocoDataset, img_dir: Path, index: int, device: torch.device
 ) -> Data[
     CocoMetadata,
     DetectionSample[
@@ -266,14 +266,14 @@ def load_coco_sample(
             boxes.append([x, y, x + w, y + h])
             box_labels.append(mapped_label)
 
-    # Use reshape to ensure correct dimensions even if empty
-    boxes_tensor = torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4)
-    box_labels_tensor = torch.tensor(box_labels, dtype=torch.int64)
+    # Create tensors directly on the target device
+    boxes_tensor = torch.tensor(boxes, dtype=torch.float32, device=device).reshape(-1, 4)
+    box_labels_tensor = torch.tensor(box_labels, dtype=torch.int64, device=device)
 
-    keypoints_tensor = torch.tensor(keypoints, dtype=torch.float32).reshape(
+    keypoints_tensor = torch.tensor(keypoints, dtype=torch.float32, device=device).reshape(
         -1, 4
     )
-    keypoint_labels_tensor = torch.tensor(keypoint_labels, dtype=torch.int64)
+    keypoint_labels_tensor = torch.tensor(keypoint_labels, dtype=torch.int64, device=device)
 
     return Data(
         metadata=img_meta,

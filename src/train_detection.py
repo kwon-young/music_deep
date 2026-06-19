@@ -152,7 +152,7 @@ def transform_image(
     ],
 ]:
     """Preprocessing: Load -> Decode/Crop -> Float1 -> Augment -> Pad -> Normalize."""
-    item = load_coco_sample(dataset, img_dir, index)
+    item = load_coco_sample(dataset, img_dir, index, prep_device)
 
     if prep_device.type == "cuda":
         item_decoded = det_tf.decode_nvimgcodec(item, device=prep_device)

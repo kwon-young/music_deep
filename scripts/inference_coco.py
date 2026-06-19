@@ -27,10 +27,11 @@ def process_single_image(
 ):
     img_meta = dataset.images[i]
 
-    # Load sample
-    item = load_coco_sample(dataset, args.img_dir, i)
+    # Load sample with tensors on the target device
+    item = load_coco_sample(dataset, args.img_dir, i, device)
 
     # Decode and transform
+    # Note: decode_nvimgcodec handles the image, boxes/keypoints are already on device
     if device.type == "cuda":
         try:
             item_decoded = det_tf.decode_nvimgcodec(item, device=device)
