@@ -256,8 +256,8 @@
         --compile \
         --log_epoch_interval 0.5
     ```
-* **Results**: TBD
-* **Conclusion**: TBD
+* **Results**: Training losses converged well, with `loss_total` dropping to ~0.817, `loss_ce` to ~0.394, `loss_bbox` to ~0.065, and `loss_line_l1` to ~0.285. However, the official COCO evaluation showed a significant drop in performance. For symbols, global mAP@0.5 dropped to **0.0236** (from 0.053 in Exp 017). While `noteheadBlack` remained robust at 0.959, performance on rare, complex classes collapsed: `fClef` dropped to 0.115 (from 0.932) and `brace` dropped to 0.056 (from 0.762). For lines, global mAP@0.5 dropped slightly to **0.0055**, with `system` lines remaining collapsed at 0.0003, but `beam` detection improving to 0.0729 (from 0.042).
+* **Conclusion**: While affine augmentations successfully prevented the model from memorizing absolute grid positions (evidenced by the continued collapse of `system` lines and the improvement in relative structures like `beam`), they were too aggressive for rare, highly-structured symbol classes. The distortion introduced by rotation, shear, and scale destroyed the performance gains achieved in Exp 017 for complex shapes like clefs and braces, causing the global symbol mAP to drop significantly.
 
 ## Experiment 017: Smooth Balanced Loss (Inverse Frequency Weighting)
 * **Experiment Name/ID**: `experiments/017_smooth_balanced_loss`
