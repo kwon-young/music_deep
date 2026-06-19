@@ -98,6 +98,7 @@ class TrainParams:
     log_epoch_interval: float
     var_threshold: float | None
     drop_rate: float | None
+    affine: bool
     max_translate_frac: float
     max_angle_deg: float
     max_shear_deg: float
@@ -137,6 +138,7 @@ def transform_image(
     patch_size: int,
     crop_size: int | None,
     prep_device: torch.device,
+    affine: bool,
     max_translate_frac: float,
     max_angle_deg: float,
     max_shear_deg: float,
@@ -170,13 +172,16 @@ def transform_image(
 
     item_tf = det_tf.to_float1(item_cropped)
     
-    item_aug = det_tf.random_affine(
-        item_tf,
-        max_translate_frac=max_translate_frac,
-        max_angle_deg=max_angle_deg,
-        max_shear_deg=max_shear_deg,
-        max_scale=max_scale,
-    )
+    if affine:
+        item_aug = det_tf.random_affine(
+            item_tf,
+            max_translate_frac=max_translate_frac,
+            max_angle_deg=max_angle_deg,
+            max_shear_deg=max_shear_deg,
+            max_scale=max_scale,
+        )
+    else:
+        item_aug = item_tf
 
     item_padded = det_tf.pad_to_patch_size(
         item_aug, patch_size=(patch_size, patch_size)
@@ -233,6 +238,7 @@ def create_detection_iterator(
                     params.patch_size,
                     params.crop_size,
                     params.prep_device,
+                    affine=params.affine,
                     max_translate_frac=params.max_translate_frac,
                     max_angle_deg=params.max_angle_deg,
                     max_shear_deg=params.max_shear_deg,
@@ -881,6 +887,7 @@ if __name__ == "__main__":
     )
     
     # Augmentation params
+    parser.add_argument("--affine", action="store_true", help="Enable random affine augmentations")
     parser.add_argument("--max_translate_frac", type=float, default=0.05, help="Max translation fraction")
     parser.add_argument("--max_angle_deg", type=float, default=2.0, help="Max rotation angle in degrees")
     parser.add_argument("--max_shear_deg", type=float, default=2.0, help="Max shear angle in degrees")
@@ -1000,6 +1007,7 @@ if __name__ == "__main__":
         log_epoch_interval=args.log_epoch_interval,
         var_threshold=args.var_threshold,
         drop_rate=args.drop_rate,
+        affine=args.affine,
         max_translate_frac=args.max_translate_frac,
         max_angle_deg=args.max_angle_deg,
         max_shear_deg=args.max_shear_deg,
