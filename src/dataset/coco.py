@@ -195,6 +195,16 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
 
         annotations.setdefault(img_id, []).append(parsed_ann)
 
+    if os.environ.get("LOCAL_RANK", "0") == "0":
+        print("\n--- Symbol Class Frequencies ---")
+        for idx, cat in enumerate(symbol_categories):
+            print(f"  {cat['name']:<30}: {symbol_counts[idx]}")
+        
+        print("\n--- Line Class Frequencies ---")
+        for idx, cat in enumerate(line_categories):
+            print(f"  {cat['name']:<30}: {line_counts[idx]}")
+        print("--------------------------------\n")
+
     symbol_weights = _compute_smoothed_weights(symbol_counts, len(symbol_categories))
     line_weights = _compute_smoothed_weights(line_counts, len(line_categories))
 
