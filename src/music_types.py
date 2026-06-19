@@ -408,6 +408,13 @@ class DetectionOutput[
 
 
 @dataclass
+class MaskedPair[B: Batch, N: NumPatches, D: EmbedDim | PatchDim](DetachMixin):
+    """Holds a pair of target (full) and context (masked) embeddings/patches."""
+    target: Embeddings[B, N, D]
+    context: Embeddings[B, NumPatches, D]
+
+
+@dataclass
 class SSLSample[I]:
     image: I
 

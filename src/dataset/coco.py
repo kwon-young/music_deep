@@ -12,6 +12,7 @@ from music_types import (
     LazyImage,
     RGB,
     Int255,
+    SSLSample,
     DetectionSample,
     BoundingBoxes,
     ClassLabels,
@@ -225,6 +226,26 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
             pickle.dump(dataset, f)
 
     return dataset
+
+
+def load_coco_ssl_sample(
+    dataset: CocoDataset, img_dir: Path, index: int
+) -> Data[CocoMetadata, SSLSample[LazyImage]]:
+    """Loads a single COCO sample for SSL (ignoring annotations)."""
+    img_meta = dataset.images[index]
+    img_path = img_dir / img_meta.file_name
+
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image not found: {img_path}")
+
+    return Data(
+        metadata=img_meta,
+        sample=SSLSample(
+            image=LazyImage(
+                path=img_path, width=img_meta.width, height=img_meta.height
+            )
+        ),
+    )
 
 
 def load_coco_sample(

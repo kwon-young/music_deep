@@ -4,10 +4,14 @@ from dataclasses import replace
 from .core import (
     transform,
     batched_transform,
+    decode_nvimgcodec_img,
+    decode_pyvips_img,
+    decode_and_crop_pyvips_img,
     to_numpy_img,
     to_tensor_img,
     to_float1_img,
     to_device,
+    to_device_embeddings,
     make_views_img,
     extract_flatviewpatches_img,
     unflatten_views_img,
@@ -15,12 +19,21 @@ from .core import (
     crop_img,
     affine_matrix_params,
     random_affine_img,
+    get_random_affine_params,
+    get_affine_matrices,
+    affine_img,
+    pad_to_patch_size_img,
+    extract_patches_img,
     random_patch_drop_indices,
+    variance_patch_drop_indices,
+    spatial_mask_drop_indices,
     patch_drop_img,
     stack_tensor_img,
 )
 from music_types import (
     SSLSample,
+    MaskedPair,
+    LazyImage,
     PILImage,
     ArrayImage,
     TensorImage,
@@ -47,6 +60,7 @@ from music_types import (
     RGB,
     Int255,
     Float1,
+    Patches,
 )
 
 
@@ -76,6 +90,97 @@ def to[I: TensorImage](
     sample: SSLSample[I], device: torch.device
 ) -> SSLSample[I]:
     return SSLSample(image=to_device(sample.image, device))
+
+
+@transform
+def decode_nvimgcodec(sample: SSLSample[LazyImage], device: torch.device) -> SSLSample[TensorImage[CHW, RGB, Int255]]:
+    return SSLSample(image=decode_nvimgcodec_img(sample.image, device))
+
+
+@transform
+def decode_pyvips(sample: SSLSample[LazyImage], device: torch.device) -> SSLSample[TensorImage[CHW, RGB, Int255]]:
+    return SSLSample(image=decode_pyvips_img(sample.image, device))
+
+
+@transform
+def decode_and_crop_pyvips(sample: SSLSample[LazyImage], crop_size: int, device: torch.device) -> SSLSample[TensorImage[CHW, RGB, Int255]]:
+    h, w = sample.image.height, sample.image.width
+    x, y = random_crop_params(h, w, crop_size, torch.device("cpu"))
+    return SSLSample(image=decode_and_crop_pyvips_img(sample.image, x, y, crop_size, device))
+
+
+@transform
+def random_affine(
+    sample: SSLSample[TensorImage[tuple[Channel, Height, Width], Mode, Float1]], 
+    max_translate_frac: float, 
+    max_angle_deg: float, 
+    max_shear_deg: float, 
+    max_scale: float
+) -> SSLSample[TensorImage[tuple[Channel, Height, Width], Mode, Float1]]:
+    c, h, w = sample.image.data.shape
+    device = sample.image.data.device
+    tx, ty, angle, shear, scale = get_random_affine_params(max_translate_frac, max_angle_deg, max_shear_deg, max_scale)
+    fwd_matrix, theta_grid = get_affine_matrices(img_h=h, img_w=w, tx_frac=tx, ty_frac=ty, angle_deg=angle, shear_deg=shear, scale=scale, device=device)
+    return SSLSample(image=affine_img(sample.image, theta_grid))
+
+
+@transform
+def pad_to_patch_size[C: Channel, H: Height, W: Width, M: Mode, R: Range](
+    sample: SSLSample[TensorImage[tuple[C, H, W], M, R]], patch_size: tuple[int, int]
+) -> SSLSample[TensorImage[tuple[C, Height, Width], M, R]]:
+    return SSLSample(image=pad_to_patch_size_img(sample.image, patch_size))
+
+
+@batched_transform
+def extract_patches[B: Batch](
+    sample: SSLSample[TensorImage[tuple[B, *CHW], RGB, Float1]], patch_size: tuple[int, int]
+) -> SSLSample[Patches[B, NumPatches, PatchDim]]:
+    return SSLSample(image=extract_patches_img(sample.image, patch_size))
+
+
+@batched_transform
+def variance_patch_drop[I: Patches](
+    sample: SSLSample[I], var_threshold: float | None = None, drop_rate: float | None = None
+) -> SSLSample[I]:
+    ids_keep = variance_patch_drop_indices(sample.image.data, var_threshold=var_threshold, drop_rate=drop_rate)
+    new_img_base = patch_drop_img(sample.image, ids_keep)
+    new_img = replace(sample.image, data=new_img_base.data, indices=new_img_base.indices)
+    return SSLSample(image=new_img)
+
+
+@batched_transform
+def random_spatial_mask[B: Batch, N: NumPatches, P: PatchDim](
+    sample: SSLSample[Patches[B, N, P]], drop_ratio: float
+) -> SSLSample[MaskedPair[B, N, P]]:
+    target_patches = sample.image
+    _, _, w = target_patches.image_shape
+    _, pw = target_patches.patch_size
+    grid_w = w // pw
+    
+    ids_keep = spatial_mask_drop_indices(target_patches.indices, grid_w=grid_w, drop_ratio=drop_ratio)
+    context_patches = patch_drop_img(target_patches, ids_keep)
+    
+    return SSLSample(image=MaskedPair(target=target_patches, context=context_patches))
+
+
+def collate_images[Meta, C: Channel, H: Height, W: Width, M: Mode, R: Range](
+    batch: tuple[Data[Meta, SSLSample[TensorImage[tuple[C, H, W], M, R]]], ...]
+) -> BatchedData[Meta, SSLSample[TensorImage[tuple[Batch, C, H, W], M, R]]]:
+    m = [b.metadata for b in batch]
+    stacked_image = stack_tensor_img([b.sample.image for b in batch])
+    return BatchedData(metadata=m, sample=SSLSample(image=stacked_image))
+
+
+@transform
+def to_masked_patches[B: Batch, N: NumPatches, P: PatchDim](
+    sample: SSLSample[MaskedPair[B, N, P]], device: torch.device
+) -> SSLSample[MaskedPair[B, N, P]]:
+    return SSLSample(
+        image=MaskedPair(
+            target=to_device_embeddings(sample.image.target, device),
+            context=to_device_embeddings(sample.image.context, device)
+        )
+    )
 
 
 @transform

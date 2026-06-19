@@ -669,6 +669,45 @@ def affine_keypoints[
     return replace(keypoints, data=new_kps[valid]), replace(labels, data=labels.data[valid])
 
 
+def spatial_mask_drop_indices(
+    indices: torch.Tensor, 
+    grid_w: int, 
+    drop_ratio: float
+) -> torch.Tensor:
+    """
+    Drops a contiguous spatial region of patches from a sparse set of indices.
+    Returns the indices of the patches to KEEP.
+    """
+    b, n = indices.shape
+    device = indices.device
+    
+    drop_count = int(n * drop_ratio)
+    keep_count = n - drop_count
+    
+    if drop_count == 0:
+        return torch.arange(n, device=device).unsqueeze(0).expand(b, -1)
+
+    # 1. Convert 1D patch indices back to 2D grid coordinates
+    py = indices // grid_w
+    px = indices % grid_w
+    
+    # 2. Pick a random existing patch as the center of the mask for each batch item
+    center_idx = torch.randint(0, n, (b, 1), device=device)
+    cx = torch.gather(px, 1, center_idx)
+    cy = torch.gather(py, 1, center_idx)
+    
+    # 3. Compute squared spatial distance from the center to all patches
+    dist_sq = (px - cx)**2 + (py - cy)**2
+    
+    # 4. We want to DROP the closest patches, so we KEEP the ones with the LARGEST distances
+    _, keep_idx = torch.topk(dist_sq, k=keep_count, dim=1, largest=True)
+    
+    # 5. Sort the kept indices to maintain the original sequence order
+    keep_idx, _ = torch.sort(keep_idx, dim=1)
+    
+    return keep_idx
+
+
 def random_patch_drop_indices(
     bv: int, n: int, drop_rate: float, device: torch.device
 ) -> torch.Tensor:
