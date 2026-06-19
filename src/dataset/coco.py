@@ -1,6 +1,7 @@
 import os
 import json
 import pickle
+import math
 from pathlib import Path
 from dataclasses import dataclass
 import torch
@@ -57,12 +58,52 @@ class CocoDataset:
     num_line_classes: int
     symbol_cat_id_to_idx: dict[int, int]
     line_cat_id_to_idx: dict[int, int]
+    symbol_weights: list[float]
+    line_weights: list[float]
     images: list[CocoMetadata]
     annotations: dict[int, list[CocoParsedAnnotation]]
 
     @property
     def num_symbols(self) -> int:
         return sum(len(anns) for anns in self.annotations.values())
+
+
+def _compute_smoothed_weights(
+    counts: dict[int, int],
+    num_classes: int,
+    beta: float = 0.5,
+    target_mean: float = 0.25,
+    min_val: float = 0.05,
+    max_val: float = 0.85,
+) -> list[float]:
+    """
+    Computes smoothed inverse frequency weights for class balancing.
+    """
+    if num_classes == 0:
+        return []
+
+    # Extract counts in order of class index
+    freqs = [counts.get(i, 0) for i in range(num_classes)]
+
+    # Handle zero frequencies by setting them to 1 to avoid division by zero.
+    # They will naturally get the maximum clamped weight.
+    freqs_safe = [f if f > 0 else 1 for f in freqs]
+
+    # Smooth: f^beta
+    smoothed = [math.pow(f, beta) for f in freqs_safe]
+
+    # Inverse
+    inverse = [1.0 / s for s in smoothed]
+
+    # Normalize so the mean of the weights equals the target_mean (e.g., 0.25 for Focal Loss alpha)
+    current_mean = sum(inverse) / num_classes
+    scale = target_mean / current_mean if current_mean > 0 else 1.0
+    normalized = [i * scale for i in inverse]
+
+    # Clamp to prevent gradient explosions or vanishing gradients
+    clamped = [max(min_val, min(max_val, n)) for n in normalized]
+
+    return clamped
 
 
 def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
@@ -125,6 +166,9 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
     ]
 
     annotations: dict[int, list[CocoParsedAnnotation]] = {}
+    symbol_counts: dict[int, int] = {idx: 0 for idx in range(len(symbol_categories))}
+    line_counts: dict[int, int] = {idx: 0 for idx in range(len(line_categories))}
+
     for ann in coco_data["annotations"]:
         img_id = ann["image_id"]
         cat_id = ann["category_id"]
@@ -140,18 +184,27 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
             parsed_ann = CocoLineAnnotation(
                 keypoints=[x1, y1, x2, y2], category_id=cat_id
             )
+            idx = line_cat_id_to_idx[cat_id]
+            line_counts[idx] += 1
         else:
             parsed_ann = CocoSymbolAnnotation(
                 bbox=ann["bbox"], category_id=cat_id
             )
+            idx = symbol_cat_id_to_idx[cat_id]
+            symbol_counts[idx] += 1
 
         annotations.setdefault(img_id, []).append(parsed_ann)
+
+    symbol_weights = _compute_smoothed_weights(symbol_counts, len(symbol_categories))
+    line_weights = _compute_smoothed_weights(line_counts, len(line_categories))
 
     dataset = CocoDataset(
         num_symbol_classes=len(symbol_categories),
         num_line_classes=len(line_categories),
         symbol_cat_id_to_idx=symbol_cat_id_to_idx,
         line_cat_id_to_idx=line_cat_id_to_idx,
+        symbol_weights=symbol_weights,
+        line_weights=line_weights,
         images=images,
         annotations=annotations,
     )
