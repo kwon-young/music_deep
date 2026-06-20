@@ -99,15 +99,19 @@ def update_plot(
     sym_boxes = (
         outputs.symbols.pred_boxes.data[0].detach().cpu().numpy() * patch_size
     )
-    sym_probs = torch.sigmoid(sym_logits)
-    sym_max_probs, _ = sym_probs.max(dim=-1)
 
-    if indices is not None:
-        sym_idx = indices[0][0].pred_indices.cpu().numpy()
-        sym_boxes_kept = sym_boxes[sym_idx]
+    if sym_logits.shape[-1] > 0:
+        sym_probs = torch.sigmoid(sym_logits)
+        sym_max_probs, _ = sym_probs.max(dim=-1)
+
+        if indices is not None:
+            sym_idx = indices[0][0].pred_indices.cpu().numpy()
+            sym_boxes_kept = sym_boxes[sym_idx]
+        else:
+            keep = (sym_max_probs > conf_thresh).numpy()
+            sym_boxes_kept = sym_boxes[keep]
     else:
-        keep = (sym_max_probs > conf_thresh).numpy()
-        sym_boxes_kept = sym_boxes[keep]
+        sym_boxes_kept = []
 
     for box in sym_boxes_kept:
         x1, y1, x2, y2 = box
@@ -127,15 +131,19 @@ def update_plot(
     line_kps = (
         outputs.lines.pred_keypoints.data[0].detach().cpu().numpy() * patch_size
     )
-    line_probs = torch.sigmoid(line_logits)
-    line_max_probs, _ = line_probs.max(dim=-1)
 
-    if indices is not None:
-        line_idx = indices[1][0].pred_indices.cpu().numpy()
-        line_kps_kept = line_kps[line_idx]
+    if line_logits.shape[-1] > 0:
+        line_probs = torch.sigmoid(line_logits)
+        line_max_probs, _ = line_probs.max(dim=-1)
+
+        if indices is not None:
+            line_idx = indices[1][0].pred_indices.cpu().numpy()
+            line_kps_kept = line_kps[line_idx]
+        else:
+            keep = (line_max_probs > conf_thresh).numpy()
+            line_kps_kept = line_kps[keep]
     else:
-        keep = (line_max_probs > conf_thresh).numpy()
-        line_kps_kept = line_kps[keep]
+        line_kps_kept = []
 
     for kp in line_kps_kept:
         x1, y1, x2, y2 = kp
