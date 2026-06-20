@@ -18,11 +18,7 @@ from threaded_generator import (
 )
 from transform.core import shuffle
 import transform.ssl as ssl_tf
-from dataset.imslp import (
-    load_imslp,
-    load_image,
-    Metadata,
-)
+from dataset.coco import parse_coco, load_coco_ssl_sample, CocoMetadata, CocoDataset
 from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     CHW,
@@ -40,6 +36,8 @@ from music_types import (
     FlatViewEmbeddings,
     FlatViewPatches,
     SSLSample,
+    TensorImage,
+    MaskedPair,
 )
 
 
@@ -54,11 +52,10 @@ class LeJEPAMetrics(BaseMetrics):
 
 @dataclass
 class TrainParams:
-    manifest_path: Path
-    image_dir: Path
-    n_views: int
-    max_angle_deg: float
-    max_translate: float
+    anno_path: Path
+    cache_dir: Path | None
+    img_dir: Path
+    dataset: CocoDataset
     image_size: int
     num_classes: int
     channels: int
@@ -78,83 +75,76 @@ class TrainParams:
     weight_decay: float
     log_interval: int
     checkpoint_window_size: int
-    device: torch.device
+    prep_device: torch.device
+    train_device: torch.device
     exp_dir: Path
     stage_name: str
 
 
 def transform_image(
-    metadata: Metadata,
+    index: int,
+    dataset: CocoDataset,
+    img_dir: Path,
     params: TrainParams,
-) -> Data[
-    Metadata, SSLSample[FlatViewTensorImage[Batch, View, BVCHW, RGB, Float1]]
-]:
-    data_pil = load_image(metadata, image_dir=params.image_dir)
-    data_np = ssl_tf.to_numpy(data_pil)
-    data_t = ssl_tf.to_tensor(data_np)
-    data_t = ssl_tf.to(data_t, device=params.device)
-    data_t = ssl_tf.random_crop(data_t, crop_size=params.image_size)
-    data_tf = ssl_tf.to_float1(data_t)
-    data_tfv = ssl_tf.make_views(data_tf, n=params.n_views)
-    data_tfv = ssl_tf.random_flatview_affine(
-        data_tfv, params.max_angle_deg, params.max_translate
+) -> Data[CocoMetadata, SSLSample[TensorImage[CHW, RGB, Float1]]]:
+    item = load_coco_ssl_sample(dataset, img_dir, index)
+
+    if params.prep_device.type == "cuda":
+        try:
+            item_decoded = ssl_tf.decode_nvimgcodec(item, device=params.prep_device)
+        except Exception:
+            item_decoded = ssl_tf.decode_pyvips(item, device=params.prep_device)
+        item_cropped = ssl_tf.random_crop(item_decoded, crop_size=params.image_size)
+    else:
+        item_cropped = ssl_tf.decode_and_crop_pyvips(
+            item, crop_size=params.image_size, device=params.prep_device
+        )
+
+    item_tf = ssl_tf.to_float1(item_cropped)
+
+    item_padded = ssl_tf.pad_to_patch_size(
+        item_tf, patch_size=(params.patch_size, params.patch_size)
     )
-    return data_tfv
+
+    return item_padded
 
 
-@partial_generator
 def create_lejepa_iterator(
     params: TrainParams,
-    monitor: Monitor,
-) -> Generator[BatchedData[Metadata, SSLSample[FlatViewEmbeddings]]]:
-
-    gen = partial_generator(shuffle)(
-        partial_generator(load_imslp)(params.manifest_path)
-    )
-    data = partial_generator(map)(
-        partial(
-            transform_image,
-            params=params,
-        ),
-        gen,
-    )
-    data_gen = ParallelGenerator(
-        data,
-        num_workers=2,
-        maxsize=params.batch_size,
-        # monitor=monitor,
-        name="transform",
-    )
-    batch_gen = batched(data_gen, n=params.batch_size)
-    yield from map(transform_batch, batch_gen)
-
-
-def transform_batch[Meta, V: View](
-    batch: tuple[
-        Data[
-            Meta,
-            SSLSample[
-                FlatViewTensorImage[
-                    Batch, V, tuple[BatchView, *CHW], RGB, Float1
-                ]
-            ],
-        ],
-        ...,
-    ],
-) -> BatchedData[
-    Meta, SSLSample[FlatViewPatches[Batch, BatchView, V, NumPatches, PatchDim]]
+    monitor: Monitor | None = None,
+) -> Generator[
+    BatchedData[CocoMetadata, SSLSample[MaskedPair[Batch, NumPatches, PatchDim]]],
+    None,
+    None,
 ]:
-    batched_data = ssl_tf.collate(batch, batch_size=params.batch_size)
+    import random
+    num_images = len(params.dataset.images)
+    indices = list(range(num_images))
 
-    patches = ssl_tf.extract_flatviewpatches(
-        batched_data,
-        patch_size=(params.patch_size, params.patch_size),
-    )
-    drop_patches = ssl_tf.random_flatview_patch_drop(
-        patches, drop_rate=params.drop_rate
-    )
+    while True:
+        random.shuffle(indices)
 
-    return drop_patches
+        transformed_gen = (
+            transform_image(idx, params.dataset, params.img_dir, params)
+            for idx in indices
+        )
+
+        for batch_items in batched(transformed_gen, params.batch_size):
+            batched_item = ssl_tf.collate_images(batch_items)
+            
+            patched_item = ssl_tf.extract_patches(
+                batched_item, patch_size=(params.patch_size, params.patch_size)
+            )
+            
+            masked_item = ssl_tf.random_spatial_mask(
+                patched_item, drop_ratio=params.drop_rate
+            )
+            
+            final_item = ssl_tf.to_masked_patches(
+                masked_item, device=params.train_device
+            )
+            
+            yield final_item
 
 
 def train(params: TrainParams):
@@ -168,15 +158,15 @@ def train(params: TrainParams):
         dim_head=params.dim_head,
         mlp_dim=params.mlp_dim,
         channels=params.channels,
-    ).to(params.device)
+    ).to(params.train_device)
 
     projector = ProjectorMLP(
         in_features=params.embed_dim,
         hidden_features=2048,
         out_features=params.proj_dim,
-    ).to(params.device)
+    ).to(params.train_device)
 
-    sigreg = SIGReg().to(params.device)
+    sigreg = SIGReg().to(params.train_device)
 
     optimizer = optim.AdamW(
         chain(backbone.parameters(), projector.parameters()),
@@ -274,21 +264,25 @@ def train(params: TrainParams):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train LeJEPA ViT")
+    parser = argparse.ArgumentParser(description="Train Dense LeJEPA ViT on Trompa-COCO")
     parser.add_argument(
-        "--manifest_path", type=Path, default=Path("data/imslp/imslp.jsonl")
+        "--anno_path",
+        type=Path,
+        default=Path("data/trompa-coco/annotations/instances_trainval2017.json"),
     )
     parser.add_argument(
-        "--image_dir", type=Path, default=Path("data/imslp/images")
+        "--cache_dir",
+        type=Path,
+        default=None,
     )
-    parser.add_argument("--n_views", type=int, default=4)
-    parser.add_argument("--max_angle_deg", type=float, default=3.0)
-    parser.add_argument("--max_translate", type=float, default=0.05)
-    parser.add_argument("--image_size", type=int, default=224)
+    parser.add_argument(
+        "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
+    )
+    parser.add_argument("--image_size", type=int, default=896)
     parser.add_argument("--num_classes", type=int, default=0)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--drop_rate", type=float, default=0.5)
-    parser.add_argument("--patch_size", type=int, default=16)
+    parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument("--dim", type=int, default=192)
     parser.add_argument("--depth", type=int, default=12)
     parser.add_argument("--heads", type=int, default=3)
@@ -296,7 +290,7 @@ if __name__ == "__main__":
     parser.add_argument("--mlp_dim", type=int, default=768)
     parser.add_argument("--embed_dim", type=int, default=192)
     parser.add_argument("--proj_dim", type=int, default=16)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lamb", type=float, default=0.05)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=5e-4)
@@ -304,20 +298,32 @@ if __name__ == "__main__":
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--checkpoint_window_size", type=int, default=10000)
     parser.add_argument(
+        "--prep_device",
+        type=str,
+        default="cpu",
+    )
+    parser.add_argument(
+        "--train_device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
+    parser.add_argument(
         "--exp_dir", type=Path, default=Path("experiments/default_exp")
     )
     parser.add_argument("--stage_name", type=str, default="pretrain_lejepa")
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    prep_device = torch.device(args.prep_device)
+    train_device = torch.device(args.train_device)
+
+    dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
 
     params = TrainParams(
-        manifest_path=args.manifest_path,
-        image_dir=args.image_dir,
-        n_views=args.n_views,
-        max_angle_deg=args.max_angle_deg,
-        max_translate=args.max_translate,
+        anno_path=args.anno_path,
+        cache_dir=args.cache_dir,
+        img_dir=args.img_dir,
+        dataset=dataset,
         image_size=args.image_size,
         num_classes=args.num_classes,
         channels=args.channels,
@@ -337,7 +343,8 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         log_interval=args.log_interval,
         checkpoint_window_size=args.checkpoint_window_size,
-        device=device,
+        prep_device=prep_device,
+        train_device=train_device,
         exp_dir=args.exp_dir,
         stage_name=args.stage_name,
     )
