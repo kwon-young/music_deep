@@ -63,10 +63,107 @@ class CocoDataset:
     line_weights: list[float]
     images: list[CocoMetadata]
     annotations: dict[int, list[CocoParsedAnnotation]]
+    symbol_categories: list[dict]
+    line_categories: list[dict]
 
     @property
     def num_symbols(self) -> int:
         return sum(len(anns) for anns in self.annotations.values())
+
+    def restrict_labels(self, keep_names: list[str]) -> None:
+        """
+        Filters the dataset to keep only the specified class names.
+        Updates mappings, weights, and class counts in-place.
+        """
+        if not keep_names:
+            return
+
+        # 1. Identify COCO IDs to keep and create new contiguous mappings
+        new_sym_id_to_idx = {}
+        new_line_id_to_idx = {}
+        keep_sym_ids = set()
+        keep_line_ids = set()
+
+        # Build sets of IDs to keep
+        for name in keep_names:
+            # Check symbols
+            for cat in self.symbol_categories:
+                if cat["name"] == name:
+                    keep_sym_ids.add(cat["id"])
+            # Check lines
+            for cat in self.line_categories:
+                if cat["name"] == name:
+                    keep_line_ids.add(cat["id"])
+
+        # Build new mappings (re-indexing to 0..N)
+        # Symbols
+        new_idx = 0
+        for cat in self.symbol_categories:
+            if cat["id"] in keep_sym_ids:
+                new_sym_id_to_idx[cat["id"]] = new_idx
+                new_idx += 1
+
+        # Lines
+        new_idx = 0
+        for cat in self.line_categories:
+            if cat["id"] in keep_line_ids:
+                new_line_id_to_idx[cat["id"]] = new_idx
+                new_idx += 1
+
+        # 2. Filter Annotations
+        new_annotations = {}
+
+        for img_id, anns in self.annotations.items():
+            filtered_anns = []
+            for ann in anns:
+                if isinstance(ann, CocoSymbolAnnotation):
+                    if ann.category_id in keep_sym_ids:
+                        filtered_anns.append(ann)
+                elif isinstance(ann, CocoLineAnnotation):
+                    if ann.category_id in keep_line_ids:
+                        filtered_anns.append(ann)
+
+            if filtered_anns:
+                new_annotations[img_id] = filtered_anns
+
+        # 3. Update Class Counts
+        self.num_symbol_classes = len(new_sym_id_to_idx)
+        self.num_line_classes = len(new_line_id_to_idx)
+
+        # 4. Recalculate Weights
+        final_sym_counts = {idx: 0 for idx in range(self.num_symbol_classes)}
+        final_line_counts = {idx: 0 for idx in range(self.num_line_classes)}
+
+        for anns in new_annotations.values():
+            for ann in anns:
+                if isinstance(ann, CocoSymbolAnnotation):
+                    if ann.category_id in new_sym_id_to_idx:
+                        final_sym_counts[new_sym_id_to_idx[ann.category_id]] += 1
+                elif isinstance(ann, CocoLineAnnotation):
+                    if ann.category_id in new_line_id_to_idx:
+                        final_line_counts[new_line_id_to_idx[ann.category_id]] += 1
+
+        self.symbol_weights = _compute_smoothed_weights(
+            final_sym_counts, self.num_symbol_classes
+        )
+        self.line_weights = _compute_smoothed_weights(
+            final_line_counts, self.num_line_classes
+        )
+
+        # 5. Update Mappings and Categories
+        self.symbol_cat_id_to_idx = new_sym_id_to_idx
+        self.line_cat_id_to_idx = new_line_id_to_idx
+        self.symbol_categories = [
+            c for c in self.symbol_categories if c["id"] in keep_sym_ids
+        ]
+        self.line_categories = [
+            c for c in self.line_categories if c["id"] in keep_line_ids
+        ]
+        self.annotations = new_annotations
+
+        print(
+            f"Restricted dataset to {self.num_symbol_classes} symbol classes and {self.num_line_classes} line classes."
+        )
 
 
 def _compute_smoothed_weights(
@@ -224,6 +321,8 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         line_weights=line_weights,
         images=images,
         annotations=annotations,
+        symbol_categories=symbol_categories,
+        line_categories=line_categories,
     )
 
     if os.environ.get("LOCAL_RANK", "0") == "0":

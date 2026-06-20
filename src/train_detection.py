@@ -780,6 +780,12 @@ if __name__ == "__main__":
         default=None,
         help="Restrict dataset to first N images. If None, uses the full dataset.",
     )
+    parser.add_argument(
+        "--include_labels",
+        type=str,
+        default=None,
+        help="Comma-separated list of class names to restrict training to (e.g., 'noteheadBlack,stem').",
+    )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
         "--accumulation_steps",
@@ -1001,6 +1007,11 @@ if __name__ == "__main__":
 
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
+
+    # Restrict dataset labels if requested
+    if args.include_labels:
+        keep_names = [name.strip() for name in args.include_labels.split(",")]
+        dataset.restrict_labels(keep_names)
 
     # Restrict dataset size if requested
     if args.num_images is not None and args.num_images < len(dataset.images):
