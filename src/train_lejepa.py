@@ -2,14 +2,15 @@ import argparse
 import time
 from typing import Generator
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from pathlib import Path
 from functools import partial
 from dataclasses import dataclass
 from itertools import chain, batched
 
-from model.vit import ViewViT
-from model.lejepa import ProjectorMLP, SIGReg
+from model.vit import vit_nano, vit_small, vit_base
+from model.lejepa import Predictor, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
     ParallelGenerator,
@@ -43,10 +44,10 @@ from music_types import (
 
 @dataclass
 class LeJEPAMetrics(BaseMetrics):
-    epoch: int
+    epoch: float
     loss_total: float
     loss_sigreg: float
-    loss_inv: float
+    loss_l2: float
     speed: float
 
 
@@ -61,13 +62,8 @@ class TrainParams:
     channels: int
     drop_rate: float
     patch_size: int
-    dim: int
-    depth: int
-    heads: int
-    dim_head: int
-    mlp_dim: int
-    embed_dim: int
-    proj_dim: int
+    backbone_size: str
+    pred_depth: int
     batch_size: int
     lamb: float
     epochs: int
@@ -150,26 +146,42 @@ def create_lejepa_iterator(
 def train(params: TrainParams):
     logger = ExperimentLogger(params.exp_dir, params.stage_name)
 
-    backbone = ViewViT(
+    if params.backbone_size == "nano":
+        vit_fn = vit_nano
+        embed_dim = 192
+        heads = 3
+        dim_head = 64
+        mlp_dim = 768
+    elif params.backbone_size == "small":
+        vit_fn = vit_small
+        embed_dim = 384
+        heads = 6
+        dim_head = 64
+        mlp_dim = 1536
+    else:
+        vit_fn = vit_base
+        embed_dim = 768
+        heads = 12
+        dim_head = 64
+        mlp_dim = 3072
+
+    backbone = vit_fn(
         patch_size=params.patch_size,
-        dim=params.dim,
-        depth=params.depth,
-        heads=params.heads,
-        dim_head=params.dim_head,
-        mlp_dim=params.mlp_dim,
         channels=params.channels,
     ).to(params.train_device)
 
-    projector = ProjectorMLP(
-        in_features=params.embed_dim,
-        hidden_features=2048,
-        out_features=params.proj_dim,
+    predictor = Predictor(
+        embed_dim=embed_dim,
+        depth=params.pred_depth,
+        heads=heads,
+        dim_head=dim_head,
+        mlp_dim=mlp_dim,
     ).to(params.train_device)
 
     sigreg = SIGReg().to(params.train_device)
 
     optimizer = optim.AdamW(
-        chain(backbone.parameters(), projector.parameters()),
+        chain(backbone.parameters(), predictor.parameters()),
         lr=params.lr,
         weight_decay=params.weight_decay,
     )
@@ -181,31 +193,49 @@ def train(params: TrainParams):
     checkpoint_number = 0
     start_time = time.time()
     global_step = 0
+    dataset_size = len(params.dataset.images)
 
     for epoch in range(params.epochs):
         backbone.train()
-        projector.train()
+        predictor.train()
         monitor = Monitor()
         iterator = ThreadedGenerator(
             create_lejepa_iterator(params, monitor=monitor),
             maxsize=2,
-            # monitor=monitor,
         )
 
         for step, batch in enumerate(iterator):
             global_step += 1
             N = len(batch.metadata)
+            current_epoch = samples / dataset_size
 
-            emb = backbone(batch.sample.image)
-            proj_emb = projector(emb)
+            target_patches = batch.sample.image.target
+            context_patches = batch.sample.image.context
 
-            proj_view = ssl_tf.unflatten_views(proj_emb)
-            proj = proj_view.data.flatten(start_dim=2).transpose(0, 1)
+            # 1. Target Encoder (Full Context)
+            target_emb = backbone(target_patches)
+            global_target_emb = target_emb.data.mean(dim=1)
 
-            inv_loss = (proj.mean(0) - proj).square().mean()
-            sigreg_loss = sigreg(proj)
+            # 2. Context Encoder (Masked Input)
+            context_emb = backbone(context_patches)
 
-            loss = sigreg_loss * params.lamb + inv_loss * (1 - params.lamb)
+            # 3. Predictor (Grammar Teacher)
+            pred_emb = predictor(context_emb, target_emb)
+
+            # 4. Gather target embeddings for the masked patches
+            B = target_emb.batch_size
+            max_idx = target_emb.indices.max().item() + 1
+            pos_map = torch.zeros((B, max_idx), dtype=torch.long, device=params.train_device)
+            pos_map.scatter_(1, target_emb.indices, torch.arange(target_emb.indices.size(1), device=params.train_device).unsqueeze(0).expand(B, -1))
+            
+            gather_pos = torch.gather(pos_map, 1, pred_emb.indices)
+            target_mask_emb = torch.gather(target_emb.data, 1, gather_pos.unsqueeze(-1).expand(-1, -1, target_emb.data.size(-1)))
+
+            # 5. Losses
+            l2_loss = F.mse_loss(pred_emb.data, target_mask_emb)
+            sigreg_loss = sigreg(global_target_emb)
+
+            loss = sigreg_loss * params.lamb + l2_loss * (1 - params.lamb)
 
             if running_loss is None:
                 running_loss = loss.item()
@@ -224,18 +254,18 @@ def train(params: TrainParams):
 
                 metrics = LeJEPAMetrics(
                     step=global_step,
-                    epoch=epoch,
+                    epoch=current_epoch,
                     loss_total=loss.item(),
                     loss_sigreg=sigreg_loss.item(),
-                    loss_inv=inv_loss.item(),
+                    loss_l2=l2_loss.item(),
                     speed=speed,
                 )
                 logger.log_metrics(metrics)
 
                 print(
-                    f"Epoch [{epoch}/{params.epochs}] Samples [{samples}] "
+                    f"Epoch [{current_epoch:.2f}/{params.epochs}] Samples [{samples}] "
                     f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
-                    f"(SIGReg: {sigreg_loss.item():.4f}, Inv: {inv_loss.item():.4f}) "
+                    f"(SIGReg: {sigreg_loss.item():.4f}, L2: {l2_loss.item():.4f}) "
                     f"Speed: {speed:.1f} sample/s"
                 )
 
@@ -251,7 +281,7 @@ def train(params: TrainParams):
 
                     checkpoint = {
                         "backbone": backbone.state_dict(),
-                        "projector": projector.state_dict(),
+                        "predictor": predictor.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "best_loss": best_loss,
                     }
@@ -283,13 +313,13 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--drop_rate", type=float, default=0.5)
     parser.add_argument("--patch_size", type=int, default=64)
-    parser.add_argument("--dim", type=int, default=192)
-    parser.add_argument("--depth", type=int, default=12)
-    parser.add_argument("--heads", type=int, default=3)
-    parser.add_argument("--dim_head", type=int, default=64)
-    parser.add_argument("--mlp_dim", type=int, default=768)
-    parser.add_argument("--embed_dim", type=int, default=192)
-    parser.add_argument("--proj_dim", type=int, default=16)
+    parser.add_argument(
+        "--backbone_size",
+        type=str,
+        choices=["nano", "small", "base"],
+        default="nano",
+    )
+    parser.add_argument("--pred_depth", type=int, default=4)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lamb", type=float, default=0.05)
     parser.add_argument("--epochs", type=int, default=100)
@@ -329,13 +359,8 @@ if __name__ == "__main__":
         channels=args.channels,
         drop_rate=args.drop_rate,
         patch_size=args.patch_size,
-        dim=args.dim,
-        depth=args.depth,
-        heads=args.heads,
-        dim_head=args.dim_head,
-        mlp_dim=args.mlp_dim,
-        embed_dim=args.embed_dim,
-        proj_dim=args.proj_dim,
+        backbone_size=args.backbone_size,
+        pred_depth=args.pred_depth,
         batch_size=args.batch_size,
         lamb=args.lamb,
         epochs=args.epochs,
