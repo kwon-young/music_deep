@@ -67,6 +67,7 @@ class TrainParams:
     cache_dir: Path | None
     img_dir: Path
     dataset: CocoDataset
+    num_images: int | None
     batch_size: int
     accumulation_steps: int
     loader_maxsize: int
@@ -773,6 +774,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
+    parser.add_argument(
+        "--num_images",
+        type=int,
+        default=None,
+        help="Restrict dataset to first N images. If None, uses the full dataset.",
+    )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
         "--accumulation_steps",
@@ -995,11 +1002,23 @@ if __name__ == "__main__":
     # Parse and cache the dataset before starting training
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
 
+    # Restrict dataset size if requested
+    if args.num_images is not None and args.num_images < len(dataset.images):
+        kept_img_ids = {img.img_id for img in dataset.images[: args.num_images]}
+        dataset.images = dataset.images[: args.num_images]
+        dataset.annotations = {
+            img_id: anns
+            for img_id, anns in dataset.annotations.items()
+            if img_id in kept_img_ids
+        }
+        print(f"Restricting dataset to first {args.num_images} images.")
+
     params = TrainParams(
         anno_path=args.anno_path,
         cache_dir=args.cache_dir,
         img_dir=args.img_dir,
         dataset=dataset,
+        num_images=args.num_images,
         batch_size=args.batch_size,
         accumulation_steps=args.accumulation_steps,
         loader_maxsize=args.loader_maxsize,
