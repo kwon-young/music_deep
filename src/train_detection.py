@@ -171,7 +171,7 @@ def transform_image(
             item_cropped = det_tf.decode_pyvips(item, device=prep_device)
 
     item_tf = det_tf.to_float1(item_cropped)
-    
+
     if affine:
         item_aug = det_tf.random_affine(
             item_tf,
@@ -885,13 +885,37 @@ if __name__ == "__main__":
         default=None,
         help="Fraction of patches to keep based on variance",
     )
-    
+
     # Augmentation params
-    parser.add_argument("--affine", action="store_true", help="Enable random affine augmentations")
-    parser.add_argument("--max_translate_frac", type=float, default=0.05, help="Max translation fraction")
-    parser.add_argument("--max_angle_deg", type=float, default=2.0, help="Max rotation angle in degrees")
-    parser.add_argument("--max_shear_deg", type=float, default=2.0, help="Max shear angle in degrees")
-    parser.add_argument("--max_scale", type=float, default=1.1, help="Max scale factor (e.g. 1.1 for +/- 10%)")
+    parser.add_argument(
+        "--affine",
+        action="store_true",
+        help="Enable random affine augmentations",
+    )
+    parser.add_argument(
+        "--max_translate_frac",
+        type=float,
+        default=0.05,
+        help="Max translation fraction",
+    )
+    parser.add_argument(
+        "--max_angle_deg",
+        type=float,
+        default=2.0,
+        help="Max rotation angle in degrees",
+    )
+    parser.add_argument(
+        "--max_shear_deg",
+        type=float,
+        default=2.0,
+        help="Max shear angle in degrees",
+    )
+    parser.add_argument(
+        "--max_scale",
+        type=float,
+        default=1.1,
+        help="Max scale factor (e.g. 1.1 for +/- 10%)",
+    )
 
     parser.add_argument(
         "--log_patches",
@@ -958,7 +982,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    
+
     if args.var_threshold is None and args.drop_rate is None:
         args.var_threshold = 0.001
     elif args.var_threshold is not None and args.drop_rate is not None:
