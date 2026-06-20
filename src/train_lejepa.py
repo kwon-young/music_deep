@@ -60,7 +60,8 @@ class TrainParams:
     image_size: int
     num_classes: int
     channels: int
-    drop_rate: float
+    var_threshold: float
+    mask_ratio: float
     patch_size: int
     backbone_size: str
     pred_depth: int
@@ -132,8 +133,12 @@ def create_lejepa_iterator(
                 batched_item, patch_size=(params.patch_size, params.patch_size)
             )
             
+            dropped_item = ssl_tf.variance_patch_drop(
+                patched_item, var_threshold=params.var_threshold
+            )
+            
             masked_item = ssl_tf.random_spatial_mask(
-                patched_item, drop_ratio=params.drop_rate
+                dropped_item, drop_ratio=params.mask_ratio
             )
             
             final_item = ssl_tf.to_masked_patches(
@@ -311,7 +316,8 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=896)
     parser.add_argument("--num_classes", type=int, default=0)
     parser.add_argument("--channels", type=int, default=3)
-    parser.add_argument("--drop_rate", type=float, default=0.5)
+    parser.add_argument("--var_threshold", type=float, default=0.001)
+    parser.add_argument("--mask_ratio", type=float, default=0.5)
     parser.add_argument("--patch_size", type=int, default=64)
     parser.add_argument(
         "--backbone_size",
@@ -357,7 +363,8 @@ if __name__ == "__main__":
         image_size=args.image_size,
         num_classes=args.num_classes,
         channels=args.channels,
-        drop_rate=args.drop_rate,
+        var_threshold=args.var_threshold,
+        mask_ratio=args.mask_ratio,
         patch_size=args.patch_size,
         backbone_size=args.backbone_size,
         pred_depth=args.pred_depth,
