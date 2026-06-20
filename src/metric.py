@@ -38,6 +38,9 @@ def compute_map_50(
     num_classes: int,
 ) -> float:
     """Computes the Mean Average Precision at IoU threshold 0.5 for symbols."""
+    if num_classes == 0:
+        return 0.0
+
     pred_logits = outputs.symbols.pred_logits.data
     pred_boxes = outputs.symbols.pred_boxes.data
     probs = torch.sigmoid(pred_logits)
