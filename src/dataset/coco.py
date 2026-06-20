@@ -167,8 +167,12 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
     ]
 
     annotations: dict[int, list[CocoParsedAnnotation]] = {}
-    symbol_counts: dict[int, int] = {idx: 0 for idx in range(len(symbol_categories))}
-    line_counts: dict[int, int] = {idx: 0 for idx in range(len(line_categories))}
+    symbol_counts: dict[int, int] = {
+        idx: 0 for idx in range(len(symbol_categories))
+    }
+    line_counts: dict[int, int] = {
+        idx: 0 for idx in range(len(line_categories))
+    }
 
     for ann in coco_data["annotations"]:
         img_id = ann["image_id"]
@@ -200,13 +204,15 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         print("\n--- Symbol Class Frequencies ---")
         for idx, cat in enumerate(symbol_categories):
             print(f"  {cat['name']:<30}: {symbol_counts[idx]}")
-        
+
         print("\n--- Line Class Frequencies ---")
         for idx, cat in enumerate(line_categories):
             print(f"  {cat['name']:<30}: {line_counts[idx]}")
         print("--------------------------------\n")
 
-    symbol_weights = _compute_smoothed_weights(symbol_counts, len(symbol_categories))
+    symbol_weights = _compute_smoothed_weights(
+        symbol_counts, len(symbol_categories)
+    )
     line_weights = _compute_smoothed_weights(line_counts, len(line_categories))
 
     dataset = CocoDataset(
@@ -288,13 +294,19 @@ def load_coco_sample(
             box_labels.append(mapped_label)
 
     # Create tensors directly on the target device
-    boxes_tensor = torch.tensor(boxes, dtype=torch.float32, device=device).reshape(-1, 4)
-    box_labels_tensor = torch.tensor(box_labels, dtype=torch.int64, device=device)
-
-    keypoints_tensor = torch.tensor(keypoints, dtype=torch.float32, device=device).reshape(
-        -1, 4
+    boxes_tensor = torch.tensor(
+        boxes, dtype=torch.float32, device=device
+    ).reshape(-1, 4)
+    box_labels_tensor = torch.tensor(
+        box_labels, dtype=torch.int64, device=device
     )
-    keypoint_labels_tensor = torch.tensor(keypoint_labels, dtype=torch.int64, device=device)
+
+    keypoints_tensor = torch.tensor(
+        keypoints, dtype=torch.float32, device=device
+    ).reshape(-1, 4)
+    keypoint_labels_tensor = torch.tensor(
+        keypoint_labels, dtype=torch.int64, device=device
+    )
 
     return Data(
         metadata=img_meta,
