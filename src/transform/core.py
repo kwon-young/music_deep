@@ -498,14 +498,26 @@ def get_random_affine_params(
 ) -> tuple[float, float, float, float, float]:
     """Generates random parameters for affine augmentation."""
     apply_trans = random.random() > 0.5
-    tx_frac = random.uniform(-max_translate_frac, max_translate_frac) if apply_trans else 0.0
-    ty_frac = random.uniform(-max_translate_frac, max_translate_frac) if apply_trans else 0.0
+    tx_frac = (
+        random.uniform(-max_translate_frac, max_translate_frac)
+        if apply_trans
+        else 0.0
+    )
+    ty_frac = (
+        random.uniform(-max_translate_frac, max_translate_frac)
+        if apply_trans
+        else 0.0
+    )
 
     apply_rot = random.random() > 0.5
-    angle_deg = random.uniform(-max_angle_deg, max_angle_deg) if apply_rot else 0.0
+    angle_deg = (
+        random.uniform(-max_angle_deg, max_angle_deg) if apply_rot else 0.0
+    )
 
     apply_shear = random.random() > 0.5
-    shear_deg = random.uniform(-max_shear_deg, max_shear_deg) if apply_shear else 0.0
+    shear_deg = (
+        random.uniform(-max_shear_deg, max_shear_deg) if apply_shear else 0.0
+    )
 
     apply_scale = random.random() > 0.5
     scale = random.uniform(1.0 / max_scale, max_scale) if apply_scale else 1.0
@@ -535,12 +547,34 @@ def get_affine_matrices(
 
     cx, cy = img_w / 2.0, img_h / 2.0
 
-    t_center = torch.tensor([[1, 0, cx], [0, 1, cy], [0, 0, 1]], dtype=torch.float32, device=device)
-    t_center_inv = torch.tensor([[1, 0, -cx], [0, 1, -cy], [0, 0, 1]], dtype=torch.float32, device=device)
-    s_mat = torch.tensor([[scale, 0, 0], [0, scale, 0], [0, 0, 1]], dtype=torch.float32, device=device)
-    r_mat = torch.tensor([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=torch.float32, device=device)
-    sh_mat = torch.tensor([[1, tan_s, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.float32, device=device)
-    t_offset = torch.tensor([[1, 0, tx_px], [0, 1, ty_px], [0, 0, 1]], dtype=torch.float32, device=device)
+    t_center = torch.tensor(
+        [[1, 0, cx], [0, 1, cy], [0, 0, 1]], dtype=torch.float32, device=device
+    )
+    t_center_inv = torch.tensor(
+        [[1, 0, -cx], [0, 1, -cy], [0, 0, 1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    s_mat = torch.tensor(
+        [[scale, 0, 0], [0, scale, 0], [0, 0, 1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    r_mat = torch.tensor(
+        [[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    sh_mat = torch.tensor(
+        [[1, tan_s, 0], [0, 1, 0], [0, 0, 1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    t_offset = torch.tensor(
+        [[1, 0, tx_px], [0, 1, ty_px], [0, 0, 1]],
+        dtype=torch.float32,
+        device=device,
+    )
 
     # Forward Matrix: Center -> Scale -> Shear -> Rotate -> Uncenter -> Translate
     fwd_matrix = t_offset @ t_center @ r_mat @ sh_mat @ s_mat @ t_center_inv
@@ -549,21 +583,25 @@ def get_affine_matrices(
     inv_pixel = torch.inverse(fwd_matrix)
 
     # Convert to normalized coordinates [-1, 1] for grid_sample
-    n2p = torch.tensor([
-        [img_w / 2.0, 0, img_w / 2.0],
-        [0, img_h / 2.0, img_h / 2.0],
-        [0, 0, 1]
-    ], dtype=torch.float32, device=device)
-    
-    p2n = torch.tensor([
-        [2.0 / img_w, 0, -1.0],
-        [0, 2.0 / img_h, -1.0],
-        [0, 0, 1]
-    ], dtype=torch.float32, device=device)
-    
+    n2p = torch.tensor(
+        [
+            [img_w / 2.0, 0, img_w / 2.0],
+            [0, img_h / 2.0, img_h / 2.0],
+            [0, 0, 1],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+
+    p2n = torch.tensor(
+        [[2.0 / img_w, 0, -1.0], [0, 2.0 / img_h, -1.0], [0, 0, 1]],
+        dtype=torch.float32,
+        device=device,
+    )
+
     theta_norm = p2n @ inv_pixel @ n2p
     theta_grid = theta_norm[:2, :].unsqueeze(0)
-    
+
     return fwd_matrix, theta_grid
 
 
@@ -574,45 +612,59 @@ def affine_img[C: Channel, M: Mode](
     """Applies affine transformation, padding with white (1.0) using in-place ops to save VRAM."""
     c, h, w = image.data.shape
     grid = F.affine_grid(theta_grid, [1, c, h, w], align_corners=False)
-    
+
     # In-place invert input: 0.0 (black) becomes 1.0, 1.0 (white) becomes 0.0
     image.data.mul_(-1.0).add_(1.0)
-    
+
     # grid_sample allocates the output tensor and pads out-of-bounds with 0.0
     transformed_data = F.grid_sample(
-        image.data.unsqueeze(0), grid, mode="bilinear", padding_mode="zeros", align_corners=False
+        image.data.unsqueeze(0),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False,
     )
-    
+
     # In-place invert output back to normal: 0.0 padding becomes 1.0 (white)
     transformed_data.mul_(-1.0).add_(1.0)
-    
+
     return replace(image, data=transformed_data.squeeze(0))
 
 
 def affine_boxes_xyxy[
-    B: NumBoxes, D: BoxDim, R: BoxRange, O: Origin, C: NumSymbolClasses
+    B: NumBoxes,
+    D: BoxDim,
+    R: BoxRange,
+    O: Origin,
+    C: NumSymbolClasses,
 ](
     boxes: BoundingBoxes[tuple[B, D], XYXY, R, O],
     labels: ClassLabels[tuple[B], C],
     fwd_matrix: torch.Tensor,
     img_w: int,
     img_h: int,
-) -> tuple[BoundingBoxes[tuple[NumBoxes, D], XYXY, R, O], ClassLabels[tuple[NumBoxes], C]]:
+) -> tuple[
+    BoundingBoxes[tuple[NumBoxes, D], XYXY, R, O],
+    ClassLabels[tuple[NumBoxes], C],
+]:
     """Applies affine transformation, clips to image, and filters invalid boxes."""
     if len(boxes.data) == 0:
         return boxes, labels
 
     x1, y1 = boxes.data[:, 0], boxes.data[:, 1]
     x2, y2 = boxes.data[:, 2], boxes.data[:, 3]
-    
-    corners = torch.stack([
-        torch.stack([x1, y1, torch.ones_like(x1)], dim=-1),
-        torch.stack([x2, y1, torch.ones_like(x1)], dim=-1),
-        torch.stack([x1, y2, torch.ones_like(x1)], dim=-1),
-        torch.stack([x2, y2, torch.ones_like(x1)], dim=-1),
-    ], dim=1)
 
-    transformed_corners = torch.einsum('ij,nkj->nki', fwd_matrix, corners)
+    corners = torch.stack(
+        [
+            torch.stack([x1, y1, torch.ones_like(x1)], dim=-1),
+            torch.stack([x2, y1, torch.ones_like(x1)], dim=-1),
+            torch.stack([x1, y2, torch.ones_like(x1)], dim=-1),
+            torch.stack([x2, y2, torch.ones_like(x1)], dim=-1),
+        ],
+        dim=1,
+    )
+
+    transformed_corners = torch.einsum("ij,nkj->nki", fwd_matrix, corners)
 
     new_x = transformed_corners[:, :, 0]
     new_y = transformed_corners[:, :, 1]
@@ -625,19 +677,28 @@ def affine_boxes_xyxy[
     valid = (new_x2 > new_x1) & (new_y2 > new_y1)
 
     new_boxes = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
-    
-    return replace(boxes, data=new_boxes[valid]), replace(labels, data=labels.data[valid])
+
+    return replace(boxes, data=new_boxes[valid]), replace(
+        labels, data=labels.data[valid]
+    )
 
 
 def affine_keypoints[
-    K: NumKeypoints, D: KeypointDim, R: KeypointRange, O: Origin, C: NumLineClasses
+    K: NumKeypoints,
+    D: KeypointDim,
+    R: KeypointRange,
+    O: Origin,
+    C: NumLineClasses,
 ](
     keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, R, O],
     labels: ClassLabels[tuple[K], C],
     fwd_matrix: torch.Tensor,
     img_w: int,
     img_h: int,
-) -> tuple[Keypoints[tuple[NumKeypoints, D], X1Y1X2Y2, R, O], ClassLabels[tuple[NumKeypoints], C]]:
+) -> tuple[
+    Keypoints[tuple[NumKeypoints, D], X1Y1X2Y2, R, O],
+    ClassLabels[tuple[NumKeypoints], C],
+]:
     """Applies affine transformation, clips to image, and filters invalid keypoints."""
     if len(keypoints.data) == 0:
         return keypoints, labels
@@ -645,12 +706,15 @@ def affine_keypoints[
     x1, y1 = keypoints.data[:, 0], keypoints.data[:, 1]
     x2, y2 = keypoints.data[:, 2], keypoints.data[:, 3]
 
-    points = torch.stack([
-        torch.stack([x1, y1, torch.ones_like(x1)], dim=-1),
-        torch.stack([x2, y2, torch.ones_like(x2)], dim=-1),
-    ], dim=1)
+    points = torch.stack(
+        [
+            torch.stack([x1, y1, torch.ones_like(x1)], dim=-1),
+            torch.stack([x2, y2, torch.ones_like(x2)], dim=-1),
+        ],
+        dim=1,
+    )
 
-    transformed_points = torch.einsum('ij,nkj->nki', fwd_matrix, points)
+    transformed_points = torch.einsum("ij,nkj->nki", fwd_matrix, points)
 
     new_x1 = transformed_points[:, 0, 0].clamp(min=0, max=img_w)
     new_y1 = transformed_points[:, 0, 1].clamp(min=0, max=img_h)
@@ -658,21 +722,21 @@ def affine_keypoints[
     new_y2 = transformed_points[:, 1, 1].clamp(min=0, max=img_h)
 
     valid = ~(
-        ((new_x1 == 0) & (new_x2 == 0)) |
-        ((new_x1 == img_w) & (new_x2 == img_w)) |
-        ((new_y1 == 0) & (new_y2 == 0)) |
-        ((new_y1 == img_h) & (new_y2 == img_h))
+        ((new_x1 == 0) & (new_x2 == 0))
+        | ((new_x1 == img_w) & (new_x2 == img_w))
+        | ((new_y1 == 0) & (new_y2 == 0))
+        | ((new_y1 == img_h) & (new_y2 == img_h))
     )
 
     new_kps = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
 
-    return replace(keypoints, data=new_kps[valid]), replace(labels, data=labels.data[valid])
+    return replace(keypoints, data=new_kps[valid]), replace(
+        labels, data=labels.data[valid]
+    )
 
 
 def spatial_mask_drop_indices(
-    indices: torch.Tensor, 
-    grid_w: int, 
-    drop_ratio: float
+    indices: torch.Tensor, grid_w: int, drop_ratio: float
 ) -> torch.Tensor:
     """
     Drops a contiguous spatial region of patches from a sparse set of indices.
@@ -680,31 +744,31 @@ def spatial_mask_drop_indices(
     """
     b, n = indices.shape
     device = indices.device
-    
+
     drop_count = int(n * drop_ratio)
     keep_count = n - drop_count
-    
+
     if drop_count == 0:
         return torch.arange(n, device=device).unsqueeze(0).expand(b, -1)
 
     # 1. Convert 1D patch indices back to 2D grid coordinates
     py = indices // grid_w
     px = indices % grid_w
-    
+
     # 2. Pick a random existing patch as the center of the mask for each batch item
     center_idx = torch.randint(0, n, (b, 1), device=device)
     cx = torch.gather(px, 1, center_idx)
     cy = torch.gather(py, 1, center_idx)
-    
+
     # 3. Compute squared spatial distance from the center to all patches
-    dist_sq = (px - cx)**2 + (py - cy)**2
-    
+    dist_sq = (px - cx) ** 2 + (py - cy) ** 2
+
     # 4. We want to DROP the closest patches, so we KEEP the ones with the LARGEST distances
     _, keep_idx = torch.topk(dist_sq, k=keep_count, dim=1, largest=True)
-    
+
     # 5. Sort the kept indices to maintain the original sequence order
     keep_idx, _ = torch.sort(keep_idx, dim=1)
-    
+
     return keep_idx
 
 
@@ -723,7 +787,9 @@ def variance_patch_drop_indices(
     drop_rate: float | None = None,
 ) -> torch.Tensor:
     if (var_threshold is None) == (drop_rate is None):
-        raise ValueError("Must provide exactly one of var_threshold or drop_rate")
+        raise ValueError(
+            "Must provide exactly one of var_threshold or drop_rate"
+        )
 
     b, n, d = patches_data.shape
 

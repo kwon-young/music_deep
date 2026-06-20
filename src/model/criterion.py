@@ -102,8 +102,12 @@ class DFINECriterion(nn.Module):
         self.reg_max = reg_max
         self.gamma = gamma
 
-        self.register_buffer("symbol_weights", torch.tensor(symbol_weights, dtype=torch.float32))
-        self.register_buffer("line_weights", torch.tensor(line_weights, dtype=torch.float32))
+        self.register_buffer(
+            "symbol_weights", torch.tensor(symbol_weights, dtype=torch.float32)
+        )
+        self.register_buffer(
+            "line_weights", torch.tensor(line_weights, dtype=torch.float32)
+        )
 
         # We need the weighting function to map target residuals back to discrete bins
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
@@ -348,11 +352,11 @@ class DFINECriterion(nn.Module):
         )
         if len(matched_sym_boxes) > 0:
             loss_bbox_sym, loss_giou_sym = self.loss_boxes(
-                matched_sym_outputs.boxes, 
-                matched_sym_boxes, 
+                matched_sym_outputs.boxes,
+                matched_sym_boxes,
                 matched_sym_labels,
                 self.symbol_weights,
-                num_symbols
+                num_symbols,
             )
             loss_fgl_sym = self.loss_fgl_symbols(
                 matched_sym_outputs.edge_logits,
@@ -397,7 +401,7 @@ class DFINECriterion(nn.Module):
                 line_flat_idx.batch, line_flat_idx.src
             ]
             w_line = self.line_weights[matched_line_labels]
-            
+
             loss_l1_line = F.l1_loss(
                 matched_line_kp_preds,
                 matched_line_keypoints,

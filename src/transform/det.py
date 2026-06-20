@@ -309,10 +309,14 @@ def random_affine[T: DetectionSample](
     )
 
     fwd_matrix, theta_grid = get_affine_matrices(
-        img_h=h, img_w=w,
-        tx_frac=tx, ty_frac=ty,
-        angle_deg=angle, shear_deg=shear, scale=scale,
-        device=device
+        img_h=h,
+        img_w=w,
+        tx_frac=tx,
+        ty_frac=ty,
+        angle_deg=angle,
+        shear_deg=shear,
+        scale=scale,
+        device=device,
     )
 
     new_img = affine_img(sample.image, theta_grid)

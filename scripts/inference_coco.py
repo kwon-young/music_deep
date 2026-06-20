@@ -284,10 +284,10 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    
+
     if args.var_threshold is None and args.drop_rate is None:
         args.var_threshold = 0.001
     elif args.var_threshold is not None and args.drop_rate is not None:
         raise ValueError("Cannot specify both --var_threshold and --drop_rate")
-        
+
     run_inference(args)
