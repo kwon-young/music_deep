@@ -4,6 +4,7 @@ import pickle
 import math
 from pathlib import Path
 from dataclasses import dataclass
+from collections import defaultdict
 import torch
 from PIL import Image as Image_
 
@@ -111,10 +112,10 @@ class CocoDataset:
                 new_idx += 1
 
         # 2. Filter Annotations
-        new_annotations = {}
+        new_annotations: dict[int, list[CocoParsedAnnotation]] = {}
 
         for img_id, anns in self.annotations.items():
-            filtered_anns = []
+            filtered_anns: list[CocoParsedAnnotation] = []
             for ann in anns:
                 if isinstance(ann, CocoSymbolAnnotation):
                     if ann.category_id in keep_sym_ids:
@@ -267,7 +268,7 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         for img in coco_data["images"]
     ]
 
-    annotations: dict[int, list[CocoParsedAnnotation]] = {}
+    annotations: defaultdict[int, list[CocoParsedAnnotation]] = defaultdict(list)
     symbol_counts: dict[int, int] = {
         idx: 0 for idx in range(len(symbol_categories))
     }
@@ -299,7 +300,7 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
             idx = symbol_cat_id_to_idx[cat_id]
             symbol_counts[idx] += 1
 
-        annotations.setdefault(img_id, []).append(parsed_ann)
+        annotations[img_id].append(parsed_ann)
 
     if os.environ.get("LOCAL_RANK", "0") == "0":
         print("\n--- Symbol Class Frequencies ---")
@@ -324,7 +325,7 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         symbol_weights=symbol_weights,
         line_weights=line_weights,
         images=images,
-        annotations=annotations,
+        annotations=dict(annotations),
         symbol_categories=symbol_categories,
         line_categories=line_categories,
     )
