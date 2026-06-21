@@ -3,8 +3,9 @@ import time
 import math
 import random
 import os
+from typing import ContextManager, cast
 from pathlib import Path
-from typing import Generator, Iterable, cast, Callable
+from typing import Generator, Iterable
 from dataclasses import dataclass
 from itertools import batched
 from contextlib import nullcontext
@@ -32,7 +33,7 @@ from music_types import (
     TensorImage,
     CHW,
     RGB,
-    PatchUnit,
+    Float1,
     BoundingBoxes,
     ClassLabels,
     Keypoints,
@@ -283,7 +284,7 @@ def train_step_pipeline(
             ],
         ]
     ],
-    model: OMRDetector,
+    model: OMRDetector | DDP,
     criterion: DFINECriterion,
     optimizer: optim.Optimizer,
     params: TrainParams,
@@ -321,11 +322,11 @@ def train_step_pipeline(
         ]
 
         # Prevent DDP from synchronizing gradients during accumulation steps
-        sync_context = (
-            model.no_sync()
-            if (is_distributed and is_accumulating)
-            else nullcontext()
-        )
+        sync_context: ContextManager[None]
+        if isinstance(model, DDP) and is_accumulating:
+            sync_context = model.no_sync()
+        else:
+            sync_context = nullcontext()
 
         with sync_context:
             with torch.autocast(
@@ -570,19 +571,20 @@ def train(params: TrainParams):
         if is_main_process:
             print("Fine-tuning backbone parameters.")
 
-    model: torch.nn.Module | Callable = raw_model
-
+    model: OMRDetector | DDP
     # --- Wrap Model in DDP ---
     if is_distributed:
         model = DDP(
             raw_model, device_ids=[local_rank], output_device=local_rank
         )
+    else:
+        model = raw_model
     # ------------------------------
 
     if params.compile:
         if is_main_process:
             print("Compiling model with torch.compile(dynamic=True)...")
-        model = torch.compile(model, dynamic=True)
+        model = cast(OMRDetector | DDP, torch.compile(model, dynamic=True))
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(
@@ -652,7 +654,7 @@ def train(params: TrainParams):
     train_iterator = ThreadedGenerator(
         train_step_pipeline(
             data_iterator,
-            cast(OMRDetector, model),
+            model,
             criterion,
             optimizer,
             params,

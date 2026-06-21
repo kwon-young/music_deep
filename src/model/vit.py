@@ -207,7 +207,7 @@ class BaseViT(Module):
 
         patch_dim = channels * patch_height * patch_width
 
-        self.patch_embed = nn.Sequential(
+        self.patch_embed: nn.Sequential = nn.Sequential(
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),

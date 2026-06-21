@@ -2,8 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, cast
-from .vit import vit_nano, vit_small, vit_base
+from typing import Tuple
+from .vit import vit_nano, vit_small, vit_base, BaseViT
 from music_types import (
     Patches,
     DetectionOutput,
@@ -280,7 +280,7 @@ class LineHead(nn.Module):
 class OMRDetector(nn.Module):
     def __init__(
         self,
-        vit_backbone: nn.Module,
+        vit_backbone: BaseViT,
         num_symbol_classes: int,
         num_line_classes: int,
         num_shapes: int = 5,
@@ -289,7 +289,7 @@ class OMRDetector(nn.Module):
         super().__init__()
         self.backbone = vit_backbone
 
-        patch_embed_1 = cast(nn.Linear, self.backbone.patch_embed[1])
+        patch_embed_1 = self.backbone.patch_embed[1]
         in_dim = patch_embed_1.out_features
 
         self.symbol_head = SymbolHead(
