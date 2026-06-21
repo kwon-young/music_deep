@@ -202,7 +202,7 @@ def collate_images[Meta, C: Channel, H: Height, W: Width, M: Mode, R: Range](
     return BatchedData(metadata=m, sample=SSLSample(image=stacked_image))
 
 
-@transform
+@batched_transform
 def to_masked_patches[B: Batch, N: NumPatches, P: PatchDim](
     sample: SSLSample[MaskedPair[B, N, P]], device: torch.device
 ) -> SSLSample[MaskedPair[B, N, P]]:
