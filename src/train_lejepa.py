@@ -62,7 +62,7 @@ class TrainParams:
     cache_dir: Path | None
     img_dir: Path
     dataset: CocoDataset
-    image_size: int
+    crop_size: int | None
     num_classes: int
     channels: int
     var_threshold: float
@@ -98,13 +98,20 @@ def transform_image(
             )
         except Exception:
             item_decoded = ssl_tf.decode_pyvips(item, device=params.prep_device)
-        item_cropped = ssl_tf.random_crop(
-            item_decoded, crop_size=params.image_size
-        )
+        
+        if params.crop_size is not None:
+            item_cropped = ssl_tf.random_crop(
+                item_decoded, crop_size=params.crop_size
+            )
+        else:
+            item_cropped = item_decoded
     else:
-        item_cropped = ssl_tf.decode_and_crop_pyvips(
-            item, crop_size=params.image_size, device=params.prep_device
-        )
+        if params.crop_size is not None:
+            item_cropped = ssl_tf.decode_and_crop_pyvips(
+                item, crop_size=params.crop_size, device=params.prep_device
+            )
+        else:
+            item_cropped = ssl_tf.decode_pyvips(item, device=params.prep_device)
 
     item_tf = ssl_tf.to_float1(item_cropped)
 
@@ -345,7 +352,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
-    parser.add_argument("--image_size", type=int, default=896)
+    parser.add_argument(
+        "--crop_size",
+        type=int,
+        default=None,
+        help="Square crop size. If not provided, the full image is used.",
+    )
     parser.add_argument("--num_classes", type=int, default=0)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--var_threshold", type=float, default=0.001)
@@ -392,7 +404,7 @@ if __name__ == "__main__":
         cache_dir=args.cache_dir,
         img_dir=args.img_dir,
         dataset=dataset,
-        image_size=args.image_size,
+        crop_size=args.crop_size,
         num_classes=args.num_classes,
         channels=args.channels,
         var_threshold=args.var_threshold,
