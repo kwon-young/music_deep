@@ -318,7 +318,7 @@ def collate[Meta, V: View, C: Channel, H: Height, W: Width, M: Mode, R: Range](
     v = b0.sample.image.num_views
     ob = len(batch) * b0.sample.image.original_batch_size
 
-    stacked_data = stack_tensor_img(i)
+    stacked_data = torch.stack(i, dim=0)
 
     return BatchedData(
         metadata=m,

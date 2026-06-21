@@ -15,6 +15,10 @@ type ProjDim = int
 
 
 class SIGReg(nn.Module):
+    t: torch.Tensor
+    phi: torch.Tensor
+    weights: torch.Tensor
+
     def __init__(self, knots=17):
         super().__init__()
         t = torch.linspace(0, 3, knots, dtype=torch.float32)
@@ -65,7 +69,7 @@ class Predictor(nn.Module):
         N_mask = N_total - N_ctx
 
         # 1. Find mask indices (indices in target that are NOT in context)
-        max_idx = target.indices.max().item() + 1
+        max_idx = int(target.indices.max().item()) + 1
         dense_mask = torch.ones(
             (B, max_idx), dtype=torch.bool, device=target.indices.device
         )
