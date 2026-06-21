@@ -63,28 +63,30 @@ class Predictor(nn.Module):
             use_sdpa=use_sdpa,
         )
 
-    def forward(self, context: Embeddings, target: Embeddings) -> Embeddings:
-        B, N_total = target.indices.shape
-        B, N_ctx = context.indices.shape
-        N_mask = N_total - N_ctx
+    def forward[B: Batch, N_ctx: NumPatches, N_tgt: NumPatches, D: EmbedDim](
+        self, context: Embeddings[B, N_ctx, D], target: Embeddings[B, N_tgt, D]
+    ) -> Embeddings[B, NumPatches, D]:
+        b, n_total = target.indices.shape
+        _, n_ctx = context.indices.shape
+        n_mask = n_total - n_ctx
 
         # 1. Find mask indices (indices in target that are NOT in context)
         max_idx = int(target.indices.max().item()) + 1
         dense_mask = torch.ones(
-            (B, max_idx), dtype=torch.bool, device=target.indices.device
+            (b, max_idx), dtype=torch.bool, device=target.indices.device
         )
         dense_mask.scatter_(1, context.indices, False)
         is_mask = torch.gather(dense_mask, 1, target.indices)
-        mask_indices = target.indices[is_mask].view(B, N_mask)
+        mask_indices = target.indices[is_mask].view(b, n_mask)
 
         # 2. Create mask tokens
-        mask_tokens = self.mask_token.expand(B, N_mask, -1)
+        mask_tokens = self.mask_token.expand(b, n_mask, -1)
 
         # 3. Concatenate context and mask tokens
         pred_data = torch.cat([context.data, mask_tokens], dim=1)
         pred_indices = torch.cat([context.indices, mask_indices], dim=1)
 
-        pred_embeddings = Embeddings(
+        pred_embeddings: Embeddings[B, N_tgt, D] = Embeddings(
             data=pred_data,
             indices=pred_indices,
             image_shape=target.image_shape,
@@ -96,7 +98,7 @@ class Predictor(nn.Module):
         out_data = self.transformer(pred_embeddings.data, freqs=freqs)
 
         # 5. Extract only the predictions for the mask tokens
-        mask_out_data = out_data[:, N_ctx:, :]
+        mask_out_data = out_data[:, n_ctx:, :]
 
         return Embeddings(
             data=mask_out_data,

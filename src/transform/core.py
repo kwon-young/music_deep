@@ -803,7 +803,7 @@ def variance_patch_drop_indices(
         assert var_threshold is not None
         normalized_vars = patches_data.var(dim=-1) / 0.25
         passing_counts = (normalized_vars > var_threshold).sum(dim=-1)
-        max_keep = max(1, passing_counts.max().item())
+        max_keep = max(1, int(passing_counts.max().item()))
         _, topk_indices = torch.topk(normalized_vars, k=max_keep, dim=-1)
 
     # Sort the indices so they remain in their original spatial order
