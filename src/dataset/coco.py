@@ -138,10 +138,14 @@ class CocoDataset:
             for ann in anns:
                 if isinstance(ann, CocoSymbolAnnotation):
                     if ann.category_id in new_sym_id_to_idx:
-                        final_sym_counts[new_sym_id_to_idx[ann.category_id]] += 1
+                        final_sym_counts[
+                            new_sym_id_to_idx[ann.category_id]
+                        ] += 1
                 elif isinstance(ann, CocoLineAnnotation):
                     if ann.category_id in new_line_id_to_idx:
-                        final_line_counts[new_line_id_to_idx[ann.category_id]] += 1
+                        final_line_counts[
+                            new_line_id_to_idx[ann.category_id]
+                        ] += 1
 
         self.symbol_weights = _compute_smoothed_weights(
             final_sym_counts, self.num_symbol_classes
