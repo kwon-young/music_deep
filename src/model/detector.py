@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, cast
 from .vit import vit_nano, vit_small, vit_base
 from music_types import (
     Patches,
@@ -73,6 +73,8 @@ class DFINEWeightingFunction(nn.Module):
     D-FINE's non-uniform weighting function W(n) for the FDR bins.
     Converts bin probabilities into actual edge offsets.
     """
+
+    w: torch.Tensor
 
     def __init__(self, reg_max: int = 32, a: float = 0.5, c: float = 0.25):
         super().__init__()
@@ -287,7 +289,8 @@ class OMRDetector(nn.Module):
         super().__init__()
         self.backbone = vit_backbone
 
-        in_dim = self.backbone.patch_embed[1].out_features
+        patch_embed_1 = cast(nn.Linear, self.backbone.patch_embed[1])
+        in_dim = patch_embed_1.out_features
 
         self.symbol_head = SymbolHead(
             in_dim=in_dim,

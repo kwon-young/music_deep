@@ -81,6 +81,9 @@ class DFINECriterion(nn.Module):
     4. FGL Loss (D-FINE Fine-Grained Localization for edge distributions)
     """
 
+    symbol_weights: torch.Tensor
+    line_weights: torch.Tensor
+
     def __init__(
         self,
         matcher,

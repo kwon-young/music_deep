@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import cast
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 from .box_ops import box_xyxy_to_cxcywh
@@ -155,7 +156,7 @@ class HungarianMatcher(nn.Module):
         ).indices
         valid_mask.scatter_(0, topk_idx, True)
 
-        return torch.where(valid_mask)
+        return cast(tuple[torch.Tensor, torch.Tensor], torch.where(valid_mask))
 
     def _get_valid_pairs_keypoints(
         self, out_kp: torch.Tensor, tgt_kp: torch.Tensor
@@ -198,7 +199,7 @@ class HungarianMatcher(nn.Module):
         ).indices
         valid_mask.scatter_(0, topk_idx, True)
 
-        return torch.where(valid_mask)
+        return cast(tuple[torch.Tensor, torch.Tensor], torch.where(valid_mask))
 
     def _match_modality(
         self,

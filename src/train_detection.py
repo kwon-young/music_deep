@@ -4,7 +4,7 @@ import math
 import random
 import os
 from pathlib import Path
-from typing import Generator, Iterable
+from typing import Generator, Iterable, cast, Callable
 from dataclasses import dataclass
 from itertools import batched
 from contextlib import nullcontext
@@ -147,7 +147,7 @@ def transform_image(
 ) -> Data[
     CocoMetadata,
     DetectionSample[
-        TensorImage[CHW, RGB, PatchUnit],
+        TensorImage[CHW, RGB, Float1],
         BoundingBoxes,
         ClassLabels,
         Keypoints,
@@ -283,7 +283,7 @@ def train_step_pipeline(
             ],
         ]
     ],
-    model: OMRDetector | DDP,
+    model: OMRDetector,
     criterion: DFINECriterion,
     optimizer: optim.Optimizer,
     params: TrainParams,
@@ -355,7 +355,7 @@ def train_step_pipeline(
                 [local_symbols], dtype=torch.long, device=params.train_device
             )
             dist.all_reduce(sym_tensor, op=dist.ReduceOp.SUM)
-            step_symbols = sym_tensor.item()
+            step_symbols = int(sym_tensor.item())
         else:
             step_symbols = local_symbols
 
@@ -570,7 +570,7 @@ def train(params: TrainParams):
         if is_main_process:
             print("Fine-tuning backbone parameters.")
 
-    model = raw_model
+    model: torch.nn.Module | Callable = raw_model
 
     # --- Wrap Model in DDP ---
     if is_distributed:
@@ -652,7 +652,7 @@ def train(params: TrainParams):
     train_iterator = ThreadedGenerator(
         train_step_pipeline(
             data_iterator,
-            model,
+            cast(OMRDetector, model),
             criterion,
             optimizer,
             params,
