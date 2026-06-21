@@ -19,7 +19,12 @@ from threaded_generator import (
 )
 from transform.core import shuffle
 import transform.ssl as ssl_tf
-from dataset.coco import parse_coco, load_coco_ssl_sample, CocoMetadata, CocoDataset
+from dataset.coco import (
+    parse_coco,
+    load_coco_ssl_sample,
+    CocoMetadata,
+    CocoDataset,
+)
 from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     CHW,
@@ -88,10 +93,14 @@ def transform_image(
 
     if params.prep_device.type == "cuda":
         try:
-            item_decoded = ssl_tf.decode_nvimgcodec(item, device=params.prep_device)
+            item_decoded = ssl_tf.decode_nvimgcodec(
+                item, device=params.prep_device
+            )
         except Exception:
             item_decoded = ssl_tf.decode_pyvips(item, device=params.prep_device)
-        item_cropped = ssl_tf.random_crop(item_decoded, crop_size=params.image_size)
+        item_cropped = ssl_tf.random_crop(
+            item_decoded, crop_size=params.image_size
+        )
     else:
         item_cropped = ssl_tf.decode_and_crop_pyvips(
             item, crop_size=params.image_size, device=params.prep_device
@@ -110,11 +119,14 @@ def create_lejepa_iterator(
     params: TrainParams,
     monitor: Monitor | None = None,
 ) -> Generator[
-    BatchedData[CocoMetadata, SSLSample[MaskedPair[Batch, NumPatches, PatchDim]]],
+    BatchedData[
+        CocoMetadata, SSLSample[MaskedPair[Batch, NumPatches, PatchDim]]
+    ],
     None,
     None,
 ]:
     import random
+
     num_images = len(params.dataset.images)
     indices = list(range(num_images))
 
@@ -128,23 +140,23 @@ def create_lejepa_iterator(
 
         for batch_items in batched(transformed_gen, params.batch_size):
             batched_item = ssl_tf.collate_images(batch_items)
-            
+
             patched_item = ssl_tf.extract_patches(
                 batched_item, patch_size=(params.patch_size, params.patch_size)
             )
-            
+
             dropped_item = ssl_tf.variance_patch_drop(
                 patched_item, var_threshold=params.var_threshold
             )
-            
+
             masked_item = ssl_tf.random_spatial_mask(
                 dropped_item, drop_ratio=params.mask_ratio
             )
-            
+
             final_item = ssl_tf.to_masked_patches(
                 masked_item, device=params.train_device
             )
-            
+
             yield final_item
 
 
@@ -230,11 +242,27 @@ def train(params: TrainParams):
             # 4. Gather target embeddings for the masked patches
             B = target_emb.batch_size
             max_idx = target_emb.indices.max().item() + 1
-            pos_map = torch.zeros((B, max_idx), dtype=torch.long, device=params.train_device)
-            pos_map.scatter_(1, target_emb.indices, torch.arange(target_emb.indices.size(1), device=params.train_device).unsqueeze(0).expand(B, -1))
-            
+            pos_map = torch.zeros(
+                (B, max_idx), dtype=torch.long, device=params.train_device
+            )
+            pos_map.scatter_(
+                1,
+                target_emb.indices,
+                torch.arange(
+                    target_emb.indices.size(1), device=params.train_device
+                )
+                .unsqueeze(0)
+                .expand(B, -1),
+            )
+
             gather_pos = torch.gather(pos_map, 1, pred_emb.indices)
-            target_mask_emb = torch.gather(target_emb.data, 1, gather_pos.unsqueeze(-1).expand(-1, -1, target_emb.data.size(-1)))
+            target_mask_emb = torch.gather(
+                target_emb.data,
+                1,
+                gather_pos.unsqueeze(-1).expand(
+                    -1, -1, target_emb.data.size(-1)
+                ),
+            )
 
             # 5. Losses
             l2_loss = F.mse_loss(pred_emb.data, target_mask_emb)
@@ -299,11 +327,15 @@ def train(params: TrainParams):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Dense LeJEPA ViT on Trompa-COCO")
+    parser = argparse.ArgumentParser(
+        description="Train Dense LeJEPA ViT on Trompa-COCO"
+    )
     parser.add_argument(
         "--anno_path",
         type=Path,
-        default=Path("data/trompa-coco/annotations/instances_trainval2017.json"),
+        default=Path(
+            "data/trompa-coco/annotations/instances_trainval2017.json"
+        ),
     )
     parser.add_argument(
         "--cache_dir",
