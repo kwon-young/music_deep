@@ -315,3 +315,29 @@
     ```
 * **Results**: TBD
 * **Conclusion**: TBD
+
+## Experiment 019: 100 Epochs Training
+* **Experiment Name/ID**: `experiments/019_100_epochs`
+* **Hypothesis/Goal**: Verify if extending the training duration from 10 to 100 epochs significantly improves the model's ability to localize and classify both symbols and lines. Previous experiments showed promising but plateauing metrics; this experiment tests whether the architecture is simply underfitting and requires more time to converge on the complex Trompa-COCO dataset.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Training: 100 epochs, with a 1-epoch linear warmup. Logging and checkpointing every 5 epochs.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/019_100_epochs \
+        --patch_size 64 \
+        --epochs 100 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --log_epoch_interval 5 \
+        --compile \
+        --warmup_epochs 1
+    ```
+* **Results**: TBD
+* **Conclusion**: TBD
