@@ -93,7 +93,7 @@ class TrainParams:
     loss_fgl: float
     loss_line_l1: float
     lr: float
-    warmup_ratio: float
+    warmup_epochs: float
     min_lr_ratio: float
     running_loss_half_life: float
     epochs: int
@@ -362,18 +362,18 @@ def train_step_pipeline(
 
         cumulative_symbols += step_symbols
         current_epoch = cumulative_symbols / dataset_symbols
-        progress = min(1.0, cumulative_symbols / total_symbol_budget)
 
         # --- Symbol Budget LR Scheduler ---
-        if progress < params.warmup_ratio:
+        warmup_symbols = params.warmup_epochs * dataset_symbols
+        if cumulative_symbols < warmup_symbols:
             # Linear Warmup
             current_lr = params.lr * max(
-                params.min_lr_ratio, (progress / params.warmup_ratio)
+                params.min_lr_ratio, (cumulative_symbols / warmup_symbols)
             )
         else:
             # Cosine Decay
-            cosine_progress = (progress - params.warmup_ratio) / (
-                1.0 - params.warmup_ratio
+            cosine_progress = (cumulative_symbols - warmup_symbols) / (
+                total_symbol_budget - warmup_symbols
             )
             current_lr = (
                 params.lr * 0.5 * (1 + math.cos(math.pi * cosine_progress))
@@ -869,10 +869,10 @@ if __name__ == "__main__":
         help="Peak LR for the Symbol Budget Scheduler",
     )
     parser.add_argument(
-        "--warmup_ratio",
+        "--warmup_epochs",
         type=float,
-        default=0.05,
-        help="Fraction of budget used for warmup",
+        default=0.5,
+        help="Number of epochs to linearly warmup the learning rate",
     )
     parser.add_argument(
         "--min_lr_ratio",
@@ -1056,7 +1056,7 @@ if __name__ == "__main__":
         loss_fgl=args.loss_fgl,
         loss_line_l1=args.loss_line_l1,
         lr=args.lr,
-        warmup_ratio=args.warmup_ratio,
+        warmup_epochs=args.warmup_epochs,
         min_lr_ratio=args.min_lr_ratio,
         running_loss_half_life=args.running_loss_half_life,
         epochs=args.epochs,

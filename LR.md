@@ -30,6 +30,6 @@ To make the learning rate schedule perfectly invariant to `crop_size`, `batch_si
 1. **True Epoch Definition:** 1 Epoch is defined as processing the total number of ground truth symbols in the entire COCO annotation file.
 2. **Total Budget:** `Total Symbol Budget = Total Dataset Symbols * Epochs`.
 3. **Dynamic Progress:** At any point, `progress = cumulative_symbols_seen / Total Symbol Budget`.
-4. **Schedule:** We apply a Linear Warmup for the first 5% of the budget, followed by a Cosine Decay for the remaining 95%.
+4. **Schedule:** We apply a Linear Warmup for a fixed number of epochs (default 0.5), followed by a Cosine Decay for the remaining budget.
 
 This guarantees that the optimizer experiences the exact same learning rate curve relative to the semantic data it has seen, regardless of the hardware, batch size, or crop resolution.
