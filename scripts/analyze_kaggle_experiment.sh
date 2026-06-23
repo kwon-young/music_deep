@@ -22,6 +22,33 @@ EXP_DIR="experiments/$EXP_NAME"
 echo "=== Current Experiment: $EXP_NAME ==="
 mkdir -p "$EXP_DIR"
 
+echo "=== Step 3.5: Polling Kaggle Notebook Status ==="
+while true; do
+    # Fetch the status and extract the string value using grep and cut
+    STATUS=$(mamba run -n pytorch kaggle kernels status "$KAGGLE_SLUG" 2>&1 | grep -o '"status": "[a-zA-Z]*"' | cut -d '"' -f 4)
+    
+    if [ -z "$STATUS" ]; then
+        echo "Could not fetch status. Retrying..."
+    else
+        echo "Kaggle status: $STATUS"
+    fi
+
+    case "$STATUS" in
+        "complete")
+            echo "Notebook finished successfully."
+            break
+            ;;
+        "error"|"cancel"|"cancelled")
+            echo "Error: Kaggle notebook run failed or was cancelled."
+            exit 1
+            ;;
+        *)
+            # Still running or queued, wait 60 seconds before checking again
+            sleep 60
+            ;;
+    esac
+done
+
 echo "=== Step 4: Downloading Kaggle Outputs to $EXP_DIR ==="
 mamba run -n pytorch kaggle kernels output "$KAGGLE_SLUG" -p "$EXP_DIR"
 
