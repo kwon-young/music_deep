@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from pathlib import Path
-from functools import partial
 from dataclasses import dataclass
 from itertools import chain, batched
 
@@ -13,11 +12,8 @@ from model.vit import vit_nano, vit_small, vit_base
 from model.lejepa import Predictor, SIGReg
 from threaded_generator import (
     ThreadedGenerator,
-    ParallelGenerator,
     Monitor,
-    partial_generator,
 )
-from transform.core import shuffle
 import transform.ssl as ssl_tf
 from dataset.coco import (
     parse_coco,
@@ -30,17 +26,11 @@ from music_types import (
     CHW,
     Batch,
     BatchedData,
-    View,
-    BatchView,
-    BVCHW,
     Data,
-    FlatViewTensorImage,
     RGB,
     Float1,
     PatchDim,
     NumPatches,
-    FlatViewEmbeddings,
-    FlatViewPatches,
     SSLSample,
     TensorImage,
     MaskedPair,
@@ -63,7 +53,6 @@ class TrainParams:
     img_dir: Path
     dataset: CocoDataset
     crop_size: int | None
-    num_classes: int
     channels: int
     var_threshold: float
     mask_ratio: float
@@ -210,127 +199,114 @@ def train(params: TrainParams):
         weight_decay=params.weight_decay,
     )
 
-    best_loss = float("inf")
-
     running_loss = None
     samples = 0
-    checkpoint_number = 0
     start_time = time.time()
     global_step = 0
     dataset_size = len(params.dataset.images)
 
-    for epoch in range(params.epochs):
-        backbone.train()
-        predictor.train()
-        monitor = Monitor()
-        iterator = ThreadedGenerator(
-            create_lejepa_iterator(params, monitor=monitor),
-            maxsize=2,
+    backbone.train()
+    predictor.train()
+    monitor = Monitor()
+    iterator = ThreadedGenerator(
+        create_lejepa_iterator(params, monitor=monitor),
+        maxsize=2,
+    )
+
+    for step, batch in enumerate(iterator):
+        global_step += 1
+        N = len(batch.metadata)
+        current_epoch = samples / dataset_size
+        if current_epoch > params.epochs:
+            break
+
+        target_patches = batch.sample.image.target
+        context_patches = batch.sample.image.context
+
+        # 1. Target Encoder (Full Context)
+        target_emb = backbone(target_patches)
+        global_target_emb = target_emb.data.mean(dim=1)
+
+        # 2. Context Encoder (Masked Input)
+        context_emb = backbone(context_patches)
+
+        # 3. Predictor (Grammar Teacher)
+        pred_emb = predictor(context_emb, target_emb)
+
+        # 4. Gather target embeddings for the masked patches
+        B = target_emb.batch_size
+        max_idx = target_emb.indices.max().item() + 1
+        pos_map = torch.zeros(
+            (B, max_idx), dtype=torch.long, device=params.train_device
+        )
+        pos_map.scatter_(
+            1,
+            target_emb.indices,
+            torch.arange(
+                target_emb.indices.size(1), device=params.train_device
+            )
+            .unsqueeze(0)
+            .expand(B, -1),
         )
 
-        for step, batch in enumerate(iterator):
-            global_step += 1
-            N = len(batch.metadata)
-            current_epoch = samples / dataset_size
+        gather_pos = torch.gather(pos_map, 1, pred_emb.indices)
+        target_mask_emb = torch.gather(
+            target_emb.data,
+            1,
+            gather_pos.unsqueeze(-1).expand(
+                -1, -1, target_emb.data.size(-1)
+            ),
+        )
 
-            target_patches = batch.sample.image.target
-            context_patches = batch.sample.image.context
+        # 5. Losses
+        l2_loss = F.mse_loss(pred_emb.data, target_mask_emb)
+        sigreg_loss = sigreg(global_target_emb)
 
-            # 1. Target Encoder (Full Context)
-            target_emb = backbone(target_patches)
-            global_target_emb = target_emb.data.mean(dim=1)
+        loss = sigreg_loss * params.lamb + l2_loss * (1 - params.lamb)
 
-            # 2. Context Encoder (Masked Input)
-            context_emb = backbone(context_patches)
+        if running_loss is None:
+            running_loss = loss.item()
+        else:
+            running_loss = 0.99 * running_loss + 0.01 * loss.item()
 
-            # 3. Predictor (Grammar Teacher)
-            pred_emb = predictor(context_emb, target_emb)
+        samples += N
 
-            # 4. Gather target embeddings for the masked patches
-            B = target_emb.batch_size
-            max_idx = target_emb.indices.max().item() + 1
-            pos_map = torch.zeros(
-                (B, max_idx), dtype=torch.long, device=params.train_device
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if step % params.log_interval == 0:
+            elapsed = time.time() - start_time
+            speed = samples / elapsed if elapsed > 0 else 0.0
+
+            metrics = LeJEPAMetrics(
+                step=global_step,
+                epoch=current_epoch,
+                loss_total=loss.item(),
+                loss_sigreg=sigreg_loss.item(),
+                loss_l2=l2_loss.item(),
+                speed=speed,
             )
-            pos_map.scatter_(
-                1,
-                target_emb.indices,
-                torch.arange(
-                    target_emb.indices.size(1), device=params.train_device
-                )
-                .unsqueeze(0)
-                .expand(B, -1),
+            logger.log_metrics(metrics)
+
+            print(
+                f"Epoch [{current_epoch:.2f}/{params.epochs}] Samples [{samples}] "
+                f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
+                f"(SIGReg: {sigreg_loss.item():.4f}, L2: {l2_loss.item():.4f}) "
+                f"Speed: {speed:.1f} sample/s"
             )
 
-            gather_pos = torch.gather(pos_map, 1, pred_emb.indices)
-            target_mask_emb = torch.gather(
-                target_emb.data,
-                1,
-                gather_pos.unsqueeze(-1).expand(
-                    -1, -1, target_emb.data.size(-1)
-                ),
+            checkpoint = {
+                "backbone": backbone.state_dict(),
+                "predictor": predictor.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "loss": running_loss,
+            }
+
+            torch.save(
+                checkpoint,
+                logger.get_checkpoint_dir() / "best_model.pt",
             )
-
-            # 5. Losses
-            l2_loss = F.mse_loss(pred_emb.data, target_mask_emb)
-            sigreg_loss = sigreg(global_target_emb)
-
-            loss = sigreg_loss * params.lamb + l2_loss * (1 - params.lamb)
-
-            if running_loss is None:
-                running_loss = loss.item()
-            else:
-                running_loss = 0.99 * running_loss + 0.01 * loss.item()
-
-            samples += N
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            if step % params.log_interval == 0:
-                elapsed = time.time() - start_time
-                speed = samples / elapsed if elapsed > 0 else 0.0
-
-                metrics = LeJEPAMetrics(
-                    step=global_step,
-                    epoch=current_epoch,
-                    loss_total=loss.item(),
-                    loss_sigreg=sigreg_loss.item(),
-                    loss_l2=l2_loss.item(),
-                    speed=speed,
-                )
-                logger.log_metrics(metrics)
-
-                print(
-                    f"Epoch [{current_epoch:.2f}/{params.epochs}] Samples [{samples}] "
-                    f"Loss: {loss.item():.4f} (Running: {running_loss:.4f}) "
-                    f"(SIGReg: {sigreg_loss.item():.4f}, L2: {l2_loss.item():.4f}) "
-                    f"Speed: {speed:.1f} sample/s"
-                )
-
-            if samples > checkpoint_number * params.checkpoint_window_size:
-                print(
-                    f"Sample Window Reached [{checkpoint_number}]. "
-                    f"Running Average Loss: {running_loss:.4f}"
-                )
-                checkpoint_number += 1
-
-                if running_loss < best_loss:
-                    best_loss = running_loss
-
-                    checkpoint = {
-                        "backbone": backbone.state_dict(),
-                        "predictor": predictor.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "best_loss": best_loss,
-                    }
-
-                    torch.save(
-                        checkpoint,
-                        logger.get_checkpoint_dir() / "best_model.pt",
-                    )
-                    print(f"Saved new best model with loss {best_loss:.4f}")
 
 
 if __name__ == "__main__":
@@ -358,7 +334,6 @@ if __name__ == "__main__":
         default=None,
         help="Square crop size. If not provided, the full image is used.",
     )
-    parser.add_argument("--num_classes", type=int, default=0)
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument("--mask_ratio", type=float, default=0.5)
@@ -405,7 +380,6 @@ if __name__ == "__main__":
         img_dir=args.img_dir,
         dataset=dataset,
         crop_size=args.crop_size,
-        num_classes=args.num_classes,
         channels=args.channels,
         var_threshold=args.var_threshold,
         mask_ratio=args.mask_ratio,
