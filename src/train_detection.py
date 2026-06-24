@@ -113,6 +113,7 @@ class TrainParams:
     train_device: torch.device
     match_device: torch.device
     backbone_checkpoint: Path | None
+    detector_checkpoint: Path | None
     freeze_backbone: bool
     exp_dir: Path
     stage_name: str
@@ -547,7 +548,17 @@ def train(params: TrainParams):
         base_anchor_size=params.base_anchor_size,
     ).to(params.train_device)
 
-    if params.backbone_checkpoint and params.backbone_checkpoint.exists():
+    loaded_checkpoint = None
+    if params.detector_checkpoint and params.detector_checkpoint.exists():
+        if is_main_process:
+            print(f"Resuming from full detector checkpoint: {params.detector_checkpoint}")
+        loaded_checkpoint = torch.load(
+            params.detector_checkpoint,
+            map_location=params.train_device,
+            weights_only=True,
+        )
+        raw_model.load_state_dict(loaded_checkpoint["model"], strict=True)
+    elif params.backbone_checkpoint and params.backbone_checkpoint.exists():
         if is_main_process:
             print(f"Loading backbone weights from {params.backbone_checkpoint}")
         checkpoint = torch.load(
@@ -614,6 +625,11 @@ def train(params: TrainParams):
     ).to(params.train_device)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
+
+    if loaded_checkpoint is not None and "optimizer" in loaded_checkpoint:
+        if is_main_process:
+            print("Loading optimizer state from checkpoint...")
+        optimizer.load_state_dict(loaded_checkpoint["optimizer"])
 
     # Setup Interactive Plotting ONLY on main process
     if is_main_process:
@@ -977,6 +993,12 @@ if __name__ == "__main__":
         help="Path to the pre-trained LeJEPA backbone checkpoint",
     )
     parser.add_argument(
+        "--detector_checkpoint",
+        type=Path,
+        default=None,
+        help="Path to a full detector checkpoint (model + optimizer) to resume training from.",
+    )
+    parser.add_argument(
         "--freeze_backbone",
         action="store_true",
         help="If set, the backbone weights will be frozen and only the detection head will be trained.",
@@ -1076,6 +1098,7 @@ if __name__ == "__main__":
         train_device=train_device,
         match_device=match_device,
         backbone_checkpoint=args.backbone_checkpoint,
+        detector_checkpoint=args.detector_checkpoint,
         freeze_backbone=args.freeze_backbone,
         exp_dir=args.exp_dir,
         stage_name=args.stage_name,

@@ -341,3 +341,32 @@
     ```
 * **Results**: TBD
 * **Conclusion**: TBD
+
+## Experiment 020: Fine-tuning with Lower Learning Rate
+* **Experiment Name/ID**: `experiments/020_finetune_low_lr`
+* **Hypothesis/Goal**: Verify that continuing training from the Experiment 019 checkpoint with a significantly lower learning rate stabilizes the final convergence phase. The hypothesis is that the exponential formulation for lines is sensitive to large gradient updates, and a lower LR will prevent overshooting and allow fine-tuning of precise endpoints.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Checkpoint: Resuming from `experiments/019_100_epochs/train_detection/checkpoints/latest_model.pt` (loading both model and optimizer state).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Training: 10 epochs, peak LR `1e-5` (down from `1e-4`), with a 0.1 epoch linear warmup to smooth the transition.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/020_finetune_low_lr \
+        --detector_checkpoint experiments/019_100_epochs/train_detection/checkpoints/latest_model.pt \
+        --patch_size 64 \
+        --epochs 10 \
+        --lr 1e-5 \
+        --warmup_epochs 0.1 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 0.5
+    ```
+* **Results**: TBD
+* **Conclusion**: TBD
