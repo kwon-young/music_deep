@@ -327,16 +327,16 @@
         --exp_dir experiments/020_finetune_low_lr \
         --detector_checkpoint experiments/019_100_epochs/train_detection/checkpoints/latest_model.pt \
         --patch_size 64 \
-        --epochs 10 \
+        --epochs 100 \
         --lr 1e-5 \
-        --warmup_epochs 0.1 \
+        --warmup_epochs 1 \
         --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
         --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
         --headless \
         --cache_dir /kaggle/temp/cache/ \
         --use_sdpa \
         --compile \
-        --log_epoch_interval 0.5
+        --log_epoch_interval 5
     ```
 * **Results**: TBD
 * **Conclusion**: TBD
