@@ -320,7 +320,7 @@
   * Checkpoint: Resuming from `experiments/019_100_epochs/train_detection/checkpoints/latest_model.pt` (loading both model and optimizer state).
   * Crop Size: Full Image (None)
   * Data: Full Trompa-COCO dataset.
-  * Training: 10 epochs, peak LR `1e-5` (down from `1e-4`), with a 0.1 epoch linear warmup to smooth the transition.
+  * Training: 100 epochs, peak LR `1e-5` (down from `1e-4`), with a 1 epoch linear warmup to smooth the transition.
   * Command: 
     ```bash
     PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
