@@ -286,36 +286,6 @@
   * **Lines (Visual Improvement / Metric Drop):** Global mAP@0.5 dropped from 0.038 to **0.007**. This was driven entirely by a collapse in the `system` class (0.300 -> 0.029). However, `beam` (0.019 -> 0.042) and `ledgerLines` (0.024 -> 0.084) improved significantly.
 * **Conclusion**: The inverse weighting was highly effective for Symbols, unlocking detection for rare classes. For Lines, the results are nuanced. The collapse of the `system` class suggests the model stopped relying on the "easy" shortcut of predicting fixed-size lines at standard locations (a pitfall similar to the initial `noteheadBlack` overfitting). Visual inspection confirms that the model is now attempting to predict actual line geometry (beams, ledgers) rather than just memorizing system line positions. The drop in `system` mAP is likely a sign of the model breaking out of a local minimum, even if the strict IoU metric penalizes the loss of the "perfect" shortcut predictions. This represents a net improvement in the model's understanding of line geometry.
 
-## Experiment 018: Affine Augmentation Integration
-* **Experiment Name/ID**: `experiments/018_affine_augmentation`
-* **Hypothesis/Goal**: The synthetic Trompa-COCO dataset is perfectly aligned and grid-regular. The model may be learning "shortcut" features based on absolute pixel positions or perfect grid alignment (as warned in `AUGMENT.md`). By enabling random affine transformations (translation, rotation, shear, and scale), we aim to force the model to learn translation-invariant and rotation-tolerant features. This should improve the robustness of the Line Head (which relies on precise relative geometry) and prevent the model from memorizing absolute staff line positions.
-* **Setup**: 
-  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
-  * Augmentation: Enabled with default parameters.
-    * Translation: +/- 5% (`--max_translate_frac 0.05`)
-    * Rotation: +/- 2 degrees (`--max_angle_deg 2.0`)
-    * Shear: +/- 2 degrees (`--max_shear_deg 2.0`)
-    * Scale: 0.9x to 1.1x (`--max_scale 1.1`)
-  * Loss: Smooth Balanced Loss (from Exp 017).
-  * Crop Size: Full Image (None).
-  * Data: Full Trompa-COCO dataset.
-  * Command: 
-    ```bash
-    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
-        --exp_dir experiments/018_affine_augmentation \
-        --patch_size 64 \
-        --epochs 10 \
-        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
-        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
-        --headless \
-        --cache_dir /kaggle/temp/cache/ \
-        --use_sdpa \
-        --compile \
-        --log_epoch_interval 0.5
-    ```
-* **Results**: Training over 100 epochs showed strong convergence. Total loss dropped from ~1.31 to ~0.40, driven by classification (`loss_ce` to ~0.23) and localization (`loss_bbox` to ~0.03) improvements. In-training `mAP@0.5` peaked at ~0.912 (epoch 95) and `mIoU` reached ~0.94, though the final epoch saw a slight dip in batch mAP to 0.637. Official COCO evaluation revealed a massive leap in symbol performance: global mAP@0.5 reached **0.622** (up from 0.053 in Exp 017). Common symbols like `noteheadBlack` (0.990), `gClef` (0.979), and `restQuarter` (0.988) achieved near-perfect detection, though rare classes like `articTenuto` (0.0) and `slur` (0.258) remained difficult. Line performance improved more modestly, with global mAP@0.5 at **0.136**. `ledgerLines` reached 0.771 and `system` 0.437, but thin lines like `staff` (0.091) and `stem` (0.189) continued to struggle.
-* **Conclusion**: Extending training to 100 epochs was highly effective, particularly for symbols, proving the architecture was previously underfitting rather than fundamentally limited. The dramatic improvement in symbol mAP validates the dual-head architecture and loss formulations. However, the modest gains for lines confirm that extreme aspect ratios and thin structures remain the primary bottleneck. While `ledgerLines` and `system` improved, the network still struggles with the pixel-perfect boundaries required for `staff` and `stem` lines under the strict 0.5 IoU threshold. The next step should focus on specialized line representations or relaxed metrics (e.g., OKS or lower IoU thresholds) to better capture line geometry, and potentially addressing the remaining rare symbol classes via targeted data augmentation or hard example mining.
-
 ## Experiment 019: 100 Epochs Training
 * **Experiment Name/ID**: `experiments/019_100_epochs`
 * **Hypothesis/Goal**: Verify if extending the training duration from 10 to 100 epochs significantly improves the model's ability to localize and classify both symbols and lines. Previous experiments showed promising but plateauing metrics; this experiment tests whether the architecture is simply underfitting and requires more time to converge on the complex Trompa-COCO dataset.
@@ -339,8 +309,8 @@
         --compile \
         --warmup_epochs 1
     ```
-* **Results**: TBD
-* **Conclusion**: TBD
+* **Results**: Training over 100 epochs showed strong convergence. Total loss dropped from ~1.31 to ~0.40, driven by classification (`loss_ce` to ~0.23) and localization (`loss_bbox` to ~0.03) improvements. In-training `mAP@0.5` peaked at ~0.912 (epoch 95) and `mIoU` reached ~0.94, though the final epoch saw a slight dip in batch mAP to 0.637. Official COCO evaluation revealed a massive leap in symbol performance: global mAP@0.5 reached **0.622** (up from 0.053 in Exp 017). Common symbols like `noteheadBlack` (0.990), `gClef` (0.979), and `restQuarter` (0.988) achieved near-perfect detection, though rare classes like `articTenuto` (0.0) and `slur` (0.258) remained difficult. Line performance improved more modestly, with global mAP@0.5 at **0.136**. `ledgerLines` reached 0.771 and `system` 0.437, but thin lines like `staff` (0.091) and `stem` (0.189) continued to struggle.
+* **Conclusion**: Extending training to 100 epochs was highly effective, particularly for symbols, proving the architecture was previously underfitting rather than fundamentally limited. The dramatic improvement in symbol mAP validates the dual-head architecture and loss formulations. However, the modest gains for lines confirm that extreme aspect ratios and thin structures remain the primary bottleneck. While `ledgerLines` and `system` improved, the network still struggles with the pixel-perfect boundaries required for `staff` and `stem` lines under the strict 0.5 IoU threshold. The next step should focus on specialized line representations or relaxed metrics (e.g., OKS or lower IoU thresholds) to better capture line geometry, and potentially addressing the remaining rare symbol classes via targeted data augmentation or hard example mining.
 
 ## Experiment 020: Fine-tuning with Lower Learning Rate
 * **Experiment Name/ID**: `experiments/020_finetune_low_lr`

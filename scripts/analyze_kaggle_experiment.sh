@@ -19,59 +19,59 @@ fi
 EXP_NAME=$(cat "$STATE_FILE")
 EXP_DIR="experiments/$EXP_NAME"
 
-echo "=== Current Experiment: $EXP_NAME ==="
-mkdir -p "$EXP_DIR"
+# echo "=== Current Experiment: $EXP_NAME ==="
+# mkdir -p "$EXP_DIR"
+#
+# echo "=== Step 3.5: Polling Kaggle Notebook Status ==="
+# while true; do
+#     # Fetch the status and extract the string value using grep and cut
+#     STATUS=$(mamba run -n pytorch kaggle kernels status "$KAGGLE_SLUG" 2>&1 | grep -o '"status": "[a-zA-Z]*"' | cut -d '"' -f 4)
+#    
+#     if [ -z "$STATUS" ]; then
+#         echo "Could not fetch status. Retrying..."
+#     else
+#         echo "Kaggle status: $STATUS"
+#     fi
+#
+#     case "$STATUS" in
+#         "complete")
+#             echo "Notebook finished successfully."
+#             break
+#             ;;
+#         "error"|"cancel"|"cancelled")
+#             echo "Error: Kaggle notebook run failed or was cancelled."
+#             exit 1
+#             ;;
+#         *)
+#             # Still running or queued, wait 60 seconds before checking again
+#             sleep 60
+#             ;;
+#     esac
+# done
+#
+# echo "=== Step 4: Downloading Kaggle Outputs to $EXP_DIR ==="
+# mamba run -n pytorch kaggle kernels output "$KAGGLE_SLUG" -p "$EXP_DIR"
+#
+# echo "=== Step 5: Running COCO Evaluation ==="
+# PRED_DIR="$EXP_DIR/inference"
+# if [ ! -d "$PRED_DIR" ]; then
+#     echo "Error: Prediction directory $PRED_DIR does not exist."
+#     exit 1
+# fi
+#
+# mamba run -n pytorch python src/evaluate_coco.py \
+#     --anno_path "$ANNO_PATH" \
+#     --pred_dir "$PRED_DIR" \
+#     --out_dir "$EXP_DIR"
 
-echo "=== Step 3.5: Polling Kaggle Notebook Status ==="
-while true; do
-    # Fetch the status and extract the string value using grep and cut
-    STATUS=$(mamba run -n pytorch kaggle kernels status "$KAGGLE_SLUG" 2>&1 | grep -o '"status": "[a-zA-Z]*"' | cut -d '"' -f 4)
-    
-    if [ -z "$STATUS" ]; then
-        echo "Could not fetch status. Retrying..."
-    else
-        echo "Kaggle status: $STATUS"
-    fi
-
-    case "$STATUS" in
-        "complete")
-            echo "Notebook finished successfully."
-            break
-            ;;
-        "error"|"cancel"|"cancelled")
-            echo "Error: Kaggle notebook run failed or was cancelled."
-            exit 1
-            ;;
-        *)
-            # Still running or queued, wait 60 seconds before checking again
-            sleep 60
-            ;;
-    esac
-done
-
-echo "=== Step 4: Downloading Kaggle Outputs to $EXP_DIR ==="
-mamba run -n pytorch kaggle kernels output "$KAGGLE_SLUG" -p "$EXP_DIR"
-
-echo "=== Step 5: Running COCO Evaluation ==="
-PRED_DIR="$EXP_DIR/inference"
-if [ ! -d "$PRED_DIR" ]; then
-    echo "Error: Prediction directory $PRED_DIR does not exist."
-    exit 1
-fi
-
-mamba run -n pytorch python src/evaluate_coco.py \
-    --anno_path "$ANNO_PATH" \
-    --pred_dir "$PRED_DIR" \
-    --out_dir "$EXP_DIR"
-
-EVAL_METRICS="$EXP_DIR/coco_eval_summary.json"
+EVAL_METRICS="$EXP_DIR/inference/coco_eval_summary.json"
 TRAIN_METRICS="$EXP_DIR/$STAGE_NAME/metrics.jsonl"
 
 echo "=== Step 6: Summarizing Results with Aider ==="
 echo "Found training metrics: $TRAIN_METRICS"
 echo "Found inference metrics: $EVAL_METRICS"
 
-AIDER_READ_ARGS=""
+AIDER_READ_ARGS="--read src/train_detection.py"
 if [ -f "$TRAIN_METRICS" ]; then
     AIDER_READ_ARGS="$AIDER_READ_ARGS --read $TRAIN_METRICS"
 else
@@ -92,6 +92,6 @@ Update the 'Results' subsection with a concise summary of these metrics.
 Update the 'Conclusion' subsection with a brief, pedagogical insight into what these results mean for the model's learning and what the next steps should be.
 Do not modify any other experiments or parts of the file."
 
-aider --yes --no-clipboard --message "$MESSAGE" $AIDER_READ_ARGS EXPERIMENTS.md
+aider --no-gitignore --message "$MESSAGE" $AIDER_READ_ARGS EXPERIMENTS.md
 
 echo "=== Automation Complete ==="
