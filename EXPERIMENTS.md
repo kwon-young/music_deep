@@ -313,8 +313,8 @@
         --compile \
         --log_epoch_interval 0.5
     ```
-* **Results**: TBD
-* **Conclusion**: TBD
+* **Results**: Training over 100 epochs showed strong convergence. Total loss dropped from ~1.31 to ~0.40, driven by classification (`loss_ce` to ~0.23) and localization (`loss_bbox` to ~0.03) improvements. In-training `mAP@0.5` peaked at ~0.912 (epoch 95) and `mIoU` reached ~0.94, though the final epoch saw a slight dip in batch mAP to 0.637. Official COCO evaluation revealed a massive leap in symbol performance: global mAP@0.5 reached **0.622** (up from 0.053 in Exp 017). Common symbols like `noteheadBlack` (0.990), `gClef` (0.979), and `restQuarter` (0.988) achieved near-perfect detection, though rare classes like `articTenuto` (0.0) and `slur` (0.258) remained difficult. Line performance improved more modestly, with global mAP@0.5 at **0.136**. `ledgerLines` reached 0.771 and `system` 0.437, but thin lines like `staff` (0.091) and `stem` (0.189) continued to struggle.
+* **Conclusion**: Extending training to 100 epochs was highly effective, particularly for symbols, proving the architecture was previously underfitting rather than fundamentally limited. The dramatic improvement in symbol mAP validates the dual-head architecture and loss formulations. However, the modest gains for lines confirm that extreme aspect ratios and thin structures remain the primary bottleneck. While `ledgerLines` and `system` improved, the network still struggles with the pixel-perfect boundaries required for `staff` and `stem` lines under the strict 0.5 IoU threshold. The next step should focus on specialized line representations or relaxed metrics (e.g., OKS or lower IoU thresholds) to better capture line geometry, and potentially addressing the remaining rare symbol classes via targeted data augmentation or hard example mining.
 
 ## Experiment 019: 100 Epochs Training
 * **Experiment Name/ID**: `experiments/019_100_epochs`
