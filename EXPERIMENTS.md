@@ -340,3 +340,32 @@
     ```
 * **Results**: Training losses remained stable and low, with `loss_total` hovering around 0.28-0.39, and `loss_ce` around 0.15-0.23. In-training `mAP@0.5` peaked at ~0.920 (epoch 90) and `mIoU` reached ~0.955. Official COCO evaluation showed significant improvements over Experiment 019. For symbols, global mAP@0.5 increased to **0.6977** (up from 0.622). Common symbols like `noteheadBlack` (0.990), `gClef` (0.980), and `restQuarter` (0.989) maintained near-perfect detection, while `slur` improved to 0.309. Rare classes like `articTenutoAbove` remained at 0.0. For lines, global mAP@0.5 increased to **0.1816** (up from 0.136). `ledgerLines` reached 0.800, `system` improved to 0.563, `staff` to 0.136, and `stem` to 0.235.
 * **Conclusion**: Fine-tuning with a lower learning rate (1e-5) successfully stabilized the final convergence phase and yielded significant improvements in official COCO evaluation metrics for both symbols and lines. The lower LR allowed the network to fine-tune precise endpoints and boundaries without overshooting, validating the hypothesis that the exponential formulation for lines is sensitive to large gradient updates. The remaining challenges are the rare symbol classes (e.g., `articTenutoAbove`) and extremely thin lines, which may require targeted data augmentation or specialized representations.
+
+## Experiment 021: Proportional FGL Scaling for Lines
+* **Experiment Name/ID**: `experiments/021_proportional_fgl_lines`
+* **Hypothesis/Goal**: Verify that scaling the D-FINE Fine-Grained Localization (FGL) residual for lines by the magnitude of the predicted base direction (plus a floor) resolves the "asleep FGL" bottleneck. By mirroring the D-FINE box logic (where FGL scales with width/height), the line FGL should provide smooth, active gradients across the entire length of long lines, rather than being clamped and falling asleep for errors > 0.5 patches.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and updated `LineHead` (Proportional FGL scaling).
+  * Checkpoint: Resuming from `experiments/020_finetune_low_lr/train_detection/checkpoints/latest_model.pt` (loading both model and optimizer state).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Training: 100 epochs, peak LR `1e-5`, with a 1 epoch linear warmup.
+  * Command: 
+    ```bash
+    PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
+        --exp_dir experiments/021_proportional_fgl_lines \
+        --detector_checkpoint experiments/020_finetune_low_lr/train_detection/checkpoints/latest_model.pt \
+        --patch_size 64 \
+        --epochs 100 \
+        --lr 1e-5 \
+        --warmup_epochs 1 \
+        --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
+        --headless \
+        --cache_dir /kaggle/temp/cache/ \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 5
+    ```
+* **Results**: *To be filled after training.*
+* **Conclusion**: *To be filled after training.*

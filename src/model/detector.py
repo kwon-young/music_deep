@@ -262,8 +262,10 @@ class LineHead(nn.Module):
         edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
         edge_probs = F.softmax(edge_logits, dim=-1)
 
-        # Residuals are scaled by base_anchor_size to act as local sub-patch refinements
-        res = self.weighting_fn(edge_probs) * self.base_anchor_size
+        # Scale residuals by the magnitude of the base direction + base_anchor_size
+        # This mirrors D-FINE box logic, allowing FGL to refine across the entire line length
+        scale = torch.abs(base_dirs) + self.base_anchor_size
+        res = self.weighting_fn(edge_probs) * scale
 
         # --- Final Endpoints (Relative to Patch Center) ---
         # No multiplication between direction and scale! Just addition.

@@ -262,10 +262,15 @@ class DFINECriterion(nn.Module):
                 matched_keypoints[:, 3],
             )
 
-            res_x1 = (x1 - cx - base_x1) / self.base_anchor_size
-            res_y1 = (y1 - cy - base_y1) / self.base_anchor_size
-            res_x2 = (x2 - cx - base_x2) / self.base_anchor_size
-            res_y2 = (y2 - cy - base_y2) / self.base_anchor_size
+            scale_x1 = torch.abs(base_x1) + self.base_anchor_size
+            scale_y1 = torch.abs(base_y1) + self.base_anchor_size
+            scale_x2 = torch.abs(base_x2) + self.base_anchor_size
+            scale_y2 = torch.abs(base_y2) + self.base_anchor_size
+
+            res_x1 = (x1 - cx - base_x1) / scale_x1
+            res_y1 = (y1 - cy - base_y1) / scale_y1
+            res_x2 = (x2 - cx - base_x2) / scale_x2
+            res_y2 = (y2 - cy - base_y2) / scale_y2
 
             target_res = torch.stack([res_x1, res_y1, res_x2, res_y2], dim=-1)
 
