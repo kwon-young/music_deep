@@ -57,7 +57,7 @@ class ZoomPanGraphicsView(QGraphicsView):
 
 
 class InferenceSignals(QObject):
-    inference_done = Signal(int, list, list)
+    inference_done = Signal(int, list, list, list)
 
 
 class InferenceTask(QRunnable):
@@ -95,6 +95,26 @@ class InferenceTask(QRunnable):
                     var_threshold=self.var_threshold,
                     drop_rate=None,
                 )
+
+                # --- Compute dropped patch coordinates for visualization ---
+                _, h, w = self.patched_img.image_shape
+                ph, pw = self.patch_size, self.patch_size
+                grid_h = h // ph
+                grid_w = w // pw
+
+                num_patches = self.patched_img.data.shape[1]
+                all_indices = torch.arange(num_patches, device=keep_indices.device)
+                dropped_mask = ~torch.isin(all_indices, keep_indices[0])
+                dropped_indices = all_indices[dropped_mask]
+
+                dropped_patches = []
+                for idx in dropped_indices.tolist():
+                    row = idx // grid_w
+                    col = idx % grid_w
+                    x1 = col * pw
+                    y1 = row * ph
+                    dropped_patches.append((x1, y1, pw, ph))
+
                 dropped_img = core_tf.patch_drop_img(
                     self.patched_img, keep_indices
                 )
@@ -154,11 +174,11 @@ class InferenceTask(QRunnable):
                     line_results.append((x1, y1, x2, y2, score.item(), label.item()))
 
                 self.signals.inference_done.emit(
-                    self.task_id, sym_results, line_results
+                    self.task_id, sym_results, line_results, dropped_patches
                 )
         except Exception as e:
             print(f"Inference error: {e}")
-            self.signals.inference_done.emit(self.task_id, [], [])
+            self.signals.inference_done.emit(self.task_id, [], [], [])
 
 
 class InteractiveViewer(QMainWindow):
@@ -331,7 +351,7 @@ class InteractiveViewer(QMainWindow):
         task.signals.inference_done.connect(self.display_results)
         self.thread_pool.start(task)
 
-    def display_results(self, task_id, sym_results, line_results):
+    def display_results(self, task_id, sym_results, line_results, dropped_patches):
         if task_id != self.task_id:
             return
 
@@ -341,6 +361,15 @@ class InteractiveViewer(QMainWindow):
         for item in self.scene.items():
             if item != self.pixmap_item:
                 self.scene.removeItem(item)
+
+        # Draw dropped patches (semi-transparent gray)
+        drop_brush = QColor(128, 128, 128, 100)
+        drop_pen = QPen(Qt.NoPen)
+        for x1, y1, w, h in dropped_patches:
+            rect = QGraphicsRectItem(x1, y1, w, h)
+            rect.setBrush(drop_brush)
+            rect.setPen(drop_pen)
+            self.scene.addItem(rect)
 
         sym_pen = QPen(QColor(255, 0, 0, 200), 2)
         sym_pen.setCosmetic(True)
