@@ -89,8 +89,13 @@ class InferenceTask(QRunnable):
     def run(self):
         try:
             with torch.no_grad():
-                dropped_img = core_tf.variance_patch_drop_img(
-                    self.patched_img, var_threshold=self.var_threshold, drop_rate=None
+                keep_indices = core_tf.variance_patch_drop_indices(
+                    self.patched_img.data,
+                    var_threshold=self.var_threshold,
+                    drop_rate=None,
+                )
+                dropped_img = core_tf.patch_drop_img(
+                    self.patched_img, keep_indices
                 )
                 with torch.autocast(
                     device_type=self.device.type,
