@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QFileDialog,
     QProgressBar,
+    QCheckBox,
 )
 from PySide6.QtGui import QPixmap, QPen, QColor, QPainter, QImage
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal
@@ -73,6 +74,7 @@ class InferenceTask(QRunnable):
         device,
         use_amp,
         task_id,
+        viewport_indices=None,
     ):
         super().__init__()
         self.model = model
@@ -85,6 +87,7 @@ class InferenceTask(QRunnable):
         self.device = device
         self.use_amp = use_amp
         self.task_id = task_id
+        self.viewport_indices = viewport_indices
         self.signals = InferenceSignals()
 
     def run(self):
@@ -95,6 +98,14 @@ class InferenceTask(QRunnable):
                     var_threshold=self.var_threshold,
                     drop_rate=None,
                 )
+
+                if self.viewport_indices is not None:
+                    mask = torch.isin(keep_indices[0], self.viewport_indices)
+                    keep_indices = keep_indices[:, mask]
+
+                if keep_indices.shape[1] == 0:
+                    self.signals.inference_done.emit(self.task_id, [], [], [])
+                    return
 
                 # --- Compute dropped patch coordinates for visualization ---
                 _, h, w = self.patched_img.image_shape
@@ -252,6 +263,12 @@ class InteractiveViewer(QMainWindow):
 
         controls_layout.addSpacing(20)
 
+        self.viewport_crop_checkbox = QCheckBox("Drop patches outside viewport")
+        self.viewport_crop_checkbox.setChecked(False)
+        controls_layout.addWidget(self.viewport_crop_checkbox)
+
+        controls_layout.addSpacing(20)
+
         self.var_label = QLabel(f"Var Threshold: {self.var_threshold:.4f}")
         controls_layout.addWidget(self.var_label)
 
@@ -341,12 +358,48 @@ class InteractiveViewer(QMainWindow):
 
         self.run_inference()
 
+    def get_viewport_patch_indices(self):
+        if self.patched_img is None:
+            return None
+        
+        # Get the visible rectangle in scene coordinates
+        viewport_rect = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+        
+        # Get image dimensions
+        _, h, w = self.patched_img.image_shape
+        ph, pw = self.args.patch_size, self.args.patch_size
+        grid_h = h // ph
+        grid_w = w // pw
+        
+        # Calculate the range of rows and cols that intersect the viewport
+        start_col = max(0, int(viewport_rect.x() // pw))
+        end_col = min(grid_w, int((viewport_rect.x() + viewport_rect.width()) // pw) + 1)
+        
+        start_row = max(0, int(viewport_rect.y() // ph))
+        end_row = min(grid_h, int((viewport_rect.y() + viewport_rect.height()) // ph) + 1)
+        
+        # Create a list of indices
+        indices = []
+        for r in range(start_row, end_row):
+            for c in range(start_col, end_col):
+                indices.append(r * grid_w + c)
+            
+        if not indices:
+            return None
+            
+        return torch.tensor(indices, dtype=torch.long, device=self.patched_img.data.device)
+
     def run_inference(self):
         if self.patched_img is None:
             return
 
         self.spinner.show()
         self.task_id += 1
+        
+        viewport_indices = None
+        if self.viewport_crop_checkbox.isChecked():
+            viewport_indices = self.get_viewport_patch_indices()
+
         task = InferenceTask(
             self.model,
             self.patched_img,
@@ -358,6 +411,7 @@ class InteractiveViewer(QMainWindow):
             self.device,
             self.args.use_amp,
             self.task_id,
+            viewport_indices=viewport_indices,
         )
         task.signals.inference_done.connect(self.display_results)
         self.thread_pool.start(task)
