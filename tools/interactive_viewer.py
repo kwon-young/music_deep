@@ -169,6 +169,7 @@ class InteractiveViewer(QMainWindow):
         self.img_pil = None
         self.img_np = None
         self.current_pixmap = None
+        self.pixmap_item = None
         self.var_threshold = 0.001
         self.conf_threshold = 0.5
         self.task_id = 0
@@ -293,9 +294,9 @@ class InteractiveViewer(QMainWindow):
 
         self.scene.clear()
         if self.current_pixmap:
-            pixmap_item = QGraphicsPixmapItem(self.current_pixmap)
-            self.scene.addItem(pixmap_item)
-            self.scene.setSceneRect(pixmap_item.boundingRect())
+            self.pixmap_item = QGraphicsPixmapItem(self.current_pixmap)
+            self.scene.addItem(self.pixmap_item)
+            self.scene.setSceneRect(self.pixmap_item.boundingRect())
             self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
 
         self.run_inference()
@@ -324,9 +325,10 @@ class InteractiveViewer(QMainWindow):
         if task_id != self.task_id:
             return
 
-        # Clear previous overlays (pixmap is item 0)
-        for item in self.scene.items()[1:]:
-            self.scene.removeItem(item)
+        # Clear previous overlays, keeping only the base pixmap
+        for item in self.scene.items():
+            if item != self.pixmap_item:
+                self.scene.removeItem(item)
 
         sym_pen = QPen(QColor(255, 0, 0, 200), 2)
         sym_pen.setCosmetic(True)
