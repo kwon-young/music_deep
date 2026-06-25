@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QLabel,
     QFileDialog,
+    QProgressBar,
 )
 from PySide6.QtGui import QPixmap, QPen, QColor, QPainter, QImage
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal
@@ -246,6 +247,14 @@ class InteractiveViewer(QMainWindow):
         self.run_btn.clicked.connect(self.run_inference)
         controls_layout.addWidget(self.run_btn)
 
+        # Spinner to indicate inference is running
+        self.spinner = QProgressBar()
+        self.spinner.setRange(0, 0)  # Indeterminate mode
+        self.spinner.setTextVisible(False)
+        self.spinner.setMaximumWidth(30)
+        self.spinner.hide()
+        controls_layout.addWidget(self.spinner)
+
         main_layout.addLayout(controls_layout)
 
         # Graphics View
@@ -305,6 +314,7 @@ class InteractiveViewer(QMainWindow):
         if self.patched_img is None:
             return
 
+        self.spinner.show()
         self.task_id += 1
         task = InferenceTask(
             self.model,
@@ -324,6 +334,8 @@ class InteractiveViewer(QMainWindow):
     def display_results(self, task_id, sym_results, line_results):
         if task_id != self.task_id:
             return
+
+        self.spinner.hide()
 
         # Clear previous overlays, keeping only the base pixmap
         for item in self.scene.items():
