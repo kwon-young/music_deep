@@ -204,6 +204,17 @@ class InteractiveViewer(QMainWindow):
     def setup_model(self):
         print(f"Loading dataset metadata from {self.args.anno_path}...")
         dataset = parse_coco(self.args.anno_path)
+
+        # Create mappings from class index to class name
+        self.sym_idx_to_name = {
+            dataset.symbol_cat_id_to_idx[cat["id"]]: cat["name"]
+            for cat in dataset.symbol_categories
+        }
+        self.line_idx_to_name = {
+            dataset.line_cat_id_to_idx[cat["id"]]: cat["name"]
+            for cat in dataset.line_categories
+        }
+
         print("Creating model...")
         self.model = create_detector(
             backbone_size=self.args.backbone_size,
@@ -377,7 +388,8 @@ class InteractiveViewer(QMainWindow):
         for x1, y1, x2, y2, score, label in sym_results:
             rect = QGraphicsRectItem(x1, y1, x2 - x1, y2 - y1)
             rect.setPen(sym_pen)
-            rect.setToolTip(f"Sym: {label} ({score:.2f})")
+            name = self.sym_idx_to_name.get(label, str(label))
+            rect.setToolTip(f"Sym: {name} ({score:.2f})")
             self.scene.addItem(rect)
 
         line_pen = QPen(QColor(0, 0, 255, 200), 2)
@@ -386,7 +398,8 @@ class InteractiveViewer(QMainWindow):
         for x1, y1, x2, y2, score, label in line_results:
             line = QGraphicsLineItem(x1, y1, x2, y2)
             line.setPen(line_pen)
-            line.setToolTip(f"Line: {label} ({score:.2f})")
+            name = self.line_idx_to_name.get(label, str(label))
+            line.setToolTip(f"Line: {name} ({score:.2f})")
             self.scene.addItem(line)
 
 
