@@ -97,6 +97,8 @@ class InferenceTask(QRunnable):
                 dropped_img = core_tf.patch_drop_img(
                     self.patched_img, keep_indices
                 )
+                # Move the patched image to the target device before inference
+                dropped_img = core_tf.to_device_embeddings(dropped_img, self.device)
                 with torch.autocast(
                     device_type=self.device.type,
                     dtype=torch.float16,
