@@ -239,6 +239,12 @@ class InteractiveViewer(QMainWindow):
         self.conf_slider.valueChanged.connect(self.on_conf_changed)
         controls_layout.addWidget(self.conf_slider)
 
+        controls_layout.addSpacing(20)
+
+        self.run_btn = QPushButton("Run Inference")
+        self.run_btn.clicked.connect(self.run_inference)
+        controls_layout.addWidget(self.run_btn)
+
         main_layout.addLayout(controls_layout)
 
         # Graphics View
@@ -256,12 +262,10 @@ class InteractiveViewer(QMainWindow):
     def on_var_changed(self, value):
         self.var_threshold = value / 10000.0
         self.var_label.setText(f"Var Threshold: {self.var_threshold:.4f}")
-        self.run_inference()
 
     def on_conf_changed(self, value):
         self.conf_threshold = value / 100.0
         self.conf_label.setText(f"Confidence: {self.conf_threshold:.2f}")
-        self.run_inference()
 
     def load_image(self, path: str):
         img = Image.open(path).convert("RGB")
