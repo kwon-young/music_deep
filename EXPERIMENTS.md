@@ -349,7 +349,7 @@
   * Checkpoint: Resuming from `experiments/020_finetune_low_lr/train_detection/checkpoints/latest_model.pt` (loading both model and optimizer state).
   * Crop Size: Full Image (None)
   * Data: Full Trompa-COCO dataset.
-  * Training: 100 epochs, peak LR `1e-5`, with a 1 epoch linear warmup.
+  * Training: 100 epochs, peak LR `1e-4`, with a 1 epoch linear warmup.
   * Command: 
     ```bash
     PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
@@ -357,7 +357,7 @@
         --detector_checkpoint experiments/020_finetune_low_lr/train_detection/checkpoints/latest_model.pt \
         --patch_size 64 \
         --epochs 100 \
-        --lr 1e-5 \
+        --lr 1e-4 \
         --warmup_epochs 1 \
         --anno_path ../input/datasets/kwonyoungchoi/trompa-coco/annotations/instances_trainval2017.json \
         --img_dir ../input/datasets/kwonyoungchoi/trompa-coco/trainval2017 \
