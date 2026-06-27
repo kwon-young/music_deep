@@ -549,7 +549,8 @@ def train(params: TrainParams):
     ).to(params.train_device)
 
     loaded_checkpoint = None
-    if params.detector_checkpoint and params.detector_checkpoint.exists():
+    if params.detector_checkpoint:
+        assert params.detector_checkpoint.exists()
         if is_main_process:
             print(f"Resuming from full detector checkpoint: {params.detector_checkpoint}")
         loaded_checkpoint = torch.load(
