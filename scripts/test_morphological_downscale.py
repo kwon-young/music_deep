@@ -1,7 +1,6 @@
 import argparse
 from pathlib import Path
 import torch
-import matplotlib.pyplot as plt
 import numpy as np
 import pyvips
 
@@ -25,39 +24,45 @@ def load_image(path: Path) -> TensorImage[CHW, RGB, Float1]:
     return TensorImage(t.float() / 255.0)
 
 
+def save_image(img: TensorImage[CHW, RGB, Float1], path: Path) -> None:
+    """Saves a TensorImage directly to a file using pyvips to avoid matplotlib resampling."""
+    arr = (img.data.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    height, width, bands = arr.shape
+    vips_img = pyvips.Image.new_from_memory(
+        arr.tobytes(), width, height, bands, "uchar"
+    )
+    vips_img.write_to_file(str(path))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Visually test morphological downscaling on a single image."
     )
     parser.add_argument("image_path", type=Path, help="Path to the input image.")
     parser.add_argument(
-        "--output",
+        "--output_dir",
         type=Path,
-        default=Path("downscale_test.png"),
-        help="Path to save the output visualization.",
+        default=Path("downscale_test"),
+        help="Directory to save the output images.",
     )
     args = parser.parse_args()
+
+    args.output_dir.mkdir(exist_ok=True, parents=True)
 
     img = load_image(args.image_path)
 
     scales = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
 
-    fig, axes = plt.subplots(1, len(scales), figsize=(20, 10))
-    for ax, scale in zip(axes, scales):
+    for scale in scales:
         c, h, w = img.data.shape
         h_out = max(1, int(h / scale))
         w_out = max(1, int(w / scale))
 
         downscaled = morphological_downscale_img(img, h_out, w_out)
-
-        plot_img = downscaled.data.permute(1, 2, 0).numpy()
-        ax.imshow(plot_img)
-        ax.set_title(f"Scale {scale:.1f}x\n{downscaled.data.shape[1]}x{downscaled.data.shape[2]}")
-        ax.axis("off")
-
-    plt.tight_layout()
-    plt.savefig(args.output, dpi=150)
-    print(f"Saved visualization to {args.output}")
+        
+        out_path = args.output_dir / f"downscale_{scale:.1f}x.png"
+        save_image(downscaled, out_path)
+        print(f"Saved {out_path}")
 
 
 if __name__ == "__main__":
