@@ -448,6 +448,68 @@ def crop_keypoints[
     )
 
 
+def morphological_downscale_img[
+    C: Channel, H: Height, W: Width, M: Mode
+](
+    image: TensorImage[tuple[C, H, W], M, Float1],
+    h_out: int,
+    w_out: int,
+) -> TensorImage[tuple[C, Height, Width], M, Float1]:
+    """Downscales the image using adaptive min pooling to preserve thin lines."""
+    c, h, w = image.data.shape
+    if h_out == h and w_out == w:
+        return image
+
+    # Invert: black (0.0) becomes 1.0, white (1.0) becomes 0.0
+    inverted = 1.0 - image.data
+
+    # Adaptive max pool over inverted image.
+    pooled = F.adaptive_max_pool2d(
+        inverted.unsqueeze(0), (h_out, w_out)
+    ).squeeze(0)
+
+    # Invert back
+    downsampled = 1.0 - pooled
+
+    return replace(image, data=downsampled)
+
+
+def scale_boxes_xyxy[
+    B: NumBoxes, D: BoxDim, R: BoxRange, O: Origin, C: NumSymbolClasses
+](
+    boxes: BoundingBoxes[tuple[B, D], XYXY, R, O],
+    labels: ClassLabels[tuple[B], C],
+    scale_h: float,
+    scale_w: float,
+) -> tuple[BoundingBoxes[tuple[B, D], XYXY, R, O], ClassLabels[tuple[B], C]]:
+    """Scales absolute box coordinates by 1/scale_factor."""
+    if len(boxes.data) == 0 or (scale_h == 1.0 and scale_w == 1.0):
+        return boxes, labels
+
+    new_boxes = boxes.data.clone()
+    new_boxes[:, [0, 2]] /= scale_w
+    new_boxes[:, [1, 3]] /= scale_h
+    return replace(boxes, data=new_boxes), labels
+
+
+def scale_keypoints[
+    K: NumKeypoints, D: KeypointDim, R: KeypointRange, O: Origin, C: NumLineClasses
+](
+    keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, R, O],
+    labels: ClassLabels[tuple[K], C],
+    scale_h: float,
+    scale_w: float,
+) -> tuple[Keypoints[tuple[K, D], X1Y1X2Y2, R, O], ClassLabels[tuple[K], C]]:
+    """Scales absolute keypoint coordinates by 1/scale_factor."""
+    if len(keypoints.data) == 0 or (scale_h == 1.0 and scale_w == 1.0):
+        return keypoints, labels
+
+    new_kps = keypoints.data.clone()
+    new_kps[:, [0, 2]] /= scale_w
+    new_kps[:, [1, 3]] /= scale_h
+    return replace(keypoints, data=new_kps), labels
+
+
 def affine_matrix_params(
     bv: BatchView,
     max_angle_deg: float,

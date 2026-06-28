@@ -1,3 +1,4 @@
+import random
 import torch
 from dataclasses import replace
 from .core import (
@@ -28,6 +29,9 @@ from .core import (
     affine_img,
     affine_boxes_xyxy,
     affine_keypoints,
+    morphological_downscale_img,
+    scale_boxes_xyxy,
+    scale_keypoints,
 )
 from music_types import (
     DetectionSample,
@@ -334,6 +338,59 @@ def random_affine[T: DetectionSample](
         box_labels=new_box_labels,
         keypoints=new_kps,
         keypoint_labels=new_kp_labels,
+    )
+
+
+@transform
+def random_morphological_downscale[
+    C: Channel, H: Height, W: Width, M: Mode,
+    B: NumBoxes, K: NumKeypoints, D: BoxDim, KD: KeypointDim,
+    BR: BoxRange, KR: KeypointRange, O: Origin,
+    SC: NumSymbolClasses, LC: NumLineClasses,
+](
+    sample: DetectionSample[
+        TensorImage[tuple[C, H, W], M, Float1],
+        BoundingBoxes[tuple[B, D], XYXY, BR, O],
+        ClassLabels[tuple[B], SC],
+        Keypoints[tuple[K, KD], X1Y1X2Y2, KR, O],
+        ClassLabels[tuple[K], LC],
+    ],
+    max_scale_factor: float,
+) -> DetectionSample[
+    TensorImage[tuple[C, Height, Width], M, Float1],
+    BoundingBoxes[tuple[B, D], XYXY, BR, O],
+    ClassLabels[tuple[B], SC],
+    Keypoints[tuple[K, KD], X1Y1X2Y2, KR, O],
+    ClassLabels[tuple[K], LC],
+]:
+    """Applies random fractional morphological downscaling to simulate different DPIs."""
+    _, h, w = sample.image.data.shape
+    scale_factor = random.uniform(1.0, max_scale_factor)
+
+    h_out = max(1, int(h / scale_factor))
+    w_out = max(1, int(w / scale_factor))
+
+    # Calculate exact scale factors to perfectly align targets
+    exact_scale_h = h / h_out
+    exact_scale_w = w / w_out
+
+    if exact_scale_h == 1.0 and exact_scale_w == 1.0:
+        return sample
+
+    new_img = morphological_downscale_img(sample.image, h_out, w_out)
+    new_boxes, new_box_labels = scale_boxes_xyxy(
+        sample.boxes, sample.box_labels, exact_scale_h, exact_scale_w
+    )
+    new_keypoints, new_keypoint_labels = scale_keypoints(
+        sample.keypoints, sample.keypoint_labels, exact_scale_h, exact_scale_w
+    )
+
+    return DetectionSample(
+        image=new_img,
+        boxes=new_boxes,
+        box_labels=new_box_labels,
+        keypoints=new_keypoints,
+        keypoint_labels=new_keypoint_labels,
     )
 
 

@@ -101,6 +101,7 @@ class TrainParams:
     var_threshold: float | None
     drop_rate: float | None
     affine: bool
+    morphological_downscale: bool
     max_translate_frac: float
     max_angle_deg: float
     max_shear_deg: float
@@ -142,6 +143,7 @@ def transform_image(
     crop_size: int | None,
     prep_device: torch.device,
     affine: bool,
+    morphological_downscale: bool,
     max_translate_frac: float,
     max_angle_deg: float,
     max_shear_deg: float,
@@ -174,6 +176,9 @@ def transform_image(
             item_cropped = det_tf.decode_pyvips(item, device=prep_device)
 
     item_tf = det_tf.to_float1(item_cropped)
+
+    if morphological_downscale:
+        item_tf = det_tf.random_morphological_downscale(item_tf, max_scale_factor=3.0)
 
     if affine:
         item_aug = det_tf.random_affine(
@@ -242,6 +247,7 @@ def create_detection_iterator(
                     params.crop_size,
                     params.prep_device,
                     affine=params.affine,
+                    morphological_downscale=params.morphological_downscale,
                     max_translate_frac=params.max_translate_frac,
                     max_angle_deg=params.max_angle_deg,
                     max_shear_deg=params.max_shear_deg,
@@ -925,6 +931,11 @@ if __name__ == "__main__":
         help="Enable random affine augmentations",
     )
     parser.add_argument(
+        "--morphological_downscale",
+        action="store_true",
+        help="Enable random morphological downscaling for DPI augmentation",
+    )
+    parser.add_argument(
         "--max_translate_frac",
         type=float,
         default=0.05,
@@ -1087,6 +1098,7 @@ if __name__ == "__main__":
         var_threshold=args.var_threshold,
         drop_rate=args.drop_rate,
         affine=args.affine,
+        morphological_downscale=args.morphological_downscale,
         max_translate_frac=args.max_translate_frac,
         max_angle_deg=args.max_angle_deg,
         max_shear_deg=args.max_shear_deg,
