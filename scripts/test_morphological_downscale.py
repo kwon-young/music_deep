@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyvips
 
-from src.transform.core import morphological_downscale_img
+from transform.core import morphological_downscale_img
 from music_types import TensorImage, CHW, RGB, Float1
 
 
