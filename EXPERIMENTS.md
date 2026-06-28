@@ -346,7 +346,7 @@
 * **Hypothesis/Goal**: Verify that scaling the D-FINE Fine-Grained Localization (FGL) residual for lines by the magnitude of the predicted base direction (plus a floor) resolves the "asleep FGL" bottleneck. By mirroring the D-FINE box logic (where FGL scales with width/height), the line FGL should provide smooth, active gradients across the entire length of long lines, rather than being clamped and falling asleep for errors > 0.5 patches.
 * **Setup**: 
   * Model: `vit_nano` (patch_size=64) with `SymbolHead` and updated `LineHead` (Proportional FGL scaling).
-  * Checkpoint: Resuming from `experiments/020_finetune_low_lr/train_detection/checkpoints/latest_model.pt` (loading both model and optimizer state).
+  * Checkpoint: From scratch
   * Crop Size: Full Image (None)
   * Data: Full Trompa-COCO dataset.
   * Training: 100 epochs, peak LR `1e-4`, with a 1 epoch linear warmup.
@@ -354,7 +354,6 @@
     ```bash
     PYTHONPATH=/kaggle/temp/music_deep /kaggle/temp/conda/bin/mamba run torchrun --nproc_per_node=2 /kaggle/temp/music_deep/src/train_detection.py \
         --exp_dir experiments/021_proportional_fgl_lines \
-        --detector_checkpoint experiments/020_finetune_low_lr/train_detection/checkpoints/latest_model.pt \
         --patch_size 64 \
         --epochs 100 \
         --lr 1e-4 \
