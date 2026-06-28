@@ -101,7 +101,7 @@ class TrainParams:
     var_threshold: float | None
     drop_rate: float | None
     affine: bool
-    morphological_downscale: bool
+    morphological_downscale: float | None
     max_translate_frac: float
     max_angle_deg: float
     max_shear_deg: float
@@ -143,7 +143,7 @@ def transform_image(
     crop_size: int | None,
     prep_device: torch.device,
     affine: bool,
-    morphological_downscale: bool,
+    morphological_downscale: float | None,
     max_translate_frac: float,
     max_angle_deg: float,
     max_shear_deg: float,
@@ -177,8 +177,10 @@ def transform_image(
 
     item_tf = det_tf.to_float1(item_cropped)
 
-    if morphological_downscale:
-        item_tf = det_tf.random_morphological_downscale(item_tf, max_scale_factor=3.0)
+    if morphological_downscale is not None:
+        item_tf = det_tf.random_morphological_downscale(
+            item_tf, max_scale_factor=morphological_downscale
+        )
 
     if affine:
         item_aug = det_tf.random_affine(
@@ -932,8 +934,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--morphological_downscale",
-        action="store_true",
-        help="Enable random morphological downscaling for DPI augmentation",
+        type=float,
+        default=None,
+        help="Enable random morphological downscaling for DPI augmentation with the given max scale factor (e.g., 3.0)",
     )
     parser.add_argument(
         "--max_translate_frac",
