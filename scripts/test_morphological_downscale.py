@@ -1,7 +1,8 @@
 import argparse
 from pathlib import Path
 import torch
-import matplotlib.pyplot as plt
+import numpy as np
+import pyvips
 
 from dataset.coco import parse_coco, load_coco_sample
 from transform.core import (
@@ -79,29 +80,42 @@ def main():
             new_boxes, _ = scale_boxes_xyxy(boxes, box_labels, exact_scale_h, exact_scale_w)
             new_kps, _ = scale_keypoints(keypoints, keypoint_labels, exact_scale_h, exact_scale_w)
 
-        # Plotting
-        fig, ax = plt.subplots(1, figsize=(12, 12))
-        ax.imshow(downscaled.data.permute(1, 2, 0).numpy(), cmap="gray")
+        # Draw overlay directly on the image tensor to preserve exact resolution
+        img_np = downscaled.data.permute(1, 2, 0).numpy()
+        img_uint8 = (img_np * 255).astype(np.uint8).copy()
+        h, w, _ = img_uint8.shape
 
-        # Draw boxes with transparency
+        # Draw boxes (Red, 50% opacity)
         for i in range(len(new_boxes.data)):
-            x1, y1, x2, y2 = new_boxes.data[i].tolist()
-            rect = plt.Rectangle(
-                (x1, y1), x2 - x1, y2 - y1, linewidth=1, edgecolor="r", facecolor="red", alpha=0.3
-            )
-            ax.add_patch(rect)
+            x1, y1, x2, y2 = map(int, new_boxes.data[i].tolist())
+            x1, x2 = max(0, min(x1, w - 1)), max(0, min(x2, w - 1))
+            y1, y2 = max(0, min(y1, h - 1)), max(0, min(y2, h - 1))
+            if x2 >= x1 and y2 >= y1:
+                # Top & Bottom
+                img_uint8[y1, x1:x2+1] = (0.5 * img_uint8[y1, x1:x2+1] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
+                img_uint8[y2, x1:x2+1] = (0.5 * img_uint8[y2, x1:x2+1] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
+                # Left & Right
+                img_uint8[y1:y2+1, x1] = (0.5 * img_uint8[y1:y2+1, x1] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
+                img_uint8[y1:y2+1, x2] = (0.5 * img_uint8[y1:y2+1, x2] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
 
-        # Draw keypoints (lines) with transparency
+        # Draw keypoints (Green, 50% opacity)
         for i in range(len(new_kps.data)):
             x1, y1, x2, y2 = new_kps.data[i].tolist()
-            ax.plot([x1, x2], [y1, y2], color="lime", linewidth=1, alpha=0.5)
+            length = max(abs(x2 - x1), abs(y2 - y1))
+            if length > 0:
+                xs = np.linspace(x1, x2, int(length) + 1).astype(int)
+                ys = np.linspace(y1, y2, int(length) + 1).astype(int)
+                valid = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+                xs, ys = xs[valid], ys[valid]
+                img_uint8[ys, xs] = (0.5 * img_uint8[ys, xs] + 0.5 * np.array([0, 255, 0])).astype(np.uint8)
 
-        ax.set_title(f"Scale {scale:.1f}x")
-        ax.axis("off")
-
+        # Save using pyvips to avoid matplotlib resampling
+        height, width, bands = img_uint8.shape
+        vips_img = pyvips.Image.new_from_memory(
+            img_uint8.tobytes(), width, height, bands, "uchar"
+        )
         out_path = args.output_dir / f"downscale_{scale:.1f}x_gt.png"
-        plt.savefig(out_path, bbox_inches="tight", pad_inches=0)
-        plt.close()
+        vips_img.write_to_file(str(out_path))
         print(f"Saved {out_path}")
 
 
