@@ -73,7 +73,7 @@ class ZoomPanGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event):
         if self.measure_mode and event.button() == Qt.LeftButton:
-            self.start_point = self.mapToScene(event.pos())
+            self.start_point = self.mapToScene(event.position().toPoint())
             self.temp_line = QGraphicsLineItem(
                 self.start_point.x(), self.start_point.y(), self.start_point.x(), self.start_point.y()
             )
@@ -86,7 +86,7 @@ class ZoomPanGraphicsView(QGraphicsView):
 
     def mouseMoveEvent(self, event):
         if self.measure_mode and self.temp_line:
-            end_point = self.mapToScene(event.pos())
+            end_point = self.mapToScene(event.position().toPoint())
             self.temp_line.setLine(
                 self.start_point.x(), self.start_point.y(), end_point.x(), end_point.y()
             )
@@ -95,7 +95,7 @@ class ZoomPanGraphicsView(QGraphicsView):
 
     def mouseReleaseEvent(self, event):
         if self.measure_mode and self.temp_line:
-            end_point = self.mapToScene(event.pos())
+            end_point = self.mapToScene(event.position().toPoint())
             dist = math.hypot(end_point.x() - self.start_point.x(), end_point.y() - self.start_point.y())
             self.scene().removeItem(self.temp_line)
             self.temp_line = None
@@ -419,7 +419,9 @@ class InteractiveViewer(QMainWindow):
             new_w = int(data.shape[3] * self.scale_factor)
             resized_data = F.interpolate(data, size=(new_h, new_w), mode='bilinear', align_corners=False)
             float1_img = TensorImage(data=resized_data.squeeze(0))
-            self.img_np = (resized_data.squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            # .contiguous() is required because permute() creates a non-contiguous view,
+            # which causes a BufferError when passed to QImage.
+            self.img_np = (resized_data.squeeze(0).permute(1, 2, 0).contiguous().numpy() * 255).astype(np.uint8)
 
         self.img_w = self.img_np.shape[1]
         self.img_h = self.img_np.shape[0]
