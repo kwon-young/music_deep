@@ -1,8 +1,10 @@
+import math
 import sys
 import argparse
 from pathlib import Path
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +36,8 @@ from music_types import TensorImage, CHW, RGB, Int255, Float1, Batch
 class ZoomPanGraphicsView(QGraphicsView):
     """A custom QGraphicsView that supports zooming with the mouse wheel and panning."""
 
+    measurement_made = Signal(float)
+
     def __init__(self, scene):
         super().__init__(scene)
         self.setRenderHint(QPainter.Antialiasing)
@@ -43,6 +47,17 @@ class ZoomPanGraphicsView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.measure_mode = False
+        self.start_point = None
+        self.temp_line = None
+
+    def set_measure_mode(self, enabled: bool):
+        self.measure_mode = enabled
+        if enabled:
+            self.setDragMode(QGraphicsView.NoDrag)
+        else:
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
 
     def wheelEvent(self, event):
         """Zoom in and out with the mouse wheel."""
@@ -55,6 +70,40 @@ class ZoomPanGraphicsView(QGraphicsView):
             zoom_factor = zoom_out_factor
 
         self.scale(zoom_factor, zoom_factor)
+
+    def mousePressEvent(self, event):
+        if self.measure_mode and event.button() == Qt.LeftButton:
+            self.start_point = self.mapToScene(event.pos())
+            self.temp_line = QGraphicsLineItem(
+                self.start_point.x(), self.start_point.y(), self.start_point.x(), self.start_point.y()
+            )
+            pen = QPen(QColor(0, 255, 0, 200), 2)
+            pen.setCosmetic(True)
+            self.temp_line.setPen(pen)
+            self.scene().addItem(self.temp_line)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.measure_mode and self.temp_line:
+            end_point = self.mapToScene(event.pos())
+            self.temp_line.setLine(
+                self.start_point.x(), self.start_point.y(), end_point.x(), end_point.y()
+            )
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.measure_mode and self.temp_line:
+            end_point = self.mapToScene(event.pos())
+            dist = math.hypot(end_point.x() - self.start_point.x(), end_point.y() - self.start_point.y())
+            self.scene().removeItem(self.temp_line)
+            self.temp_line = None
+            self.start_point = None
+            if dist > 0:
+                self.measurement_made.emit(dist)
+        else:
+            super().mouseReleaseEvent(event)
 
 
 class InferenceSignals(QObject):
@@ -205,6 +254,11 @@ class InteractiveViewer(QMainWindow):
         self.var_threshold = 0.001
         self.conf_threshold = 0.5
         self.task_id = 0
+        self.scale_factor = 1.0
+        self.target_interline = 54.0
+        self.current_path = None
+        self.img_w = 0
+        self.img_h = 0
 
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(1)
@@ -295,6 +349,16 @@ class InteractiveViewer(QMainWindow):
         self.run_btn.clicked.connect(self.run_inference)
         controls_layout.addWidget(self.run_btn)
 
+        controls_layout.addSpacing(20)
+
+        self.measure_btn = QPushButton("Measure")
+        self.measure_btn.setCheckable(True)
+        self.measure_btn.toggled.connect(self.on_measure_toggled)
+        controls_layout.addWidget(self.measure_btn)
+
+        self.measure_label = QLabel("Scale: 1.00x (Interline: 54px)")
+        controls_layout.addWidget(self.measure_label)
+
         # Spinner to indicate inference is running
         self.spinner = QProgressBar()
         self.spinner.setRange(0, 0)  # Indeterminate mode
@@ -308,6 +372,7 @@ class InteractiveViewer(QMainWindow):
         # Graphics View
         self.scene = QGraphicsScene()
         self.view = ZoomPanGraphicsView(self.scene)
+        self.view.measurement_made.connect(self.update_measurement)
         main_layout.addWidget(self.view)
 
     def on_load_image_clicked(self):
@@ -325,20 +390,44 @@ class InteractiveViewer(QMainWindow):
         self.conf_threshold = value / 100.0
         self.conf_label.setText(f"Confidence: {self.conf_threshold:.2f}")
 
+    def on_measure_toggled(self, checked):
+        self.view.set_measure_mode(checked)
+
+    def update_measurement(self, dist):
+        self.scale_factor = self.target_interline / dist
+        self.measure_label.setText(f"Scale: {self.scale_factor:.2f}x (Measured: {dist:.1f}px)")
+        self.measure_btn.setChecked(False)
+        if self.current_path:
+            self.load_image(self.current_path)
+
     def load_image(self, path: str):
+        self.current_path = path
         img = Image.open(path).convert("RGB")
         self.img_pil = img
 
         # Convert to QPixmap
         self.img_np = np.array(img)
-        h, w, c = self.img_np.shape
-        q_img = QImage(self.img_np.data, w, h, w * c, QImage.Format_RGB888)
-        self.current_pixmap = QPixmap.fromImage(q_img)
 
         # Preprocess for model
         img_tensor = torch.from_numpy(self.img_np).permute(2, 0, 1)
         tensor_img: TensorImage[CHW, RGB, Int255] = TensorImage(data=img_tensor)
         float1_img = core_tf.to_float1_img(tensor_img)
+
+        if self.scale_factor != 1.0:
+            data = float1_img.data.unsqueeze(0)
+            new_h = int(data.shape[2] * self.scale_factor)
+            new_w = int(data.shape[3] * self.scale_factor)
+            resized_data = F.interpolate(data, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            float1_img = TensorImage(data=resized_data.squeeze(0))
+            self.img_np = (resized_data.squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+
+        self.img_w = self.img_np.shape[1]
+        self.img_h = self.img_np.shape[0]
+
+        h, w, c = self.img_np.shape
+        q_img = QImage(self.img_np.data, w, h, w * c, QImage.Format_RGB888)
+        self.current_pixmap = QPixmap.fromImage(q_img)
+
         padded_img = core_tf.pad_to_patch_size_img(
             float1_img, (self.args.patch_size, self.args.patch_size)
         )
@@ -404,8 +493,8 @@ class InteractiveViewer(QMainWindow):
             self.model,
             self.patched_img,
             self.args.patch_size,
-            self.img_pil.width,
-            self.img_pil.height,
+            self.img_w,
+            self.img_h,
             self.var_threshold,
             self.conf_threshold,
             self.device,
