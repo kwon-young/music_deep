@@ -61,30 +61,51 @@
 import torch
 import gc
 from model.vit import vit_nano, vit_small, vit_base
+from music_types import Patches
 
 
-def check_memory(model_fn, batch_size, img_size, is_train, patch_size):
+def check_memory(model_fn, batch_size, num_tokens, is_train, patch_size):
     try:
         device = torch.device("cuda")
-        # Instantiate model with the target image_size and patch_size
+        # Instantiate model with the target patch_size
         model = model_fn(
-            image_size=img_size,
             patch_size=patch_size,
-            channels=1,
+            channels=3,
         ).to(device)
-        x = torch.randn(batch_size, 1, img_size, img_size, device=device)
+
+        # Create dummy Patches dataclass
+        patch_dim = 3 * patch_size * patch_size
+        dummy_data = torch.randn(batch_size, num_tokens, patch_dim, device=device)
+        dummy_indices = (
+            torch.arange(num_tokens, device=device).unsqueeze(0).expand(batch_size, -1)
+        )
+
+        # image_shape and patch_size must be consistent for compute_freqs
+        # grid_h * grid_w >= num_tokens
+        grid_h = int(num_tokens**0.5) + 1
+        grid_w = grid_h
+        h = grid_h * patch_size
+        w = grid_w * patch_size
+        c = 3
+
+        patches = Patches(
+            data=dummy_data,
+            indices=dummy_indices,
+            image_shape=(c, h, w),
+            patch_size=(patch_size, patch_size),
+        )
 
         if is_train:
             model.train()
-            out = model(x)
-            out.mean().backward()
+            out = model(patches)
+            out.data.mean().backward()
         else:
             model.eval()
             with torch.no_grad():
-                out = model(x)
+                out = model(patches)
 
         # Clean up memory if successful
-        del model, x, out
+        del model, patches, out
         torch.cuda.empty_cache()
         gc.collect()
         return True
@@ -102,26 +123,21 @@ def check_memory(model_fn, batch_size, img_size, is_train, patch_size):
 
 
 def find_max_tokens(model_fn, batch_size, is_train, patch_size):
-    # Binary search over image size multiples of the patch size
-    low_mult = 1
-    high_mult = 250  # max test image size: 250 * patch_size
-    best_mult = 0
+    # Binary search over number of tokens
+    low_tokens = 100
+    high_tokens = 50000  # max test tokens
+    best_tokens = 0
 
-    while low_mult <= high_mult:
-        mid_mult = (low_mult + high_mult) // 2
-        img_size = mid_mult * patch_size
+    while low_tokens <= high_tokens:
+        mid_tokens = (low_tokens + high_tokens) // 2
 
-        if check_memory(model_fn, batch_size, img_size, is_train, patch_size):
-            best_mult = mid_mult
-            low_mult = mid_mult + 1
+        if check_memory(model_fn, batch_size, mid_tokens, is_train, patch_size):
+            best_tokens = mid_tokens
+            low_tokens = mid_tokens + 1
         else:
-            high_mult = mid_mult - 1
+            high_tokens = mid_tokens - 1
 
-    if best_mult == 0:
-        return 0
-
-    # Total tokens = (H // patch_size) * (W // patch_size)
-    return best_mult * best_mult
+    return best_tokens
 
 
 def main():
@@ -135,7 +151,7 @@ def main():
         "vit_base": vit_base,
     }
 
-    patch_sizes = [16, 32]
+    patch_sizes = [64]  # Only test 64 as it's the project standard
     batch_sizes = [1, 8, 32, 128]
 
     print(
