@@ -9,54 +9,8 @@
 # | N/A   54C    P8            N/A  /  200W |       0MiB /   4096MiB |      0%      Default |
 # Model        | Patch | Batch  | Mode     | Max Tokens
 # -------------------------------------------------------
-# vit_nano     | 16    | 1      | Infer    | 12769
-# vit_nano     | 16    | 1      | Train    | 4225
-# vit_nano     | 16    | 8      | Infer    | 4356
-# vit_nano     | 16    | 8      | Train    | 1225
-# vit_nano     | 16    | 32     | Infer    | 2116
-# vit_nano     | 16    | 32     | Train    | 484
-# vit_nano     | 16    | 128    | Infer    | 900
-# vit_nano     | 16    | 128    | Train    | 144
-# vit_nano     | 32    | 1      | Infer    | 12544
-# vit_nano     | 32    | 1      | Train    | 4225
-# vit_nano     | 32    | 8      | Infer    | 4356
-# vit_nano     | 32    | 8      | Train    | 1225
-# vit_nano     | 32    | 32     | Infer    | 2025
-# vit_nano     | 32    | 32     | Train    | 484
-# vit_nano     | 32    | 128    | Infer    | 900
-# vit_nano     | 32    | 128    | Train    | 144
-# vit_small    | 16    | 1      | Infer    | 8836
-# vit_small    | 16    | 1      | Train    | 2916
-# vit_small    | 16    | 8      | Infer    | 3025
-# vit_small    | 16    | 8      | Train    | 784
-# vit_small    | 16    | 32     | Infer    | 1444
-# vit_small    | 16    | 32     | Train    | 256
-# vit_small    | 16    | 128    | Infer    | 676
-# vit_small    | 16    | 128    | Train    | 64
-# vit_small    | 32    | 1      | Infer    | 8836
-# vit_small    | 32    | 1      | Train    | 2916
-# vit_small    | 32    | 8      | Infer    | 3025
-# vit_small    | 32    | 8      | Train    | 784
-# vit_small    | 32    | 32     | Infer    | 1369
-# vit_small    | 32    | 32     | Train    | 256
-# vit_small    | 32    | 128    | Infer    | 625
-# vit_small    | 32    | 128    | Train    | 64
-# vit_base     | 16    | 1      | Infer    | 6084
-# vit_base     | 16    | 1      | Train    | 1849
-# vit_base     | 16    | 8      | Infer    | 2025
-# vit_base     | 16    | 8      | Train    | 441
-# vit_base     | 16    | 32     | Infer    | 900
-# vit_base     | 16    | 32     | Train    | 121
-# vit_base     | 16    | 128    | Infer    | 361
-# vit_base     | 16    | 128    | Train    | 36
-# vit_base     | 32    | 1      | Infer    | 6084
-# vit_base     | 32    | 1      | Train    | 1849
-# vit_base     | 32    | 8      | Infer    | 2025
-# vit_base     | 32    | 8      | Train    | 441
-# vit_base     | 32    | 32     | Infer    | 900
-# vit_base     | 32    | 32     | Train    | 121
-# vit_base     | 32    | 128    | Infer    | 361
-# vit_base     | 32    | 128    | Train    | 36
+# vit_nano     | 64    | 1      | Train    | 13369       
+# vit_nano     | 64    | 1      | Infer    | 33857       
 
 import torch
 import gc
@@ -121,12 +75,16 @@ def find_max_tokens(model_fn, batch_size, is_train, patch_size):
 
     # Binary search over number of tokens
     low_tokens = 100
-    high_tokens = 20000  # lowered max test tokens
+    high_tokens = 100000  # lowered max test tokens
     best_tokens = 0
 
     while low_tokens <= high_tokens:
         mid_tokens = (low_tokens + high_tokens) // 2
-
+        if (high_tokens - low_tokens) < 10:
+            best_tokens = mid_tokens
+            break
+        import time
+        print(time.time(), is_train, mid_tokens)
         if check_memory(model, batch_size, mid_tokens, is_train, patch_size):
             best_tokens = mid_tokens
             low_tokens = mid_tokens + 1
@@ -147,12 +105,13 @@ def main():
 
     models = {
         "vit_nano": vit_nano,
-        "vit_small": vit_small,
-        "vit_base": vit_base,
+        # "vit_small": vit_small,
+        # "vit_base": vit_base,
     }
 
     patch_sizes = [64]  # Only test 64 as it's the project standard
-    batch_sizes = [1, 8, 32, 128]
+    # batch_sizes = [1, 8, 32, 128]
+    batch_sizes = [1]
 
     print(
         f"{'Model':<12} | {'Patch':<5} | {'Batch':<6} | {'Mode':<8} | {'Max Tokens':<12}"
@@ -162,7 +121,7 @@ def main():
     for name, model_fn in models.items():
         for ps in patch_sizes:
             for bs in batch_sizes:
-                for is_train in [False, True]:
+                for is_train in [True, False]:
                     mode_str = "Train" if is_train else "Infer"
                     max_tokens = find_max_tokens(model_fn, bs, is_train, ps)
                     print(
