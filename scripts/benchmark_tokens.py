@@ -61,7 +61,7 @@
 import torch
 import gc
 from model.vit import vit_nano, vit_small, vit_base
-from music_types import Patches
+from music_types import Embeddings
 
 
 def check_memory(model_fn, batch_size, num_tokens, is_train, patch_size):
@@ -88,7 +88,7 @@ def check_memory(model_fn, batch_size, num_tokens, is_train, patch_size):
         w = grid_w * patch_size
         c = 3
 
-        patches = Patches(
+        patches = Embeddings(
             data=dummy_data,
             indices=dummy_indices,
             image_shape=(c, h, w),
