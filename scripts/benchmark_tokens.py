@@ -64,18 +64,13 @@ from model.vit import vit_nano, vit_small, vit_base
 from music_types import Embeddings
 
 
-def check_memory(model_fn, batch_size, num_tokens, is_train, patch_size):
+def check_memory(model, batch_size, num_tokens, is_train, patch_size):
     try:
-        device = torch.device("cuda")
-        # Instantiate model with the target patch_size
-        model = model_fn(
-            patch_size=patch_size,
-            channels=3,
-        ).to(device)
+        device = next(model.parameters()).device
 
-        # Create dummy Patches dataclass
+        # Use empty instead of randn to save time (we don't need real data)
         patch_dim = 3 * patch_size * patch_size
-        dummy_data = torch.randn(batch_size, num_tokens, patch_dim, device=device)
+        dummy_data = torch.empty(batch_size, num_tokens, patch_dim, device=device)
         dummy_indices = (
             torch.arange(num_tokens, device=device).unsqueeze(0).expand(batch_size, -1)
         )
@@ -105,38 +100,43 @@ def check_memory(model_fn, batch_size, num_tokens, is_train, patch_size):
                 out = model(patches)
 
         # Clean up memory if successful
-        del model, patches, out
+        del patches, out
         torch.cuda.empty_cache()
-        gc.collect()
         return True
 
     except torch.cuda.OutOfMemoryError:
         # Clean up on OOM
         torch.cuda.empty_cache()
-        gc.collect()
         return False
     except Exception:
         # Catch other potential size-related errors (e.g. tensor too large)
         torch.cuda.empty_cache()
-        gc.collect()
         return False
 
 
 def find_max_tokens(model_fn, batch_size, is_train, patch_size):
+    # Instantiate model ONCE outside the loop
+    device = torch.device("cuda")
+    model = model_fn(patch_size=patch_size, channels=3).to(device)
+
     # Binary search over number of tokens
     low_tokens = 100
-    high_tokens = 50000  # max test tokens
+    high_tokens = 20000  # lowered max test tokens
     best_tokens = 0
 
     while low_tokens <= high_tokens:
         mid_tokens = (low_tokens + high_tokens) // 2
 
-        if check_memory(model_fn, batch_size, mid_tokens, is_train, patch_size):
+        if check_memory(model, batch_size, mid_tokens, is_train, patch_size):
             best_tokens = mid_tokens
             low_tokens = mid_tokens + 1
         else:
             high_tokens = mid_tokens - 1
 
+    # Cleanup model after search
+    del model
+    torch.cuda.empty_cache()
+    gc.collect()
     return best_tokens
 
 
