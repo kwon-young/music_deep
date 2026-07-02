@@ -967,7 +967,7 @@ if __name__ == "__main__":
         "--max_scale",
         type=float,
         default=1.1,
-        help="Max scale factor (e.g. 1.1 for +/- 10%)",
+        help="Max scale factor (e.g. 1.1 for +/- 10%%)",
     )
 
     parser.add_argument(
