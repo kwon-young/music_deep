@@ -87,7 +87,7 @@ def transform_image(
             )
         except Exception:
             item_decoded = ssl_tf.decode_pyvips(item, device=params.prep_device)
-        
+
         if params.crop_size is not None:
             item_cropped = ssl_tf.random_crop(
                 item_decoded, crop_size=params.crop_size
@@ -242,9 +242,7 @@ def train(params: TrainParams):
         pos_map.scatter_(
             1,
             target_emb.indices,
-            torch.arange(
-                target_emb.indices.size(1), device=params.train_device
-            )
+            torch.arange(target_emb.indices.size(1), device=params.train_device)
             .unsqueeze(0)
             .expand(B, -1),
         )
@@ -253,9 +251,7 @@ def train(params: TrainParams):
         target_mask_emb = torch.gather(
             target_emb.data,
             1,
-            gather_pos.unsqueeze(-1).expand(
-                -1, -1, target_emb.data.size(-1)
-            ),
+            gather_pos.unsqueeze(-1).expand(-1, -1, target_emb.data.size(-1)),
         )
 
         # 5. Losses

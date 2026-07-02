@@ -9,8 +9,8 @@
 # | N/A   54C    P8            N/A  /  200W |       0MiB /   4096MiB |      0%      Default |
 # Model        | Patch | Batch  | Mode     | Max Tokens
 # -------------------------------------------------------
-# vit_nano     | 64    | 1      | Train    | 13369       
-# vit_nano     | 64    | 1      | Infer    | 33857       
+# vit_nano     | 64    | 1      | Train    | 13369
+# vit_nano     | 64    | 1      | Infer    | 33857
 
 import torch
 import gc
@@ -24,9 +24,13 @@ def check_memory(model, batch_size, num_tokens, is_train, patch_size):
 
         # Use empty instead of randn to save time (we don't need real data)
         patch_dim = 3 * patch_size * patch_size
-        dummy_data = torch.empty(batch_size, num_tokens, patch_dim, device=device)
+        dummy_data = torch.empty(
+            batch_size, num_tokens, patch_dim, device=device
+        )
         dummy_indices = (
-            torch.arange(num_tokens, device=device).unsqueeze(0).expand(batch_size, -1)
+            torch.arange(num_tokens, device=device)
+            .unsqueeze(0)
+            .expand(batch_size, -1)
         )
 
         # image_shape and patch_size must be consistent for compute_freqs
@@ -84,6 +88,7 @@ def find_max_tokens(model_fn, batch_size, is_train, patch_size):
             best_tokens = mid_tokens
             break
         import time
+
         print(time.time(), is_train, mid_tokens)
         if check_memory(model, batch_size, mid_tokens, is_train, patch_size):
             best_tokens = mid_tokens

@@ -251,7 +251,6 @@ def create_detection_iterator(
 
             # 3. Chunk into batches, collate, and extract patches
             for batch_items in batched(transformed_gen, params.batch_size):
-                
                 # 1. Collate, pad to batch max, and extract patches with a random size
                 patched_item = det_tf.random_extract_patches_and_collate(
                     batch_items,
@@ -272,7 +271,7 @@ def create_detection_iterator(
                 # 4. Resize the surviving patches to the ViT's static capacity (64x64)
                 resized_item = det_tf.resize_patches(
                     dropped_item,
-                    target_patch_size=(params.patch_size, params.patch_size)
+                    target_patch_size=(params.patch_size, params.patch_size),
                 )
 
                 # 5. Move to GPU
@@ -564,7 +563,9 @@ def train(params: TrainParams):
     if params.detector_checkpoint:
         assert params.detector_checkpoint.exists()
         if is_main_process:
-            print(f"Resuming from full detector checkpoint: {params.detector_checkpoint}")
+            print(
+                f"Resuming from full detector checkpoint: {params.detector_checkpoint}"
+            )
         loaded_checkpoint = torch.load(
             params.detector_checkpoint,
             map_location=params.train_device,

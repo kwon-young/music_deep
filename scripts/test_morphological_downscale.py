@@ -18,11 +18,15 @@ def main():
     parser = argparse.ArgumentParser(
         description="Visually test morphological downscaling on a single image with ground truth overlay."
     )
-    parser.add_argument("image_path", type=Path, help="Path to the input image.")
+    parser.add_argument(
+        "image_path", type=Path, help="Path to the input image."
+    )
     parser.add_argument(
         "--anno_path",
         type=Path,
-        default=Path("data/trompa-coco/annotations/instances_trainval2017.json"),
+        default=Path(
+            "data/trompa-coco/annotations/instances_trainval2017.json"
+        ),
         help="Path to the COCO annotations file.",
     )
     parser.add_argument(
@@ -45,7 +49,11 @@ def main():
     dataset = parse_coco(args.anno_path)
     img_name = args.image_path.name
     try:
-        index = next(i for i, img in enumerate(dataset.images) if img.file_name == img_name)
+        index = next(
+            i
+            for i, img in enumerate(dataset.images)
+            if img.file_name == img_name
+        )
     except StopIteration:
         raise ValueError(f"Image {img_name} not found in dataset annotations.")
 
@@ -77,8 +85,12 @@ def main():
             new_boxes, _ = boxes, box_labels
             new_kps, _ = keypoints, keypoint_labels
         else:
-            new_boxes, _ = scale_boxes_xyxy(boxes, box_labels, exact_scale_h, exact_scale_w)
-            new_kps, _ = scale_keypoints(keypoints, keypoint_labels, exact_scale_h, exact_scale_w)
+            new_boxes, _ = scale_boxes_xyxy(
+                boxes, box_labels, exact_scale_h, exact_scale_w
+            )
+            new_kps, _ = scale_keypoints(
+                keypoints, keypoint_labels, exact_scale_h, exact_scale_w
+            )
 
         # Draw overlay directly on the image tensor to preserve exact resolution
         img_np = downscaled.data.permute(1, 2, 0).numpy()
@@ -92,11 +104,23 @@ def main():
             y1, y2 = max(0, min(y1, h - 1)), max(0, min(y2, h - 1))
             if x2 >= x1 and y2 >= y1:
                 # Top & Bottom
-                img_uint8[y1, x1:x2+1] = (0.5 * img_uint8[y1, x1:x2+1] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
-                img_uint8[y2, x1:x2+1] = (0.5 * img_uint8[y2, x1:x2+1] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
+                img_uint8[y1, x1 : x2 + 1] = (
+                    0.5 * img_uint8[y1, x1 : x2 + 1]
+                    + 0.5 * np.array([255, 0, 0])
+                ).astype(np.uint8)
+                img_uint8[y2, x1 : x2 + 1] = (
+                    0.5 * img_uint8[y2, x1 : x2 + 1]
+                    + 0.5 * np.array([255, 0, 0])
+                ).astype(np.uint8)
                 # Left & Right
-                img_uint8[y1:y2+1, x1] = (0.5 * img_uint8[y1:y2+1, x1] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
-                img_uint8[y1:y2+1, x2] = (0.5 * img_uint8[y1:y2+1, x2] + 0.5 * np.array([255, 0, 0])).astype(np.uint8)
+                img_uint8[y1 : y2 + 1, x1] = (
+                    0.5 * img_uint8[y1 : y2 + 1, x1]
+                    + 0.5 * np.array([255, 0, 0])
+                ).astype(np.uint8)
+                img_uint8[y1 : y2 + 1, x2] = (
+                    0.5 * img_uint8[y1 : y2 + 1, x2]
+                    + 0.5 * np.array([255, 0, 0])
+                ).astype(np.uint8)
 
         # Draw keypoints (Green, 50% opacity)
         for i in range(len(new_kps.data)):
@@ -107,7 +131,9 @@ def main():
                 ys = np.linspace(y1, y2, int(length) + 1).astype(int)
                 valid = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
                 xs, ys = xs[valid], ys[valid]
-                img_uint8[ys, xs] = (0.5 * img_uint8[ys, xs] + 0.5 * np.array([0, 255, 0])).astype(np.uint8)
+                img_uint8[ys, xs] = (
+                    0.5 * img_uint8[ys, xs] + 0.5 * np.array([0, 255, 0])
+                ).astype(np.uint8)
 
         # Save using pyvips to avoid matplotlib resampling
         height, width, bands = img_uint8.shape

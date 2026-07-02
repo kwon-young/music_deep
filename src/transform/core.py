@@ -251,7 +251,7 @@ def pad_to_size_img[C: Channel, M: Mode, R: Range](
         padded_data = F.pad(
             image.data.unsqueeze(0),
             (0, pad_right, 0, pad_bottom),
-            mode="replicate"
+            mode="replicate",
         ).squeeze(0)
         return replace(image, data=padded_data)
 
@@ -300,8 +300,7 @@ def extract_patches_img[B: Batch](
 
 
 def resize_patches_img[B: Batch, N: NumPatches, D: PatchDim](
-    patches: Embeddings[B, N, D],
-    target_patch_size: tuple[int, int]
+    patches: Embeddings[B, N, D], target_patch_size: tuple[int, int]
 ) -> Embeddings[B, N, PatchDim]:
     b, n, dim = patches.data.shape
     c, h, w = patches.image_shape
@@ -318,7 +317,7 @@ def resize_patches_img[B: Batch, N: NumPatches, D: PatchDim](
         patches_2d,
         size=(target_ph, target_pw),
         mode="bilinear",
-        align_corners=False
+        align_corners=False,
     )
 
     # Flatten back to (B, N, C * target_ph * target_pw)
@@ -332,7 +331,7 @@ def resize_patches_img[B: Batch, N: NumPatches, D: PatchDim](
         patches,
         data=resized_flat,
         patch_size=(target_ph, target_pw),
-        image_shape=new_image_shape
+        image_shape=new_image_shape,
     )
 
 
@@ -505,9 +504,7 @@ def crop_keypoints[
     )
 
 
-def morphological_downscale_img[
-    C: Channel, H: Height, W: Width, M: Mode
-](
+def morphological_downscale_img[C: Channel, H: Height, W: Width, M: Mode](
     image: TensorImage[tuple[C, H, W], M, Float1],
     h_out: int,
     w_out: int,
@@ -532,7 +529,11 @@ def morphological_downscale_img[
 
 
 def scale_boxes_xyxy[
-    B: NumBoxes, D: BoxDim, R: BoxRange, O: Origin, C: NumSymbolClasses
+    B: NumBoxes,
+    D: BoxDim,
+    R: BoxRange,
+    O: Origin,
+    C: NumSymbolClasses,
 ](
     boxes: BoundingBoxes[tuple[B, D], XYXY, R, O],
     labels: ClassLabels[tuple[B], C],
@@ -550,7 +551,11 @@ def scale_boxes_xyxy[
 
 
 def scale_keypoints[
-    K: NumKeypoints, D: KeypointDim, R: KeypointRange, O: Origin, C: NumLineClasses
+    K: NumKeypoints,
+    D: KeypointDim,
+    R: KeypointRange,
+    O: Origin,
+    C: NumLineClasses,
 ](
     keypoints: Keypoints[tuple[K, D], X1Y1X2Y2, R, O],
     labels: ClassLabels[tuple[K], C],

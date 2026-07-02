@@ -345,10 +345,19 @@ def random_affine[T: DetectionSample](
 
 @transform
 def random_morphological_downscale[
-    C: Channel, H: Height, W: Width, M: Mode,
-    B: NumBoxes, K: NumKeypoints, D: BoxDim, KD: KeypointDim,
-    BR: BoxRange, KR: KeypointRange, O: Origin,
-    SC: NumSymbolClasses, LC: NumLineClasses,
+    C: Channel,
+    H: Height,
+    W: Width,
+    M: Mode,
+    B: NumBoxes,
+    K: NumKeypoints,
+    D: BoxDim,
+    KD: KeypointDim,
+    BR: BoxRange,
+    KR: KeypointRange,
+    O: Origin,
+    SC: NumSymbolClasses,
+    LC: NumLineClasses,
 ](
     sample: DetectionSample[
         TensorImage[tuple[C, H, W], M, Float1],
@@ -451,13 +460,12 @@ def random_extract_patches_and_collate[
 
     # 4. Reuse existing collate to stack images and aggregate targets
     batched_data = collate(tuple(padded_batch_items))
-    
+
     # 5. Reuse existing extract_patches_img
     patches = extract_patches_img(batched_data.sample.image, patch_size)
-    
+
     return replace(
-        batched_data,
-        sample=replace(batched_data.sample, image=patches)
+        batched_data, sample=replace(batched_data.sample, image=patches)
     )
 
 
@@ -478,7 +486,7 @@ def normalize_batched_targets[
         list[BxLbl],
         list[Keypoints[tuple[K, KD], X1Y1X2Y2, Absolute, O]],
         list[KpLbl],
-    ]
+    ],
 ) -> DetectionSample[
     I,
     list[BoundingBoxes[tuple[B, D], XYXY, PatchUnit, O]],
@@ -487,15 +495,13 @@ def normalize_batched_targets[
     list[KpLbl],
 ]:
     patch_size = sample.image.patch_size
-    
+
     norm_boxes = [normalize_boxes_img(b, patch_size) for b in sample.boxes]
-    norm_keypoints = [normalize_keypoints_img(k, patch_size) for k in sample.keypoints]
-    
-    return replace(
-        sample,
-        boxes=norm_boxes,
-        keypoints=norm_keypoints
-    )
+    norm_keypoints = [
+        normalize_keypoints_img(k, patch_size) for k in sample.keypoints
+    ]
+
+    return replace(sample, boxes=norm_boxes, keypoints=norm_keypoints)
 
 
 @batched_transform
@@ -504,8 +510,7 @@ def resize_patches[I: Patches, Bx, BxLbl, Kp, KpLbl](
     target_patch_size: tuple[int, int],
 ) -> DetectionSample[I, Bx, BxLbl, Kp, KpLbl]:
     return replace(
-        sample,
-        image=resize_patches_img(sample.image, target_patch_size)
+        sample, image=resize_patches_img(sample.image, target_patch_size)
     )
 
 

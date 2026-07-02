@@ -268,7 +268,9 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         for img in coco_data["images"]
     ]
 
-    annotations: defaultdict[int, list[CocoParsedAnnotation]] = defaultdict(list)
+    annotations: defaultdict[int, list[CocoParsedAnnotation]] = defaultdict(
+        list
+    )
     symbol_counts: dict[int, int] = {
         idx: 0 for idx in range(len(symbol_categories))
     }
