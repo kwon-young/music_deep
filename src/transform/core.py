@@ -236,24 +236,40 @@ def to_device_embeddings[E: Embeddings](
     )
 
 
-def pad_to_patch_size_img[C: Channel, M: Mode, R: Range](
+def pad_to_size_img[C: Channel, M: Mode, R: Range](
     image: TensorImage[tuple[C, Height, Width], M, R],
-    patch_size: tuple[int, int],
+    target_size: tuple[int, int],
 ) -> TensorImage[tuple[C, Height, Width], M, R]:
+    """Pads an image to an exact target (height, width) using replicate padding."""
     c, h, w = image.data.shape
-    ph, pw = patch_size
+    target_h, target_w = target_size
 
-    pad_h = (ph - h % ph) % ph
-    pad_w = (pw - w % pw) % pw
+    pad_bottom = target_h - h
+    pad_right = target_w - w
 
-    if pad_h > 0 or pad_w > 0:
-        # F.pad with mode="replicate" for 2D padding requires 4D input (N, C, H, W)
+    if pad_bottom > 0 or pad_right > 0:
         padded_data = F.pad(
-            image.data.unsqueeze(0), (0, pad_w, 0, pad_h), mode="replicate"
+            image.data.unsqueeze(0),
+            (0, pad_right, 0, pad_bottom),
+            mode="replicate"
         ).squeeze(0)
         return replace(image, data=padded_data)
 
     return image
+
+
+def pad_to_patch_size_img[C: Channel, M: Mode, R: Range](
+    image: TensorImage[tuple[C, Height, Width], M, R],
+    patch_size: tuple[int, int],
+) -> TensorImage[tuple[C, Height, Width], M, R]:
+    """Pads an image to the nearest multiple of the patch size."""
+    c, h, w = image.data.shape
+    ph, pw = patch_size
+
+    target_h = h + (ph - h % ph) % ph
+    target_w = w + (pw - w % pw) % pw
+
+    return pad_to_size_img(image, (target_h, target_w))
 
 
 def extract_patches_img[B: Batch](
@@ -280,6 +296,43 @@ def extract_patches_img[B: Batch](
         indices=indices,
         image_shape=(c, h, w),
         patch_size=(ph, pw),
+    )
+
+
+def resize_patches_img[B: Batch, N: NumPatches, D: PatchDim](
+    patches: Embeddings[B, N, D],
+    target_patch_size: tuple[int, int]
+) -> Embeddings[B, N, PatchDim]:
+    b, n, dim = patches.data.shape
+    c, h, w = patches.image_shape
+    ph, pw = patches.patch_size
+    target_ph, target_pw = target_patch_size
+
+    if ph == target_ph and pw == target_pw:
+        return patches
+
+    # Reshape to (B*N, C, ph, pw) for 2D interpolation
+    patches_2d = patches.data.view(b * n, c, ph, pw)
+
+    resized_2d = F.interpolate(
+        patches_2d,
+        size=(target_ph, target_pw),
+        mode="bilinear",
+        align_corners=False
+    )
+
+    # Flatten back to (B, N, C * target_ph * target_pw)
+    resized_flat = resized_2d.view(b, n, c * target_ph * target_pw)
+
+    # CRITICAL: Update image_shape so the ViT's RoPE grid dimensions remain identical
+    grid_h, grid_w = h // ph, w // pw
+    new_image_shape = (c, grid_h * target_ph, grid_w * target_pw)
+
+    return replace(
+        patches,
+        data=resized_flat,
+        patch_size=(target_ph, target_pw),
+        image_shape=new_image_shape
     )
 
 
@@ -348,6 +401,10 @@ def random_crop_params(
     x = torch.randint(0, x_max, size=(1,), device=device).item()
     y = torch.randint(0, y_max, size=(1,), device=device).item()
     return int(x), int(y)
+
+
+def random_patch_size_params(min_size: int, max_size: int) -> int:
+    return random.randint(min_size, max_size)
 
 
 def crop_img[C: Channel, M: Mode, R: Range](

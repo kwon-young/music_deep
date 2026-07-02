@@ -75,6 +75,8 @@ class TrainParams:
     train_maxsize: int
     backbone_size: str
     patch_size: int
+    extract_patch_min: int
+    extract_patch_max: int
     crop_size: int | None
     channels: int
     num_symbol_classes: int
@@ -139,7 +141,6 @@ def transform_image(
     index: int,
     dataset: CocoDataset,
     img_dir: Path,
-    patch_size: int,
     crop_size: int | None,
     prep_device: torch.device,
     affine: bool,
@@ -158,7 +159,7 @@ def transform_image(
         ClassLabels,
     ],
 ]:
-    """Preprocessing: Load -> Decode/Crop -> Float1 -> Augment -> Pad -> Normalize."""
+    """Preprocessing: Load -> Decode/Crop -> Float1 -> Augment."""
     item = load_coco_sample(dataset, img_dir, index, prep_device)
 
     if prep_device.type == "cuda":
@@ -193,16 +194,7 @@ def transform_image(
     else:
         item_aug = item_tf
 
-    item_padded = det_tf.pad_to_patch_size(
-        item_aug, patch_size=(patch_size, patch_size)
-    )
-
-    # Normalize boxes and keypoints using the patch size
-    item_normalized = det_tf.normalize_targets(
-        item_padded, patch_size=(patch_size, patch_size)
-    )
-
-    return item_normalized
+    return item_aug
 
 
 def log_patch_count(iterator, enabled: bool):
@@ -245,7 +237,6 @@ def create_detection_iterator(
                     idx,
                     params.dataset,
                     params.img_dir,
-                    params.patch_size,
                     params.crop_size,
                     params.prep_device,
                     affine=params.affine,
@@ -260,20 +251,33 @@ def create_detection_iterator(
 
             # 3. Chunk into batches, collate, and extract patches
             for batch_items in batched(transformed_gen, params.batch_size):
-                batched_item = det_tf.collate(batch_items)
-                patched_item = det_tf.extract_patches(
-                    batched_item,
-                    patch_size=(params.patch_size, params.patch_size),
+                
+                # 1. Collate, pad to batch max, and extract patches with a random size
+                patched_item = det_tf.random_extract_patches_and_collate(
+                    batch_items,
+                    min_patch_size=params.extract_patch_min,
+                    max_patch_size=params.extract_patch_max,
                 )
+
+                # 2. Normalize targets to Patch Units (PU) using the extracted patch size
+                norm_item = det_tf.normalize_batched_targets(patched_item)
+
+                # 3. Drop patches based on variance
                 dropped_item = det_tf.variance_patch_drop(
-                    patched_item,
+                    norm_item,
                     var_threshold=params.var_threshold,
                     drop_rate=params.drop_rate,
                 )
 
-                # Move the final batch to the training device
+                # 4. Resize the surviving patches to the ViT's static capacity (64x64)
+                resized_item = det_tf.resize_patches(
+                    dropped_item,
+                    target_patch_size=(params.patch_size, params.patch_size)
+                )
+
+                # 5. Move to GPU
                 final_item = det_tf.to_patches(
-                    dropped_item, device=params.train_device
+                    resized_item, device=params.train_device
                 )
                 yield final_item
 
@@ -840,6 +844,8 @@ if __name__ == "__main__":
         help="Size of the ViT backbone to use.",
     )
     parser.add_argument("--patch_size", type=int, default=64)
+    parser.add_argument("--extract_patch_min", type=int, default=54)
+    parser.add_argument("--extract_patch_max", type=int, default=64)
     parser.add_argument(
         "--crop_size",
         type=int,
@@ -1075,6 +1081,8 @@ if __name__ == "__main__":
         train_maxsize=args.train_maxsize,
         backbone_size=args.backbone_size,
         patch_size=args.patch_size,
+        extract_patch_min=args.extract_patch_min,
+        extract_patch_max=args.extract_patch_max,
         crop_size=args.crop_size,
         channels=args.channels,
         num_symbol_classes=dataset.num_symbol_classes,

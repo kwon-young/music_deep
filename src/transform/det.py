@@ -17,8 +17,10 @@ from .core import (
     variance_patch_drop_indices,
     patch_drop_img,
     stack_tensor_img,
-    pad_to_patch_size_img,
+    pad_to_size_img,
     random_crop_params,
+    random_patch_size_params,
+    resize_patches_img,
     crop_img,
     crop_boxes_xyxy,
     crop_keypoints,
@@ -394,11 +396,9 @@ def random_morphological_downscale[
     )
 
 
-@transform
-def pad_to_patch_size[
+def random_extract_patches_and_collate[
+    Meta,
     C: Channel,
-    H: Height,
-    W: Width,
     M: Mode,
     R: Range,
     Bx,
@@ -406,25 +406,64 @@ def pad_to_patch_size[
     Kp,
     KpLbl,
 ](
-    sample: DetectionSample[
-        TensorImage[tuple[C, H, W], M, R], Bx, BxLbl, Kp, KpLbl
+    batch: tuple[
+        Data[
+            Meta,
+            DetectionSample[
+                TensorImage[tuple[C, Height, Width], M, R],
+                Bx,
+                BxLbl,
+                Kp,
+                KpLbl,
+            ],
+        ],
+        ...,
     ],
-    patch_size: tuple[int, int],
-) -> DetectionSample[
-    TensorImage[tuple[C, Height, Width], M, R], Bx, BxLbl, Kp, KpLbl
+    min_patch_size: int,
+    max_patch_size: int,
+) -> BatchedData[
+    Meta,
+    DetectionSample[
+        Patches[Batch, NumPatches, PatchDim],
+        list[Bx],
+        list[BxLbl],
+        list[Kp],
+        list[KpLbl],
+    ],
 ]:
-    return DetectionSample(
-        image=pad_to_patch_size_img(sample.image, patch_size),
-        boxes=sample.boxes,
-        box_labels=sample.box_labels,
-        keypoints=sample.keypoints,
-        keypoint_labels=sample.keypoint_labels,
+    eps = random_patch_size_params(min_patch_size, max_patch_size)
+    patch_size = (eps, eps)
+
+    # 1. Find the maximum dimensions across the batch
+    max_h = max(b.sample.image.data.shape[1] for b in batch)
+    max_w = max(b.sample.image.data.shape[2] for b in batch)
+
+    # 2. Round up to the nearest multiple of the random patch size
+    target_h = max_h + (eps - max_h % eps) % eps
+    target_w = max_w + (eps - max_w % eps) % eps
+
+    # 3. Pad images to the target dimensions
+    padded_batch_items = []
+    for b in batch:
+        new_img = pad_to_size_img(b.sample.image, (target_h, target_w))
+        new_sample = replace(b.sample, image=new_img)
+        padded_batch_items.append(replace(b, sample=new_sample))
+
+    # 4. Reuse existing collate to stack images and aggregate targets
+    batched_data = collate(tuple(padded_batch_items))
+    
+    # 5. Reuse existing extract_patches_img
+    patches = extract_patches_img(batched_data.sample.image, patch_size)
+    
+    return replace(
+        batched_data,
+        sample=replace(batched_data.sample, image=patches)
     )
 
 
-@transform
-def normalize_targets[
-    I: TensorImage,
+@batched_transform
+def normalize_batched_targets[
+    I: Patches,
     B: NumBoxes,
     K: NumKeypoints,
     D: BoxDim,
@@ -435,41 +474,38 @@ def normalize_targets[
 ](
     sample: DetectionSample[
         I,
-        BoundingBoxes[tuple[B, D], XYXY, Absolute, O],
-        BxLbl,
-        Keypoints[tuple[K, KD], X1Y1X2Y2, Absolute, O],
-        KpLbl,
-    ],
-    patch_size: tuple[int, int],
+        list[BoundingBoxes[tuple[B, D], XYXY, Absolute, O]],
+        list[BxLbl],
+        list[Keypoints[tuple[K, KD], X1Y1X2Y2, Absolute, O]],
+        list[KpLbl],
+    ]
 ) -> DetectionSample[
     I,
-    BoundingBoxes[tuple[B, D], XYXY, PatchUnit, O],
-    BxLbl,
-    Keypoints[tuple[K, KD], X1Y1X2Y2, PatchUnit, O],
-    KpLbl,
+    list[BoundingBoxes[tuple[B, D], XYXY, PatchUnit, O]],
+    list[BxLbl],
+    list[Keypoints[tuple[K, KD], X1Y1X2Y2, PatchUnit, O]],
+    list[KpLbl],
 ]:
-    return DetectionSample(
-        image=sample.image,
-        boxes=normalize_boxes_img(sample.boxes, patch_size),
-        box_labels=sample.box_labels,
-        keypoints=normalize_keypoints_img(sample.keypoints, patch_size),
-        keypoint_labels=sample.keypoint_labels,
+    patch_size = sample.image.patch_size
+    
+    norm_boxes = [normalize_boxes_img(b, patch_size) for b in sample.boxes]
+    norm_keypoints = [normalize_keypoints_img(k, patch_size) for k in sample.keypoints]
+    
+    return replace(
+        sample,
+        boxes=norm_boxes,
+        keypoints=norm_keypoints
     )
 
 
 @batched_transform
-def extract_patches[B: Batch, Bx, BxLbl, Kp, KpLbl](
-    sample: DetectionSample[
-        TensorImage[tuple[B, *CHW], RGB, Float1], Bx, BxLbl, Kp, KpLbl
-    ],
-    patch_size: tuple[int, int],
-) -> DetectionSample[Patches[B, NumPatches, PatchDim], Bx, BxLbl, Kp, KpLbl]:
-    return DetectionSample(
-        image=extract_patches_img(sample.image, patch_size),
-        boxes=sample.boxes,
-        box_labels=sample.box_labels,
-        keypoints=sample.keypoints,
-        keypoint_labels=sample.keypoint_labels,
+def resize_patches[I: Patches, Bx, BxLbl, Kp, KpLbl](
+    sample: DetectionSample[I, Bx, BxLbl, Kp, KpLbl],
+    target_patch_size: tuple[int, int],
+) -> DetectionSample[I, Bx, BxLbl, Kp, KpLbl]:
+    return replace(
+        sample,
+        image=resize_patches_img(sample.image, target_patch_size)
     )
 
 
