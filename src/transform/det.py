@@ -464,8 +464,15 @@ def random_extract_patches_and_collate[
     # 5. Reuse existing extract_patches_img
     patches = extract_patches_img(batched_data.sample.image, patch_size)
 
-    return replace(
-        batched_data, sample=replace(batched_data.sample, image=patches)
+    return BatchedData(
+        metadata=batched_data.metadata,
+        sample=DetectionSample(
+            image=patches,
+            boxes=batched_data.sample.boxes,
+            box_labels=batched_data.sample.box_labels,
+            keypoints=batched_data.sample.keypoints,
+            keypoint_labels=batched_data.sample.keypoint_labels,
+        )
     )
 
 
@@ -501,7 +508,13 @@ def normalize_batched_targets[
         normalize_keypoints_img(k, patch_size) for k in sample.keypoints
     ]
 
-    return replace(sample, boxes=norm_boxes, keypoints=norm_keypoints)
+    return DetectionSample(
+        image=sample.image,
+        boxes=norm_boxes,
+        box_labels=sample.box_labels,
+        keypoints=norm_keypoints,
+        keypoint_labels=sample.keypoint_labels,
+    )
 
 
 @batched_transform
@@ -509,8 +522,12 @@ def resize_patches[I: Patches, Bx, BxLbl, Kp, KpLbl](
     sample: DetectionSample[I, Bx, BxLbl, Kp, KpLbl],
     target_patch_size: tuple[int, int],
 ) -> DetectionSample[I, Bx, BxLbl, Kp, KpLbl]:
-    return replace(
-        sample, image=resize_patches_img(sample.image, target_patch_size)
+    return DetectionSample(
+        image=resize_patches_img(sample.image, target_patch_size),
+        boxes=sample.boxes,
+        box_labels=sample.box_labels,
+        keypoints=sample.keypoints,
+        keypoint_labels=sample.keypoint_labels,
     )
 
 
