@@ -151,7 +151,7 @@ class SymbolHead(nn.Module):
         B, P, _ = patch_tokens.shape
 
         raw_preds = self.mlp(patch_tokens)
-        preds = raw_preds.view(B, P, self.num_shapes, self.preds_per_shape)
+        preds = raw_preds.reshape(B, P, self.num_shapes, self.preds_per_shape)
 
         classes = preds[..., : self.num_classes]
         center_offsets = preds[..., self.num_classes : self.num_classes + 2]
@@ -164,7 +164,7 @@ class SymbolHead(nn.Module):
         # ---------------------------------------
 
         edge_logits = preds[..., -4 * self.num_bins :]
-        edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
+        edge_logits = edge_logits.reshape(B, P, self.num_shapes, 4, self.num_bins)
         edge_probs = F.softmax(edge_logits, dim=-1)
 
         # Shape: (B, P, K, 4) - Residuals in range [-a, a]
@@ -241,7 +241,7 @@ class LineHead(nn.Module):
         B, P, _ = patch_tokens.shape
 
         raw_preds = self.mlp(patch_tokens)
-        preds = raw_preds.view(B, P, self.num_shapes, self.preds_per_shape)
+        preds = raw_preds.reshape(B, P, self.num_shapes, self.preds_per_shape)
 
         classes = preds[..., : self.num_classes]
 
@@ -259,7 +259,7 @@ class LineHead(nn.Module):
 
         # --- D-FINE Residuals ---
         edge_logits = preds[..., -4 * self.num_bins :]
-        edge_logits = edge_logits.view(B, P, self.num_shapes, 4, self.num_bins)
+        edge_logits = edge_logits.reshape(B, P, self.num_shapes, 4, self.num_bins)
         edge_probs = F.softmax(edge_logits, dim=-1)
 
         # Scale residuals by the magnitude of the base direction + base_anchor_size
@@ -357,30 +357,31 @@ class OMRDetector(nn.Module):
         line_keypoints[..., 3] += patch_centers_expanded[..., 1]  # y2
 
         # Flatten P and K dimensions into a single "num_queries" dimension
-        # Note: We use .reshape() instead of .view() for slices of `preds` 
-        # because they are non-contiguous in memory, which breaks static compilation.
+        # Note: We use .contiguous().flatten(1, 2) to safely merge P and K.
+        # Slices of `preds` are non-contiguous and torch.compile's fake tensor 
+        # tracing strictly enforces stride checks, which causes reshape() to crash.
         return DetectionOutput(
             symbols=SymbolOutput(
-                pred_logits=ClassLogits(sym_classes.reshape(B, P * K, -1)),
-                pred_boxes=BoundingBoxes(sym_boxes.reshape(B, P * K, 4)),
+                pred_logits=ClassLogits(sym_classes.contiguous().flatten(1, 2)),
+                pred_boxes=BoundingBoxes(sym_boxes.contiguous().flatten(1, 2)),
                 pred_edge_logits=EdgeLogits(
-                    sym_edge_logits.reshape(B, P * K, 4, -1)
+                    sym_edge_logits.contiguous().flatten(1, 2)
                 ),
                 absolute_centers=Coordinates(
-                    sym_absolute_centers.reshape(B, P * K, 2)
+                    sym_absolute_centers.contiguous().flatten(1, 2)
                 ),
-                learnable_shapes=Dimensions(sym_shapes.reshape(B, P * K, 2)),
+                learnable_shapes=Dimensions(sym_shapes.contiguous().flatten(1, 2)),
             ),
             lines=LineOutput(
-                pred_logits=ClassLogits(line_classes.reshape(B, P * K, -1)),
-                pred_keypoints=Keypoints(line_keypoints.reshape(B, P * K, 4)),
+                pred_logits=ClassLogits(line_classes.contiguous().flatten(1, 2)),
+                pred_keypoints=Keypoints(line_keypoints.contiguous().flatten(1, 2)),
                 pred_endpoint_logits=EdgeLogits(
-                    line_edge_logits.reshape(B, P * K, 4, -1)
+                    line_edge_logits.contiguous().flatten(1, 2)
                 ),
                 absolute_centers=Coordinates(
-                    line_absolute_centers.reshape(B, P * K, 2)
+                    line_absolute_centers.contiguous().flatten(1, 2)
                 ),
-                raw_directions=Coordinates(line_base_dirs.reshape(B, P * K, 4)),
+                raw_directions=Coordinates(line_base_dirs.contiguous().flatten(1, 2)),
             ),
         )
 
