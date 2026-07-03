@@ -909,21 +909,41 @@ def variance_patch_drop_indices(
     patches_data: torch.Tensor,
     var_threshold: float | None = None,
     drop_rate: float | None = None,
+    topk: int | None = None,
 ) -> torch.Tensor:
-    if (var_threshold is None) == (drop_rate is None):
+    # Check that exactly one option is provided
+    options_set = sum(opt is not None for opt in [var_threshold, drop_rate, topk])
+    if options_set != 1:
         raise ValueError(
-            "Must provide exactly one of var_threshold or drop_rate"
+            "Must provide exactly one of var_threshold, drop_rate, or topk"
         )
 
     b, n, d = patches_data.shape
 
+    if topk is not None:
+        # Fixed sequence length (static shapes)
+        num_keep = min(topk, n)
+        patch_vars = patches_data.var(dim=-1)
+        _, topk_indices = torch.topk(patch_vars, k=num_keep, dim=-1)
+        sorted_indices, _ = torch.sort(topk_indices, dim=-1)
+
+        # Pad with index 0 if we don't have enough patches to reach topk
+        if num_keep < topk:
+            pad_size = topk - num_keep
+            pad_indices = torch.zeros(
+                b, pad_size, dtype=sorted_indices.dtype, device=sorted_indices.device
+            )
+            sorted_indices = torch.cat([sorted_indices, pad_indices], dim=1)
+            
+        return sorted_indices
+
     if drop_rate is not None:
-        # Fraction-based drop
+        # Fraction-based drop (dynamic shapes if n varies)
         num_keep = max(1, int(n * (1.0 - drop_rate)))
         patch_vars = patches_data.var(dim=-1)
         _, topk_indices = torch.topk(patch_vars, k=num_keep, dim=-1)
     else:
-        # Threshold-based drop
+        # Threshold-based drop (dynamic shapes)
         assert var_threshold is not None
         normalized_vars = patches_data.var(dim=-1) / 0.25
         passing_counts = (normalized_vars > var_threshold).sum(dim=-1)

@@ -102,6 +102,7 @@ class TrainParams:
     log_epoch_interval: float
     var_threshold: float | None
     drop_rate: float | None
+    topk_patches: int | None
     affine: bool
     morphological_downscale: float | None
     max_translate_frac: float
@@ -266,6 +267,7 @@ def create_detection_iterator(
                     norm_item,
                     var_threshold=params.var_threshold,
                     drop_rate=params.drop_rate,
+                    topk=params.topk_patches,
                 )
 
                 # 4. Resize the surviving patches to the ViT's static capacity (64x64)
@@ -607,9 +609,11 @@ def train(params: TrainParams):
     # ------------------------------
 
     if params.compile:
+        # topk yields static shapes, while var_threshold and drop_rate yield dynamic shapes
+        use_dynamic = params.topk_patches is None
         if is_main_process:
-            print("Compiling model with torch.compile(dynamic=True)...")
-        model = cast(OMRDetector | DDP, torch.compile(model, dynamic=True))
+            print(f"Compiling model with torch.compile(dynamic={use_dynamic})...")
+        model = cast(OMRDetector | DDP, torch.compile(model, dynamic=use_dynamic))
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(
@@ -932,6 +936,12 @@ if __name__ == "__main__":
         default=None,
         help="Fraction of patches to keep based on variance",
     )
+    parser.add_argument(
+        "--topk_patches",
+        type=int,
+        default=None,
+        help="Keep exactly K patches with the highest variance. Enables static shapes for torch.compile.",
+    )
 
     # Augmentation params
     parser.add_argument(
@@ -1042,10 +1052,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.var_threshold is None and args.drop_rate is None:
+    # Validate mutual exclusivity of patch dropping options
+    drop_options_set = sum([
+        args.var_threshold is not None,
+        args.drop_rate is not None,
+        args.topk_patches is not None
+    ])
+    if drop_options_set == 0:
         args.var_threshold = 0.001
-    elif args.var_threshold is not None and args.drop_rate is not None:
-        raise ValueError("Cannot specify both --var_threshold and --drop_rate")
+    elif drop_options_set > 1:
+        raise ValueError("Cannot specify more than one of --var_threshold, --drop_rate, and --topk_patches")
 
     prep_device = torch.device(args.prep_device)
     train_device = torch.device(args.train_device)
@@ -1109,6 +1125,7 @@ if __name__ == "__main__":
         log_epoch_interval=args.log_epoch_interval,
         var_threshold=args.var_threshold,
         drop_rate=args.drop_rate,
+        topk_patches=args.topk_patches,
         affine=args.affine,
         morphological_downscale=args.morphological_downscale,
         max_translate_frac=args.max_translate_frac,
