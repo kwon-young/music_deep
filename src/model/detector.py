@@ -357,28 +357,30 @@ class OMRDetector(nn.Module):
         line_keypoints[..., 3] += patch_centers_expanded[..., 1]  # y2
 
         # Flatten P and K dimensions into a single "num_queries" dimension
+        # Note: We use .reshape() instead of .view() for slices of `preds` 
+        # because they are non-contiguous in memory, which breaks static compilation.
         return DetectionOutput(
             symbols=SymbolOutput(
-                pred_logits=ClassLogits(sym_classes.view(B, P * K, -1)),
-                pred_boxes=BoundingBoxes(sym_boxes.view(B, P * K, 4)),
+                pred_logits=ClassLogits(sym_classes.reshape(B, P * K, -1)),
+                pred_boxes=BoundingBoxes(sym_boxes.reshape(B, P * K, 4)),
                 pred_edge_logits=EdgeLogits(
-                    sym_edge_logits.view(B, P * K, 4, -1)
+                    sym_edge_logits.reshape(B, P * K, 4, -1)
                 ),
                 absolute_centers=Coordinates(
-                    sym_absolute_centers.view(B, P * K, 2)
+                    sym_absolute_centers.reshape(B, P * K, 2)
                 ),
                 learnable_shapes=Dimensions(sym_shapes.reshape(B, P * K, 2)),
             ),
             lines=LineOutput(
-                pred_logits=ClassLogits(line_classes.view(B, P * K, -1)),
-                pred_keypoints=Keypoints(line_keypoints.view(B, P * K, 4)),
+                pred_logits=ClassLogits(line_classes.reshape(B, P * K, -1)),
+                pred_keypoints=Keypoints(line_keypoints.reshape(B, P * K, 4)),
                 pred_endpoint_logits=EdgeLogits(
-                    line_edge_logits.view(B, P * K, 4, -1)
+                    line_edge_logits.reshape(B, P * K, 4, -1)
                 ),
                 absolute_centers=Coordinates(
                     line_absolute_centers.reshape(B, P * K, 2)
                 ),
-                raw_directions=Coordinates(line_base_dirs.view(B, P * K, 4)),
+                raw_directions=Coordinates(line_base_dirs.reshape(B, P * K, 4)),
             ),
         )
 
