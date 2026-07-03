@@ -472,7 +472,7 @@ def random_extract_patches_and_collate[
             box_labels=batched_data.sample.box_labels,
             keypoints=batched_data.sample.keypoints,
             keypoint_labels=batched_data.sample.keypoint_labels,
-        )
+        ),
     )
 
 
