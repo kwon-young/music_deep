@@ -398,3 +398,33 @@
     ```
 * **Results**: The training was continued for 300 epochs total (restarted twice: Exp 22 and Exp 23, each running 100 epochs at LR `1e-4`). By the end of the 300th epoch, the model achieved near-perfect detection. For symbols, global mAP@0.5 reached **0.971**. Common symbols like `noteheadBlack` (0.990), `gClef` (1.0), and `fClef` (0.990) maintained near-perfect detection, while rare classes that were previously at 0.0 finally converged: `slur` reached 0.614, `tie` reached 0.685, and `articTenutoAbove` reached 0.404. For lines, global mAP@0.5 reached **0.315**. The proportional FGL scaling successfully resolved the "asleep FGL" bottleneck for long lines: `stem` jumped to 0.891, `beam` to 0.930, `barLine` to 0.955, and `staff` lines saw a massive improvement to 0.666. Training losses stabilized at very low values (`loss_total`: 0.133, `loss_line_l1`: 0.026).
 * **Conclusion**: The Proportional FGL Scaling for Lines was mathematically sound but required a large number of iterations to fit the complex geometries of music lines and rare symbols. Maintaining a steady `1e-4` learning rate for 300 epochs allowed the network to converge much further without overfitting or diverging. The architecture is now highly capable of handling extreme aspect ratios and thin structures. The remaining bottlenecks are extremely rare symbols (like `octave` lines at 0.211) which may require targeted data augmentation or hard-example mining to improve further.
+
+## Experiment 025: Variable Patch Size Scale Augmentation
+* **Experiment Name/ID**: `experiments/025_variable_patch_size_augmentation`
+* **Hypothesis/Goal**: Verify that expanding the range of the random patch extraction size (e.g., from 32x32 to 96x96) before resizing to the static 64x64 ViT input acts as a powerful scale augmentation. This should improve the model's robustness to varying DPIs and symbol sizes by providing more diverse spatial context and zoom levels.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Checkpoint: From scratch (or optionally resuming from Exp 023 to see if it breaks or improves a converged model).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Augmentation: `--extract_patch_min 32 --extract_patch_max 96` (Default is 54 to 64).
+  * Training: 100 epochs, peak LR `1e-4`, with a 1 epoch linear warmup.
+  * Command: 
+    ```bash
+    PYTHONPATH=. mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/025_variable_patch_size_augmentation \
+        --patch_size 64 \
+        --extract_patch_min 32 \
+        --extract_patch_max 96 \
+        --epochs 100 \
+        --lr 1e-4 \
+        --warmup_epochs 1 \
+        --anno_path data/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir data/trompa-coco/trainval2017 \
+        --headless \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 5
+    ```
+* **Results**: (To be filled after running)
+* **Conclusion**: (To be filled after running)
