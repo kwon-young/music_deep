@@ -18,6 +18,7 @@ from .core import (
     patch_drop_img,
     stack_tensor_img,
     pad_to_size_img,
+    pad_to_patch_size_img,
     random_crop_params,
     random_patch_size_params,
     resize_patches_img,
@@ -197,6 +198,34 @@ def to_float1[L: AnyLayouts, M: Mode, Bx, BxLbl, Kp, KpLbl](
 ) -> DetectionSample[TensorImage[L, M, Float1], Bx, BxLbl, Kp, KpLbl]:
     return DetectionSample(
         image=to_float1_img(sample.image),
+        boxes=sample.boxes,
+        box_labels=sample.box_labels,
+        keypoints=sample.keypoints,
+        keypoint_labels=sample.keypoint_labels,
+    )
+
+
+@transform
+def pad_to_patch_size[
+    C: Channel,
+    H: Height,
+    W: Width,
+    M: Mode,
+    R: Range,
+    Bx,
+    BxLbl,
+    Kp,
+    KpLbl,
+](
+    sample: DetectionSample[
+        TensorImage[tuple[C, Height, Width], M, R], Bx, BxLbl, Kp, KpLbl
+    ],
+    patch_size: tuple[int, int],
+) -> DetectionSample[
+    TensorImage[tuple[C, Height, Width], M, R], Bx, BxLbl, Kp, KpLbl
+]:
+    return DetectionSample(
+        image=pad_to_patch_size_img(sample.image, patch_size),
         boxes=sample.boxes,
         box_labels=sample.box_labels,
         keypoints=sample.keypoints,
