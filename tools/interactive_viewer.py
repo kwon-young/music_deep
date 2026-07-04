@@ -87,8 +87,9 @@ class ZoomPanGraphicsView(QGraphicsView):
     def mouseMoveEvent(self, event):
         if self.measure_mode and self.temp_line:
             end_point = self.mapToScene(event.position().toPoint())
+            # Lock the X coordinate to the start point to ensure a strictly vertical line
             self.temp_line.setLine(
-                self.start_point.x(), self.start_point.y(), end_point.x(), end_point.y()
+                self.start_point.x(), self.start_point.y(), self.start_point.x(), end_point.y()
             )
         else:
             super().mouseMoveEvent(event)
@@ -96,7 +97,8 @@ class ZoomPanGraphicsView(QGraphicsView):
     def mouseReleaseEvent(self, event):
         if self.measure_mode and self.temp_line:
             end_point = self.mapToScene(event.position().toPoint())
-            dist = math.hypot(end_point.x() - self.start_point.x(), end_point.y() - self.start_point.y())
+            # Calculate distance only along the vertical axis
+            dist = abs(end_point.y() - self.start_point.y())
             self.scene().removeItem(self.temp_line)
             self.temp_line = None
             self.start_point = None
@@ -394,7 +396,9 @@ class InteractiveViewer(QMainWindow):
         self.view.set_measure_mode(checked)
 
     def update_measurement(self, dist):
-        self.scale_factor = self.target_interline / dist
+        # The measurement is done on the currently displayed image, which is scaled by self.scale_factor.
+        # To get the scale factor relative to the original image, we must account for the current scale.
+        self.scale_factor = self.scale_factor * self.target_interline / dist
         self.measure_label.setText(f"Scale: {self.scale_factor:.2f}x (Measured: {dist:.1f}px)")
         self.measure_btn.setChecked(False)
         if self.current_path:
