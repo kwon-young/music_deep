@@ -595,10 +595,10 @@ def variance_patch_drop[I: Patches, Bx, BxLbl, Kp, KpLbl](
     topk: int | None = None,
 ) -> DetectionSample[I, Bx, BxLbl, Kp, KpLbl]:
     ids_keep = variance_patch_drop_indices(
-        sample.image.data, 
-        var_threshold=var_threshold, 
+        sample.image.data,
+        var_threshold=var_threshold,
         drop_rate=drop_rate,
-        topk=topk
+        topk=topk,
     )
 
     new_img_base = patch_drop_img(sample.image, ids_keep)

@@ -14,7 +14,11 @@ from dataset.coco import (
     CocoLineAnnotation,
 )
 import transform.det as det_tf
-from threaded_generator import ParallelGenerator, partial_generator, ThreadedGenerator
+from threaded_generator import (
+    ParallelGenerator,
+    partial_generator,
+    ThreadedGenerator,
+)
 
 
 def process_single_image(
@@ -155,13 +159,13 @@ def create_inference_iterator(
     """Generator that runs inference on a specific GPU based on the current thread's worker_id."""
     current_thread = threading.current_thread()
     worker_id = getattr(current_thread, "worker_id", 0)
-    
+
     if args.device.startswith("cuda"):
         device = torch.device(f"cuda:{worker_id}")
         torch.cuda.set_device(device)
     else:
         device = torch.device(args.device)
-    
+
     # Each worker instantiates its own model here
     model = create_detector(
         backbone_size=args.backbone_size,
@@ -174,7 +178,9 @@ def create_inference_iterator(
         base_anchor_size=args.base_anchor_size,
     ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=True
+    )
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -193,9 +199,10 @@ def create_inference_iterator(
                 max_lines,
             )
             yield sym_res, line_res
-            
+
             if device.type == "cuda":
                 torch.cuda.empty_cache()
+
 
 def run_inference(args):
     device = torch.device(args.device)
@@ -230,13 +237,13 @@ def run_inference(args):
     else:
         indices = list(range(num_images))
 
-    num_gpus = torch.cuda.device_count() if args.device.startswith("cuda") else 1
-    
+    num_gpus = (
+        torch.cuda.device_count() if args.device.startswith("cuda") else 1
+    )
+
     # Wrap indices in a ThreadedGenerator for thread-safe, dynamic distribution
     index_gen = ThreadedGenerator(
-        iter(indices),
-        maxsize=num_gpus * 2,
-        name="indices"
+        iter(indices), maxsize=num_gpus * 2, name="indices"
     )
 
     # Create the partial generator instance
@@ -256,7 +263,7 @@ def run_inference(args):
         inference_gen,
         num_workers=num_gpus,
         maxsize=num_gpus * 2,
-        name="inference"
+        name="inference",
     )
 
     all_sym_results = []
@@ -264,7 +271,9 @@ def run_inference(args):
 
     print("Running inference...")
     with parallel_gen as gen:
-        for sym_res, line_res in tqdm(gen, total=len(indices), desc="Inference"):
+        for sym_res, line_res in tqdm(
+            gen, total=len(indices), desc="Inference"
+        ):
             all_sym_results.extend(sym_res)
             all_line_results.extend(line_res)
 

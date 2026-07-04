@@ -164,7 +164,9 @@ class SymbolHead(nn.Module):
         # ---------------------------------------
 
         edge_logits = preds[..., -4 * self.num_bins :]
-        edge_logits = edge_logits.reshape(B, P, self.num_shapes, 4, self.num_bins)
+        edge_logits = edge_logits.reshape(
+            B, P, self.num_shapes, 4, self.num_bins
+        )
         edge_probs = F.softmax(edge_logits, dim=-1)
 
         # Shape: (B, P, K, 4) - Residuals in range [-a, a]
@@ -259,7 +261,9 @@ class LineHead(nn.Module):
 
         # --- D-FINE Residuals ---
         edge_logits = preds[..., -4 * self.num_bins :]
-        edge_logits = edge_logits.reshape(B, P, self.num_shapes, 4, self.num_bins)
+        edge_logits = edge_logits.reshape(
+            B, P, self.num_shapes, 4, self.num_bins
+        )
         edge_probs = F.softmax(edge_logits, dim=-1)
 
         # Scale residuals by the magnitude of the base direction + base_anchor_size
@@ -358,7 +362,7 @@ class OMRDetector(nn.Module):
 
         # Flatten P and K dimensions into a single "num_queries" dimension
         # Note: We use .contiguous().flatten(1, 2) to safely merge P and K.
-        # Slices of `preds` are non-contiguous and torch.compile's fake tensor 
+        # Slices of `preds` are non-contiguous and torch.compile's fake tensor
         # tracing strictly enforces stride checks, which causes reshape() to crash.
         return DetectionOutput(
             symbols=SymbolOutput(
@@ -370,18 +374,26 @@ class OMRDetector(nn.Module):
                 absolute_centers=Coordinates(
                     sym_absolute_centers.contiguous().flatten(1, 2)
                 ),
-                learnable_shapes=Dimensions(sym_shapes.contiguous().flatten(1, 2)),
+                learnable_shapes=Dimensions(
+                    sym_shapes.contiguous().flatten(1, 2)
+                ),
             ),
             lines=LineOutput(
-                pred_logits=ClassLogits(line_classes.contiguous().flatten(1, 2)),
-                pred_keypoints=Keypoints(line_keypoints.contiguous().flatten(1, 2)),
+                pred_logits=ClassLogits(
+                    line_classes.contiguous().flatten(1, 2)
+                ),
+                pred_keypoints=Keypoints(
+                    line_keypoints.contiguous().flatten(1, 2)
+                ),
                 pred_endpoint_logits=EdgeLogits(
                     line_edge_logits.contiguous().flatten(1, 2)
                 ),
                 absolute_centers=Coordinates(
                     line_absolute_centers.contiguous().flatten(1, 2)
                 ),
-                raw_directions=Coordinates(line_base_dirs.contiguous().flatten(1, 2)),
+                raw_directions=Coordinates(
+                    line_base_dirs.contiguous().flatten(1, 2)
+                ),
             ),
         )
 

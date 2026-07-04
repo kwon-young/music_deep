@@ -38,7 +38,12 @@ def iter_queue[T](queue: Queue[T]) -> Generator[T]:
 
 class IterableThread[T](Thread):
     def __init__(
-        self, it: Iterable[T], queue: Queue[T], barrier: Barrier, name: str, worker_id: int = 0
+        self,
+        it: Iterable[T],
+        queue: Queue[T],
+        barrier: Barrier,
+        name: str,
+        worker_id: int = 0,
     ):
         super().__init__(name=f"{it}-{name}")
         self.it: Iterable[T] = it

@@ -912,7 +912,9 @@ def variance_patch_drop_indices(
     topk: int | None = None,
 ) -> torch.Tensor:
     # Check that exactly one option is provided
-    options_set = sum(opt is not None for opt in [var_threshold, drop_rate, topk])
+    options_set = sum(
+        opt is not None for opt in [var_threshold, drop_rate, topk]
+    )
     if options_set != 1:
         raise ValueError(
             "Must provide exactly one of var_threshold, drop_rate, or topk"
@@ -931,10 +933,13 @@ def variance_patch_drop_indices(
         if num_keep < topk:
             pad_size = topk - num_keep
             pad_indices = torch.zeros(
-                b, pad_size, dtype=sorted_indices.dtype, device=sorted_indices.device
+                b,
+                pad_size,
+                dtype=sorted_indices.dtype,
+                device=sorted_indices.device,
             )
             sorted_indices = torch.cat([sorted_indices, pad_indices], dim=1)
-            
+
         return sorted_indices
 
     if drop_rate is not None:
