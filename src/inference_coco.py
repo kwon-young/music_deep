@@ -4,6 +4,7 @@ import random
 import threading
 import torch
 from pathlib import Path
+from typing import Iterable
 from tqdm import tqdm
 from model.detector import OMRDetector, create_detector
 from dataset.coco import (
@@ -13,7 +14,7 @@ from dataset.coco import (
     CocoLineAnnotation,
 )
 import transform.det as det_tf
-from threaded_generator import ParallelGenerator, partial_generator
+from threaded_generator import ParallelGenerator, partial_generator, ThreadedGenerator
 
 
 def process_single_image(
@@ -142,7 +143,7 @@ def process_single_image(
 
 @partial_generator
 def create_inference_iterator(
-    indices: list[int],
+    index_gen: Iterable[int],
     dataset,
     args,
     checkpoint_path: Path,
@@ -178,7 +179,8 @@ def create_inference_iterator(
     model.eval()
 
     with torch.no_grad():
-        for i in indices:
+        # Iterate over the shared, thread-safe index generator
+        for i in index_gen:
             sym_res, line_res = process_single_image(
                 i,
                 dataset,
@@ -230,9 +232,16 @@ def run_inference(args):
 
     num_gpus = torch.cuda.device_count() if args.device.startswith("cuda") else 1
     
+    # Wrap indices in a ThreadedGenerator for thread-safe, dynamic distribution
+    index_gen = ThreadedGenerator(
+        iter(indices),
+        maxsize=num_gpus * 2,
+        name="indices"
+    )
+
     # Create the partial generator instance
     inference_gen = create_inference_iterator(
-        indices,
+        index_gen,
         dataset,
         args,
         args.checkpoint,
