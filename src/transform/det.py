@@ -434,6 +434,34 @@ def random_morphological_downscale[
     )
 
 
+@batched_transform
+def extract_patches[
+    C: Channel,
+    H: Height,
+    W: Width,
+    M: Mode,
+    R: Range,
+    Bx,
+    BxLbl,
+    Kp,
+    KpLbl,
+](
+    sample: DetectionSample[
+        TensorImage[tuple[Batch, C, H, W], M, R], Bx, BxLbl, Kp, KpLbl
+    ],
+    patch_size: tuple[int, int],
+) -> DetectionSample[
+    Patches[Batch, NumPatches, PatchDim], Bx, BxLbl, Kp, KpLbl
+]:
+    return DetectionSample(
+        image=extract_patches_img(sample.image, patch_size),
+        boxes=sample.boxes,
+        box_labels=sample.box_labels,
+        keypoints=sample.keypoints,
+        keypoint_labels=sample.keypoint_labels,
+    )
+
+
 def random_extract_patches_and_collate[
     Meta,
     C: Channel,
