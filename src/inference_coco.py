@@ -1,6 +1,7 @@
 import argparse
 import json
 import random
+import threading
 import torch
 from pathlib import Path
 from tqdm import tqdm
@@ -12,6 +13,7 @@ from dataset.coco import (
     CocoLineAnnotation,
 )
 import transform.det as det_tf
+from threaded_generator import ParallelGenerator, partial_generator
 
 
 def process_single_image(
@@ -138,6 +140,61 @@ def process_single_image(
     return sym_results, line_results
 
 
+@partial_generator
+def create_inference_iterator(
+    indices: list[int],
+    dataset,
+    args,
+    checkpoint_path: Path,
+    sym_idx_to_cat_id: dict,
+    line_idx_to_cat_id: dict,
+    max_symbols: int,
+    max_lines: int,
+):
+    """Generator that runs inference on a specific GPU based on the current thread's worker_id."""
+    current_thread = threading.current_thread()
+    worker_id = getattr(current_thread, "worker_id", 0)
+    
+    if args.device.startswith("cuda"):
+        device = torch.device(f"cuda:{worker_id}")
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device(args.device)
+    
+    # Each worker instantiates its own model here
+    model = create_detector(
+        backbone_size=args.backbone_size,
+        patch_size=args.patch_size,
+        channels=args.channels,
+        use_sdpa=args.use_sdpa,
+        num_symbol_classes=dataset.num_symbol_classes,
+        num_line_classes=dataset.num_line_classes,
+        num_shapes=args.num_shapes,
+        base_anchor_size=args.base_anchor_size,
+    ).to(device)
+
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model.load_state_dict(checkpoint["model"])
+    model.eval()
+
+    with torch.no_grad():
+        for i in indices:
+            sym_res, line_res = process_single_image(
+                i,
+                dataset,
+                args,
+                model,
+                device,
+                sym_idx_to_cat_id,
+                line_idx_to_cat_id,
+                max_symbols,
+                max_lines,
+            )
+            yield sym_res, line_res
+            
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
 def run_inference(args):
     device = torch.device(args.device)
     print(f"Using device: {device}")
@@ -161,29 +218,6 @@ def run_inference(args):
     max_lines += 100
     print(f"Dynamic Top-K limits -> Symbols: {max_symbols}, Lines: {max_lines}")
 
-    # 2. Setup model
-    model = create_detector(
-        backbone_size=args.backbone_size,
-        patch_size=args.patch_size,
-        channels=args.channels,
-        use_sdpa=args.use_sdpa,
-        num_symbol_classes=dataset.num_symbol_classes,
-        num_line_classes=dataset.num_line_classes,
-        num_shapes=args.num_shapes,
-        base_anchor_size=args.base_anchor_size,
-    ).to(device)
-
-    # 3. Load checkpoint
-    print(f"Loading checkpoint from {args.checkpoint}")
-    checkpoint = torch.load(
-        args.checkpoint, map_location=device, weights_only=True
-    )
-    model.load_state_dict(checkpoint["model"])
-    model.eval()
-
-    all_sym_results = []
-    all_line_results = []
-
     # Determine indices to process
     num_images = len(dataset.images)
     if args.num_samples is not None and args.num_samples < num_images:
@@ -192,27 +226,38 @@ def run_inference(args):
             f"Randomly subsampled {args.num_samples} images out of {num_images}."
         )
     else:
-        indices = range(num_images)
+        indices = list(range(num_images))
+
+    num_gpus = torch.cuda.device_count() if args.device.startswith("cuda") else 1
+    
+    # Create the partial generator instance
+    inference_gen = create_inference_iterator(
+        indices,
+        dataset,
+        args,
+        args.checkpoint,
+        sym_idx_to_cat_id,
+        line_idx_to_cat_id,
+        max_symbols,
+        max_lines,
+    )
+
+    # Use ParallelGenerator
+    parallel_gen = ParallelGenerator(
+        inference_gen,
+        num_workers=num_gpus,
+        maxsize=num_gpus * 2,
+        name="inference"
+    )
+
+    all_sym_results = []
+    all_line_results = []
 
     print("Running inference...")
-    with torch.no_grad():
-        for i in tqdm(indices):
-            sym_res, line_res = process_single_image(
-                i,
-                dataset,
-                args,
-                model,
-                device,
-                sym_idx_to_cat_id,
-                line_idx_to_cat_id,
-                max_symbols,
-                max_lines,
-            )
+    with parallel_gen as gen:
+        for sym_res, line_res in tqdm(gen, total=len(indices), desc="Inference"):
             all_sym_results.extend(sym_res)
             all_line_results.extend(line_res)
-
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
 
     # Save results
     out_dir = args.output_dir
