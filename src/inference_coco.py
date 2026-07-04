@@ -38,15 +38,10 @@ def process_single_image(
     item = load_coco_sample(dataset, args.img_dir, i, device)
 
     # Decode and transform
-    # Note: decode_nvimgcodec handles the image, boxes/keypoints are already on device
-    if device.type == "cuda":
-        try:
-            item_decoded = det_tf.decode_nvimgcodec(item, device=device)
-        except Exception:
-            # Fallback for unsupported formats
-            item_decoded = det_tf.decode_pyvips(item, device=device)
-    else:
+    if args.force_pyvips or device.type != "cuda":
         item_decoded = det_tf.decode_pyvips(item, device=device)
+    else:
+        item_decoded = det_tf.decode_nvimgcodec(item, device=device)
 
     item_tf = det_tf.to_float1(item_decoded)
     item_padded = det_tf.pad_to_patch_size(
@@ -344,6 +339,11 @@ if __name__ == "__main__":
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
+    )
+    parser.add_argument(
+        "--force_pyvips",
+        action="store_true",
+        help="Force the use of pyvips for image decoding, bypassing nvimgcodec.",
     )
 
     args = parser.parse_args()
