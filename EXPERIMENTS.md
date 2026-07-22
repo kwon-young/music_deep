@@ -341,64 +341,6 @@
 * **Results**: Training losses remained stable and low, with `loss_total` hovering around 0.28-0.39, and `loss_ce` around 0.15-0.23. In-training `mAP@0.5` peaked at ~0.920 (epoch 90) and `mIoU` reached ~0.955. Official COCO evaluation showed significant improvements over Experiment 019. For symbols, global mAP@0.5 increased to **0.6977** (up from 0.622). Common symbols like `noteheadBlack` (0.990), `gClef` (0.980), and `restQuarter` (0.989) maintained near-perfect detection, while `slur` improved to 0.309. Rare classes like `articTenutoAbove` remained at 0.0. For lines, global mAP@0.5 increased to **0.1816** (up from 0.136). `ledgerLines` reached 0.800, `system` improved to 0.563, `staff` to 0.136, and `stem` to 0.235.
 * **Conclusion**: Fine-tuning with a lower learning rate (1e-5) successfully stabilized the final convergence phase and yielded significant improvements in official COCO evaluation metrics for both symbols and lines. The lower LR allowed the network to fine-tune precise endpoints and boundaries without overshooting, validating the hypothesis that the exponential formulation for lines is sensitive to large gradient updates. The remaining challenges are the rare symbol classes (e.g., `articTenutoAbove`) and extremely thin lines, which may require targeted data augmentation or specialized representations.
 
-## Experiment 024: Morphological Downscale Augmentation
-* **Experiment Name/ID**: `experiments/024_morphological_downscale`
-* **Hypothesis/Goal**: Verify that introducing morphological downscaling augmentation improves the model's generalization to unseen music scores with different DPIs, specifically addressing the overfitting to the stable ~64 pixel interline height of the Trompa-COCO dataset.
-* **Setup**: 
-  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
-  * Checkpoint: Resuming from the best checkpoint of Experiment 23 (300-epoch continuation of Exp 21).
-  * Crop Size: Full Image (None)
-  * Data: Full Trompa-COCO dataset.
-  * Augmentation: `--morphological_downscale` enabled.
-  * Training: 100 epochs, peak LR `1e-5` (fine-tuning), with a 1 epoch linear warmup.
-  * Command: 
-    ```bash
-    PYTHONPATH=. mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py \
-        --exp_dir experiments/024_morphological_downscale \
-        --detector_checkpoint experiments/021_proportional_fgl_lines/train_detection/checkpoints/latest_model.pt \
-        --patch_size 64 \
-        --epochs 100 \
-        --lr 1e-5 \
-        --warmup_epochs 1 \
-        --morphological_downscale \
-        --anno_path data/trompa-coco/annotations/instances_trainval2017.json \
-        --img_dir data/trompa-coco/trainval2017 \
-        --headless \
-        --use_sdpa \
-        --compile \
-        --log_epoch_interval 5
-    ```
-* **Results**: (To be filled after running)
-* **Conclusion**: (To be filled after running)
-
-## Experiment 027: Focal L1 and GIoU Loss for Regression
-* **Experiment Name/ID**: `experiments/027_focal_regression_loss`
-* **Hypothesis/Goal**: Verify that applying Focal L1 and Focal GIoU losses to the regression tasks (symbol boxes and line keypoints) improves the model's ability to localize highly variable classes (like `slur`, `tie`, `staff`, and `octave`). By down-weighting the loss for "easy" predictions (small errors or stable templates) and focusing the gradients on "hard" predictions (large localization errors), the network should break out of the local minimum of template-matching and learn to regress extreme aspect ratios more accurately.
-* **Setup**: 
-  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
-  * Loss: Focal L1 and Focal GIoU applied to matched predictions in `DFINECriterion`.
-  * Checkpoint: From scratch (or optionally resuming from Exp 026 to see if it breaks or improves a converged model).
-  * Crop Size: Full Image (None)
-  * Data: Full Trompa-COCO dataset.
-  * Training: 100 epochs, peak LR `1e-4`, with a 1 epoch linear warmup.
-  * Command: 
-    ```bash
-    PYTHONPATH=. mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py \
-        --exp_dir experiments/027_focal_regression_loss \
-        --patch_size 64 \
-        --epochs 100 \
-        --lr 1e-4 \
-        --warmup_epochs 1 \
-        --anno_path data/trompa-coco/annotations/instances_trainval2017.json \
-        --img_dir data/trompa-coco/trainval2017 \
-        --headless \
-        --use_sdpa \
-        --compile \
-        --log_epoch_interval 5
-    ```
-* **Results**: (To be filled after running)
-* **Conclusion**: (To be filled after running)
-
 ## Experiment 021: Proportional FGL Scaling for Lines
 * **Experiment Name/ID**: `experiments/021_proportional_fgl_lines`
 * **Hypothesis/Goal**: Verify that scaling the D-FINE Fine-Grained Localization (FGL) residual for lines by the magnitude of the predicted base direction (plus a floor) resolves the "asleep FGL" bottleneck. By mirroring the D-FINE box logic (where FGL scales with width/height), the line FGL should provide smooth, active gradients across the entire length of long lines, rather than being clamped and falling asleep for errors > 0.5 patches.
@@ -444,6 +386,34 @@
         --patch_size 64 \
         --extract_patch_min 32 \
         --extract_patch_max 96 \
+        --epochs 100 \
+        --lr 1e-4 \
+        --warmup_epochs 1 \
+        --anno_path data/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir data/trompa-coco/trainval2017 \
+        --headless \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 5
+    ```
+* **Results**: The training was continued for 100 epochs in Experiment 026. The final evaluation showed a regression compared to the Exp 021 baseline. For symbols, global mAP@0.5 dropped to **0.841** (from 0.971) and mAP@0.5_0.95 to **0.644**. While common symbols like `noteheadBlack` (0.990), `gClef` (1.0), and `fClef` (0.990) remained near-perfect, rare classes saw a decline: `slur` dropped to 0.506, `tie` to 0.461, and `articTenutoAbove` to 0.430. For lines, global mAP@0.5 dropped to **0.275** (from 0.315) and mAP@0.5_0.95 to **0.234**. Most line classes remained strong, such as `system` (0.979), `beam` (0.975), and `stem` (0.951), but `octave` lines collapsed to 0.025.
+* **Conclusion**: The variable patch size scale augmentation (extracting patches from 32x32 to 96x96) negatively impacted overall performance, causing a regression in both symbol and line mAP. While the model maintained excellent detection for common, distinct symbols, the increased variance in spatial context and zoom levels likely made it harder to converge on the precise boundaries required for rare classes and complex structures. This suggests that such aggressive scale augmentation may be detrimental when the model is already capable of fitting the dataset's native scale distribution, or it requires a much longer training schedule to recover the lost precision.
+
+## Experiment 027: Focal L1 and GIoU Loss for Regression
+* **Experiment Name/ID**: `experiments/027_focal_regression_loss`
+* **Hypothesis/Goal**: Verify that applying Focal L1 and Focal GIoU losses to the regression tasks (symbol boxes and line keypoints) improves the model's ability to localize highly variable classes (like `slur`, `tie`, `staff`, and `octave`). By down-weighting the loss for "easy" predictions (small errors or stable templates) and focusing the gradients on "hard" predictions (large localization errors), the network should break out of the local minimum of template-matching and learn to regress extreme aspect ratios more accurately.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Loss: Focal L1 and Focal GIoU applied to matched predictions in `DFINECriterion`.
+  * Checkpoint: From scratch (or optionally resuming from Exp 026 to see if it breaks or improves a converged model).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Training: 100 epochs, peak LR `1e-4`, with a 1 epoch linear warmup.
+  * Command: 
+    ```bash
+    PYTHONPATH=. mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/027_focal_regression_loss \
+        --patch_size 64 \
         --epochs 100 \
         --lr 1e-4 \
         --warmup_epochs 1 \
