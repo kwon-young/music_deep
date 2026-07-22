@@ -371,6 +371,34 @@
 * **Results**: (To be filled after running)
 * **Conclusion**: (To be filled after running)
 
+## Experiment 027: Focal L1 and GIoU Loss for Regression
+* **Experiment Name/ID**: `experiments/027_focal_regression_loss`
+* **Hypothesis/Goal**: Verify that applying Focal L1 and Focal GIoU losses to the regression tasks (symbol boxes and line keypoints) improves the model's ability to localize highly variable classes (like `slur`, `tie`, `staff`, and `octave`). By down-weighting the loss for "easy" predictions (small errors or stable templates) and focusing the gradients on "hard" predictions (large localization errors), the network should break out of the local minimum of template-matching and learn to regress extreme aspect ratios more accurately.
+* **Setup**: 
+  * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`.
+  * Loss: Focal L1 and Focal GIoU applied to matched predictions in `DFINECriterion`.
+  * Checkpoint: From scratch (or optionally resuming from Exp 026 to see if it breaks or improves a converged model).
+  * Crop Size: Full Image (None)
+  * Data: Full Trompa-COCO dataset.
+  * Training: 100 epochs, peak LR `1e-4`, with a 1 epoch linear warmup.
+  * Command: 
+    ```bash
+    PYTHONPATH=. mamba run -n pytorch torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/027_focal_regression_loss \
+        --patch_size 64 \
+        --epochs 100 \
+        --lr 1e-4 \
+        --warmup_epochs 1 \
+        --anno_path data/trompa-coco/annotations/instances_trainval2017.json \
+        --img_dir data/trompa-coco/trainval2017 \
+        --headless \
+        --use_sdpa \
+        --compile \
+        --log_epoch_interval 5
+    ```
+* **Results**: (To be filled after running)
+* **Conclusion**: (To be filled after running)
+
 ## Experiment 021: Proportional FGL Scaling for Lines
 * **Experiment Name/ID**: `experiments/021_proportional_fgl_lines`
 * **Hypothesis/Goal**: Verify that scaling the D-FINE Fine-Grained Localization (FGL) residual for lines by the magnitude of the predicted base direction (plus a floor) resolves the "asleep FGL" bottleneck. By mirroring the D-FINE box logic (where FGL scales with width/height), the line FGL should provide smooth, active gradients across the entire length of long lines, rather than being clamped and falling asleep for errors > 0.5 patches.
