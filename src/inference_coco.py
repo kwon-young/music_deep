@@ -21,6 +21,157 @@ from threaded_generator import (
 )
 
 
+def _greedy_match(pred_classes, gt_classes, pred_geom, gt_geom):
+    """Class-aware greedy nearest-neighbor matching (CPU).
+
+    Returns two tensors (gt_indices, pred_indices) of matched pairs, or
+    (None, None) if no matches. All computation is done on CPU to avoid
+    per-element GPU sync overhead.
+    """
+    num_gt = gt_classes.shape[0]
+    num_pred = pred_classes.shape[0]
+    if num_gt == 0 or num_pred == 0:
+        return None, None
+
+    pred_classes = pred_classes.cpu()
+    gt_classes = gt_classes.cpu()
+    pred_geom = pred_geom.cpu()
+    gt_geom = gt_geom.cpu()
+
+    all_dists = []
+    all_gi = []
+    all_pi = []
+
+    for cls in gt_classes.unique():
+        gt_idx = torch.nonzero(gt_classes == cls, as_tuple=True)[0]
+        pred_idx = torch.nonzero(pred_classes == cls, as_tuple=True)[0]
+        if len(gt_idx) == 0 or len(pred_idx) == 0:
+            continue
+        diff = gt_geom[gt_idx].unsqueeze(1) - pred_geom[pred_idx].unsqueeze(0)
+        dists = (diff ** 2).sum(-1)
+        gi_grid, pi_grid = torch.meshgrid(gt_idx, pred_idx, indexing="ij")
+        all_dists.append(dists.flatten())
+        all_gi.append(gi_grid.flatten())
+        all_pi.append(pi_grid.flatten())
+
+    if not all_dists:
+        return None, None
+
+    all_dists = torch.cat(all_dists)
+    all_gi = torch.cat(all_gi)
+    all_pi = torch.cat(all_pi)
+    order = torch.argsort(all_dists)
+
+    matched_gt = []
+    matched_pred = []
+    used_preds = set()
+    used_gts = set()
+    order_list = order.tolist()
+    all_gi_list = all_gi.tolist()
+    all_pi_list = all_pi.tolist()
+    for idx in order_list:
+        gi = all_gi_list[idx]
+        pi = all_pi_list[idx]
+        if gi in used_gts or pi in used_preds:
+            continue
+        matched_gt.append(gi)
+        matched_pred.append(pi)
+        used_gts.add(gi)
+        used_preds.add(pi)
+
+    if not matched_gt:
+        return None, None
+
+    return torch.tensor(matched_gt), torch.tensor(matched_pred)
+
+
+def apply_oracle_fgl(outputs, item, patch_size, base_anchor_size):
+    """Replace FGL residuals with GT-derived perfect residuals for matched
+    predictions, leaving unmatched predictions unchanged.
+
+    This measures the upper bound of FGL refinement quality: "if the FGL
+    residuals were perfect (given the model's base predictions and
+    classification), how good would the geometry be?"
+
+    The residual is clamped to [-0.5, +0.5] * scale, matching the D-FINE
+    weighting function range. If a base prediction is too far from the GT,
+    the clamped residual cannot fully correct it — this is by design, as
+    it isolates FGL quality from base prediction quality.
+    """
+    device = outputs.symbols.pred_boxes.data.device
+
+    # --- Symbols (boxes) ---
+    gt_boxes = item.sample.boxes.data
+    gt_box_labels = item.sample.box_labels.data
+    if gt_boxes.shape[0] > 0:
+        gt_boxes_pu = gt_boxes / patch_size
+        gt_centers = (gt_boxes_pu[:, :2] + gt_boxes_pu[:, 2:]) / 2
+
+        sym_logits = outputs.symbols.pred_logits.data[0]
+        sym_labels = sym_logits.sigmoid().argmax(dim=-1)
+        sym_centers = outputs.symbols.absolute_centers.data[0]
+        sym_shapes = outputs.symbols.learnable_shapes.data[0]
+        sym_boxes = outputs.symbols.pred_boxes.data[0]
+
+        gt_idx, pred_idx = _greedy_match(
+            sym_labels, gt_box_labels, sym_centers, gt_centers
+        )
+        if gt_idx is not None:
+            gt_idx = gt_idx.to(device)
+            pred_idx = pred_idx.to(device)
+
+            w = sym_shapes[pred_idx, 0]
+            h = sym_shapes[pred_idx, 1]
+            cx = sym_centers[pred_idx, 0]
+            cy = sym_centers[pred_idx, 1]
+            gx1, gy1, gx2, gy2 = gt_boxes_pu[gt_idx].T
+
+            L_res = ((cx - gx1) / w - 0.5).clamp(-0.5, 0.5)
+            T_res = ((cy - gy1) / h - 0.5).clamp(-0.5, 0.5)
+            R_res = ((gx2 - cx) / w - 0.5).clamp(-0.5, 0.5)
+            B_res = ((gy2 - cy) / h - 0.5).clamp(-0.5, 0.5)
+
+            sym_boxes[pred_idx, 0] = cx - (w / 2 + L_res * w)
+            sym_boxes[pred_idx, 1] = cy - (h / 2 + T_res * h)
+            sym_boxes[pred_idx, 2] = cx + (w / 2 + R_res * w)
+            sym_boxes[pred_idx, 3] = cy + (h / 2 + B_res * h)
+
+    # --- Lines (keypoints) ---
+    gt_kps = item.sample.keypoints.data
+    gt_kp_labels = item.sample.keypoint_labels.data
+    if gt_kps.shape[0] > 0:
+        gt_kps_pu = gt_kps / patch_size
+
+        line_logits = outputs.lines.pred_logits.data[0]
+        line_labels = line_logits.sigmoid().argmax(dim=-1)
+        line_centers = outputs.lines.absolute_centers.data[0]
+        line_base_dirs = outputs.lines.raw_directions.data[0]
+        line_kps = outputs.lines.pred_keypoints.data[0]
+
+        gt_idx, pred_idx = _greedy_match(
+            line_labels, gt_kp_labels, line_kps, gt_kps_pu
+        )
+        if gt_idx is not None:
+            gt_idx = gt_idx.to(device)
+            pred_idx = pred_idx.to(device)
+
+            base = line_base_dirs[pred_idx]
+            cx = line_centers[pred_idx, 0]
+            cy = line_centers[pred_idx, 1]
+            scale = base.abs() + base_anchor_size
+            gx1, gy1, gx2, gy2 = gt_kps_pu[gt_idx].T
+
+            res_x1 = ((gx1 - cx - base[:, 0]) / scale[:, 0]).clamp(-0.5, 0.5)
+            res_y1 = ((gy1 - cy - base[:, 1]) / scale[:, 1]).clamp(-0.5, 0.5)
+            res_x2 = ((gx2 - cx - base[:, 2]) / scale[:, 2]).clamp(-0.5, 0.5)
+            res_y2 = ((gy2 - cy - base[:, 3]) / scale[:, 3]).clamp(-0.5, 0.5)
+
+            line_kps[pred_idx, 0] = cx + base[:, 0] + res_x1 * scale[:, 0]
+            line_kps[pred_idx, 1] = cy + base[:, 1] + res_y1 * scale[:, 1]
+            line_kps[pred_idx, 2] = cx + base[:, 2] + res_x2 * scale[:, 2]
+            line_kps[pred_idx, 3] = cy + base[:, 3] + res_y2 * scale[:, 3]
+
+
 def process_single_image(
     i,
     dataset,
@@ -66,6 +217,12 @@ def process_single_image(
         device_type=device.type, dtype=torch.float16, enabled=args.use_amp
     ):
         outputs = model(dropped_item.sample.image)
+
+    # Oracle FGL: replace FGL residuals with GT-derived perfect residuals
+    if args.oracle_fgl:
+        apply_oracle_fgl(
+            outputs, item, args.patch_size, args.base_anchor_size
+        )
 
     # --- Process Symbols ---
     sym_logits = outputs.symbols.pred_logits.data[0]
@@ -202,6 +359,8 @@ def create_inference_iterator(
 def run_inference(args):
     device = torch.device(args.device)
     print(f"Using device: {device}")
+    if args.oracle_fgl:
+        print(">>> ORACLE FGL MODE: replacing FGL residuals with GT-derived targets")
 
     # 1. Load dataset to get metadata and category mappings
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
@@ -344,6 +503,13 @@ if __name__ == "__main__":
         "--force_pyvips",
         action="store_true",
         help="Force the use of pyvips for image decoding, bypassing nvimgcodec.",
+    )
+    parser.add_argument(
+        "--oracle_fgl",
+        action="store_true",
+        help="Replace FGL residuals with GT-derived perfect residuals (oracle "
+        "upper-bound evaluation). Uses GT from the dataset to compute "
+        "optimal FGL targets for matched predictions.",
     )
 
     args = parser.parse_args()
