@@ -60,33 +60,6 @@ def sigmoid_focal_loss(
     return loss
 
 
-def focal_l1_loss(
-    src: torch.Tensor,
-    target: torch.Tensor,
-    gamma: float = 2.0,
-    delta: float = 1.0,
-) -> torch.Tensor:
-    """
-    Focal L1 Loss. Down-weights small localization errors and focuses on large ones.
-    """
-    errors = torch.abs(src - target)
-    focal_weight = (1.0 - torch.exp(-errors / delta)) ** gamma
-    return (focal_weight * errors).sum(dim=-1)
-
-
-def focal_giou_loss(
-    giou_errors: torch.Tensor,
-    gamma: float = 2.0,
-    delta: float = 1.0,
-) -> torch.Tensor:
-    """
-    Focal GIoU Loss. Down-weights high overlaps and focuses on non-overlapping boxes.
-    """
-    # giou_errors is 1 - GIoU, ranging from 0 (perfect) to 2 (worst)
-    focal_weight = (1.0 - torch.exp(-giou_errors / delta)) ** gamma
-    return focal_weight * giou_errors
-
-
 def flatten_indices(indices: list[MatchIndices]) -> FlattenedIndices:
     # Permute predictions following the Hungarian Matcher indices
     batch_idx = torch.cat(
@@ -176,24 +149,23 @@ class DFINECriterion(nn.Module):
         class_weights: torch.Tensor,
         num_boxes: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Focal L1 and Focal GIoU loss applied ONLY to matched predictions."""
+        """L1 and GIoU loss applied ONLY to matched predictions."""
         w = class_weights[matched_classes]
 
         # Convert to CXCYWH for L1 loss
         src_boxes_cxcywh = box_xyxy_to_cxcywh(src_boxes)
         matched_boxes_cxcywh = box_xyxy_to_cxcywh(matched_boxes)
 
-        # 1. Focal L1 Loss
-        loss_bbox = focal_l1_loss(
-            src_boxes_cxcywh, matched_boxes_cxcywh, gamma=self.gamma, delta=1.0
-        )
+        # 1. L1 Loss
+        loss_bbox = F.l1_loss(
+            src_boxes_cxcywh, matched_boxes_cxcywh, reduction="none"
+        ).sum(dim=-1)
         loss_bbox = (loss_bbox * w).sum() / num_boxes
 
-        # 2. Focal GIoU Loss
-        giou_errors = 1 - torch.diag(
+        # 2. GIoU Loss
+        loss_giou = 1 - torch.diag(
             generalized_box_iou(src_boxes, matched_boxes)
         )
-        loss_giou = focal_giou_loss(giou_errors, gamma=self.gamma, delta=1.0)
         loss_giou = (loss_giou * w).sum() / num_boxes
 
         return loss_bbox, loss_giou
@@ -438,13 +410,11 @@ class DFINECriterion(nn.Module):
             ]
             w_line = self.line_weights[matched_line_labels]
 
-            # Use Focal L1 Loss for line endpoints
-            loss_l1_line = focal_l1_loss(
+            loss_l1_line = F.l1_loss(
                 matched_line_kp_preds,
                 matched_line_keypoints,
-                gamma=self.gamma,
-                delta=1.0
-            )
+                reduction="none",
+            ).sum(dim=-1)
             loss_l1_line = (loss_l1_line * w_line).sum() / num_lines
 
             loss_fgl_line = self.loss_fgl_lines(
