@@ -54,6 +54,26 @@ class CocoLineAnnotation:
 type CocoParsedAnnotation = CocoSymbolAnnotation | CocoLineAnnotation
 
 
+@dataclass(frozen=True)
+class ClassSizeStats:
+    """Aggregated size statistics for a single class.
+
+    ``variance`` is the population variance (ddof=0), matching the offline
+    size-variance analysis scripts.
+    """
+
+    n: int
+    mean: float
+    variance: float
+
+    @property
+    def cv(self) -> float:
+        """Population coefficient of variation (std/mean). 0 when undefined."""
+        if self.n >= 2 and self.mean > 0:
+            return math.sqrt(self.variance) / self.mean
+        return 0.0
+
+
 @dataclass
 class CocoDataset:
     num_symbol_classes: int
@@ -62,6 +82,8 @@ class CocoDataset:
     line_cat_id_to_idx: dict[int, int]
     symbol_weights: list[float]
     line_weights: list[float]
+    size_difficulty_lambda: float
+    size_difficulty_max: float
     images: list[CocoMetadata]
     annotations: dict[int, list[CocoParsedAnnotation]]
     symbol_categories: list[dict]
@@ -148,11 +170,26 @@ class CocoDataset:
                             new_line_id_to_idx[ann.category_id]
                         ] += 1
 
-        self.symbol_weights = _compute_smoothed_weights(
-            final_sym_counts, self.num_symbol_classes
+        sym_size_stats, line_size_stats = _collect_class_size_stats(
+            new_annotations,
+            new_sym_id_to_idx,
+            new_line_id_to_idx,
+            self.num_symbol_classes,
+            self.num_line_classes,
         )
-        self.line_weights = _compute_smoothed_weights(
-            final_line_counts, self.num_line_classes
+        self.symbol_weights = _compute_difficulty_balanced_weights(
+            final_sym_counts,
+            self.num_symbol_classes,
+            sym_size_stats,
+            self.size_difficulty_lambda,
+            self.size_difficulty_max,
+        )
+        self.line_weights = _compute_difficulty_balanced_weights(
+            final_line_counts,
+            self.num_line_classes,
+            line_size_stats,
+            self.size_difficulty_lambda,
+            self.size_difficulty_max,
         )
 
         # 5. Update Mappings and Categories
@@ -209,8 +246,105 @@ def _compute_smoothed_weights(
     return clamped
 
 
-def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
-    """Parses the COCO JSON, builds class mappings, and caches the result."""
+def _size_stats(sizes: list[float]) -> ClassSizeStats:
+    """Aggregates raw per-instance sizes into population statistics."""
+    n = len(sizes)
+    if n == 0:
+        return ClassSizeStats(n=0, mean=0.0, variance=0.0)
+    mean = sum(sizes) / n
+    variance = sum((s - mean) ** 2 for s in sizes) / n
+    return ClassSizeStats(n=n, mean=mean, variance=variance)
+
+
+def _collect_class_size_stats(
+    annotations: dict[int, list[CocoParsedAnnotation]],
+    symbol_cat_id_to_idx: dict[int, int],
+    line_cat_id_to_idx: dict[int, int],
+    num_symbol_classes: int,
+    num_line_classes: int,
+) -> tuple[dict[int, ClassSizeStats], dict[int, ClassSizeStats]]:
+    """Per-class size statistics derived from the parsed annotations.
+
+    Symbols use the bbox diagonal; lines use the keypoint segment length.
+    Matches the offline size-variance analysis (scripts/plot_*_variance_vs_ap.py).
+    """
+    symbol_sizes: defaultdict[int, list[float]] = defaultdict(list)
+    line_sizes: defaultdict[int, list[float]] = defaultdict(list)
+
+    for anns in annotations.values():
+        for ann in anns:
+            if isinstance(ann, CocoSymbolAnnotation):
+                _, _, w, h = ann.bbox
+                idx = symbol_cat_id_to_idx[ann.category_id]
+                symbol_sizes[idx].append(math.hypot(w, h))
+            elif isinstance(ann, CocoLineAnnotation):
+                x1, y1, x2, y2 = ann.keypoints
+                idx = line_cat_id_to_idx[ann.category_id]
+                line_sizes[idx].append(math.hypot(x2 - x1, y2 - y1))
+
+    symbol_stats = {
+        idx: _size_stats(symbol_sizes.get(idx, []))
+        for idx in range(num_symbol_classes)
+    }
+    line_stats = {
+        idx: _size_stats(line_sizes.get(idx, [])) for idx in range(num_line_classes)
+    }
+    return symbol_stats, line_stats
+
+
+def _apply_size_difficulty(
+    weights: list[float],
+    size_stats: dict[int, ClassSizeStats],
+    variance_lambda: float = 0.5,
+    max_diff: float = 8.0,
+    min_val: float = 0.05,
+    max_val: float = 0.85,
+) -> list[float]:
+    """Multiplies each *final* (already normalized+clamped) weight by a difficulty factor.
+
+    The factor is ``clamp(1 + variance_lambda * cv, 1, max_diff)`` where cv is the
+    per-class coefficient of variation of instance size. Applied after the
+    smoothed-inverse-frequency computation so that frequency-only clamping cannot
+    erase the boost (see the sanity-check script). Re-clamps to the same bounds.
+    """
+    out: list[float] = []
+    for i, w in enumerate(weights):
+        cv = size_stats.get(i, ClassSizeStats(0, 0.0, 0.0)).cv
+        diff = min(1.0 + variance_lambda * cv, max_diff)
+        out.append(max(min_val, min(max_val, w * diff)))
+    return out
+
+
+def _compute_difficulty_balanced_weights(
+    counts: dict[int, int],
+    num_classes: int,
+    size_stats: dict[int, ClassSizeStats],
+    variance_lambda: float,
+    size_difficulty_max: float,
+) -> list[float]:
+    """Smoothed inverse-frequency weights, then size-difficulty rebalancing."""
+    base = _compute_smoothed_weights(counts, num_classes)
+    return _apply_size_difficulty(
+        base,
+        size_stats,
+        variance_lambda=variance_lambda,
+        max_diff=size_difficulty_max,
+    )
+
+
+def parse_coco(
+    anno_path: Path,
+    cache_dir: Path | None = None,
+    variance_lambda: float = 0.5,
+    size_difficulty_max: float = 8.0,
+) -> CocoDataset:
+    """Parses the COCO JSON, builds class mappings, and caches the result.
+
+    ``variance_lambda`` controls how strongly intra-class size variability (a proxy
+    for class difficulty) up-weights a class; ``size_difficulty_max`` caps the
+    per-class difficulty factor. Both feed the size-difficulty rebalancing applied
+    on top of the smoothed inverse-frequency weights.
+    """
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = cache_dir / anno_path.with_suffix(".pkl").name
@@ -314,10 +448,28 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
             print(f"  {cat['name']:<30}: {line_counts[idx]}")
         print("--------------------------------\n")
 
-    symbol_weights = _compute_smoothed_weights(
-        symbol_counts, len(symbol_categories)
+    sym_size_stats, line_size_stats = _collect_class_size_stats(
+        dict(annotations),
+        symbol_cat_id_to_idx,
+        line_cat_id_to_idx,
+        len(symbol_categories),
+        len(line_categories),
     )
-    line_weights = _compute_smoothed_weights(line_counts, len(line_categories))
+
+    symbol_weights = _compute_difficulty_balanced_weights(
+        symbol_counts,
+        len(symbol_categories),
+        sym_size_stats,
+        variance_lambda=variance_lambda,
+        size_difficulty_max=size_difficulty_max,
+    )
+    line_weights = _compute_difficulty_balanced_weights(
+        line_counts,
+        len(line_categories),
+        line_size_stats,
+        variance_lambda=variance_lambda,
+        size_difficulty_max=size_difficulty_max,
+    )
 
     dataset = CocoDataset(
         num_symbol_classes=len(symbol_categories),
@@ -326,6 +478,8 @@ def parse_coco(anno_path: Path, cache_dir: Path | None = None) -> CocoDataset:
         line_cat_id_to_idx=line_cat_id_to_idx,
         symbol_weights=symbol_weights,
         line_weights=line_weights,
+        size_difficulty_lambda=variance_lambda,
+        size_difficulty_max=size_difficulty_max,
         images=images,
         annotations=dict(annotations),
         symbol_categories=symbol_categories,

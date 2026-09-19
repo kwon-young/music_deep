@@ -812,6 +812,18 @@ if __name__ == "__main__":
         help="Directory to store the cached dataset. If None, stores next to anno_path.",
     )
     parser.add_argument(
+        "--class_weight_variance_lambda",
+        type=float,
+        default=0.5,
+        help="How strongly intra-class size variability up-weights a class (difficulty proxy).",
+    )
+    parser.add_argument(
+        "--class_weight_size_difficulty_max",
+        type=float,
+        default=8.0,
+        help="Cap on the per-class size-difficulty multiplier.",
+    )
+    parser.add_argument(
         "--img_dir", type=Path, default=Path("data/trompa-coco/trainval2017")
     )
     parser.add_argument(
@@ -1076,7 +1088,12 @@ if __name__ == "__main__":
     match_device = torch.device(args.match_device)
 
     # Parse and cache the dataset before starting training
-    dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
+    dataset = parse_coco(
+        args.anno_path,
+        cache_dir=args.cache_dir,
+        variance_lambda=args.class_weight_variance_lambda,
+        size_difficulty_max=args.class_weight_size_difficulty_max,
+    )
 
     # Restrict dataset labels if requested
     if args.include_labels:

@@ -7,7 +7,7 @@ from pathlib import Path
 def main():
     # Update these paths if your data is located elsewhere
     anno_path = Path("data/trompa-coco/annotations/instances_trainval2017.json")
-    summary_path = Path("experiments/026_variable_patch_size_augmentation/inference/coco_eval_summary.json")
+    summary_path = Path("experiments/028_variable_patch_size_augmentation/inference/coco_eval_summary.json")
     
     # 1. Load AP from the evaluation summary
     with open(summary_path, 'r') as f:
@@ -48,15 +48,25 @@ def main():
     variances = []
     aps = []
     
+    stats = {}
     for name, ap in line_aps.items():
         lengths = line_lengths.get(name, [])
-        if len(lengths) > 1:
-            var = np.var(lengths)
+        if len(lengths) >= 2:
+            stats[name] = {"n": len(lengths), "mean": float(np.mean(lengths)), "var": float(np.var(lengths)), "mAP_0.5": ap}
             class_names.append(name)
-            variances.append(var)
+            variances.append(stats[name]["var"])
             aps.append(ap)
         else:
             print(f"Warning: No valid lengths found for {name}")
+
+    out = Path("experiments/028_variable_patch_size_augmentation/inference/size_variance_analysis_lines.json")
+    out.write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n")
+    print(f"Saved per-class stats to {out}")
+    print(f"n_classes_plotted: {len(class_names)}")
+    print("class\tcount\tmean_len\tvar\tmAP_0.5")
+    for nm in sorted(stats, key=lambda s: stats[s]["var"], reverse=True):
+        st = stats[nm]
+        print(f"{nm}\t{st['n']}\t{st['mean']:.1f}\t{st['var']:.0f}\t{st['mAP_0.5']:.3f}")
 
     # 5. Plot Variance vs AP
     fig, ax = plt.subplots(figsize=(10, 6))
