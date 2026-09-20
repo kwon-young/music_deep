@@ -7,6 +7,58 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 
+def summarize_at_maxdet(coco_eval: COCOeval, max_dets: int) -> list[float]:
+    """Computes the COCO summary statistics at a single ``maxDets`` value.
+
+    pycocotools' ``summarize()`` hard-codes ``maxDets=20`` for the keypoints
+    aggregator while the bbox aggregator uses ``maxDets=2000``, so the two
+    modalities' global numbers are incomparable and inconsistent with the
+    per-category numbers computed in ``evaluate_modality`` (which always use
+    ``maxDets=2000``). This re-derives the summary metrics directly from the
+    accumulated precision/recall arrays at the requested ``max_dets``.
+
+    Returns the same 12-element layout as ``COCOeval.stats``:
+    ``[AP, AP50, AP75, APs, APm, APl, AR1, AR10, AR100, ARs, ARm, ARl]``
+    """
+    p = coco_eval.params
+    M = next(i for i, m in enumerate(p.maxDets) if m == max_dets)
+    P = coco_eval.eval["precision"]  # [T, R, K, A, M]
+    R = coco_eval.eval["recall"]  # [T, K, A, M]
+    labels = p.areaRngLbl
+    aind_all = labels.index("all")
+
+    def mean_ap(iou: int | None = None, area: str | None = None) -> float:
+        a = aind_all if area is None else labels.index(area)
+        s = P[:, :, :, a, M] if iou is None else P[iou, :, :, a, M]
+        vals = s[s > -1]
+        return float(np.mean(vals)) if len(vals) else -1.0
+
+    def mean_ar(max_det: int, area: str | None = None) -> float:
+        a = aind_all if area is None else labels.index(area)
+        m = next(i for i, v in enumerate(p.maxDets) if v == max_det)
+        s = R[:, :, a, m]
+        vals = s[s > -1]
+        return float(np.mean(vals)) if len(vals) else -1.0
+
+    iou50 = int(np.where(p.iouThrs == 0.5)[0][0])
+    iou75 = int(np.where(p.iouThrs == 0.75)[0][0])
+
+    return [
+        mean_ap(),
+        mean_ap(iou=iou50),
+        mean_ap(iou=iou75),
+        mean_ap(area="small") if "small" in labels else -1.0,
+        mean_ap(area="medium") if "medium" in labels else -1.0,
+        mean_ap(area="large") if "large" in labels else -1.0,
+        mean_ar(max_dets),
+        mean_ar(max_dets),
+        mean_ar(max_dets),
+        mean_ar(max_dets, area="small") if "small" in labels else -1.0,
+        mean_ar(max_dets, area="medium") if "medium" in labels else -1.0,
+        mean_ar(max_dets, area="large") if "large" in labels else -1.0,
+    ]
+
+
 def fast_computeOks(self, imgId, catId):
     """Vectorized OKS computation to replace the slow pycocotools double for-loop."""
     p = self.params
@@ -172,7 +224,12 @@ def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
 
     coco_eval.evaluate()
     coco_eval.accumulate()
-    coco_eval.summarize()
+
+    # Always report the summary at the maximum maxDets so the two modalities'
+    # global numbers are comparable (pycocotools' keypoints summarize() caps at
+    # maxDets=20, which crushes line AP for this dataset).
+    global_stats = summarize_at_maxdet(coco_eval, max_dets=2000)
+    coco_eval.stats = np.array(global_stats)
 
     precisions = coco_eval.eval["precision"]
     cats = coco_gt.loadCats(cat_ids)
