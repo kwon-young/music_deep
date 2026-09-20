@@ -450,10 +450,10 @@
 * **Results**: **Lines (8 classes — hypothesis strongly confirmed, nearly monotone staircase):** `ledgerLines` (variance 62 px²;`mAP@0.5` 0.952), `stem` (5,275;0.975), `barLine` (7,161;0.979), `beam` → (25,624;0.988), `system` (32,403;0.979), `staff` (342,787;0.896), `voltaBracket` (376,726;0.686), `octave` (1,716,968;0.040). As intra-class length variance grows by ≳4 orders of magnitude, per-class mAP declines monotonically (modulo athe `system`/`barLine` pair alternating, from ≈0.98 to≈0.04**. **Symbols (78 classes — hypothesis holds only at the curved long-tail):** `slur` (variance 299,022;`mAP@0.5` 0.568), `tie` (85,899;0.504),and `brace` (4,772;0.988) are the only classes with a sizeable length spread; every other class has variance ≤ ~200 px²(fixed/deterministic glyph sizes)and AP ranges 0.25–1.0 completely independent of size variance. The low-AP bulk is rarity-driven, not size-driven:`timeSig9` (n=4;AP 0.257), `dynamicMP` (n=3;AP 0.354), `accidentalNaturalSharp` (n=8;AP 0.401), `dynamicPPP` (n=11;AP 0.787), `breathMarkComma` (n=13;AP 0.797; all with ≈0 length variance. `tuplet8` and `articStaccatissimoWedgeBelow` were excluded(no valid scales,≤1 valid sample..
 * **Conclusion**: Intra-class size variability essentially accounts for the **line** head&apos;s residual failure:the worst line classes (`octave`,`voltaBracket`,`staff`) are exactly the highest length-variance ones, confirming that lines need more varied-length training data or curve/endpoint-aware representations,rather than more optimization. For **symbols**, the size-variability explanation only covers the three elongated primitives(`slur`,`tie`,`brace`);the remaining symbol gap(and the persistent dead spots `tuplet8`/`articStaccatissimoWedgeBelow`)is squarely a **rarity/representation** problem(reinforcing the Exp 028 conclusion)—to be addressed via instance-balanced sampling,targeted augmentation,or specialized curve head,rather than LR/loss tuning..
 
-## Experiment 029: Size-Difficulty Balanced Loss (Planned — NOT RUN)
+## Experiment 029: Size-Difficulty Balanced Loss
 * **Experiment Name/ID**: `experiments/029_size_difficulty_balanced_loss`
 * **Hypothesis/Goal**: Expand the inverse-frequency class balancing (Exp 017) so that the per-class weights also incorporate **intra-class size variability** as a difficulty proxy, and verify this rescues the classes that Analysis 001 identified as size-hard rather than rarity-hard: the line classes with the highest length variance (`octave`, `voltaBracket`, `staff`) and the elongated symbol primitives (`slur`, `tie`). Because those classes are frequent enough to sit at the frequency-weight floor (0.05), the difficulty factor must be applied *after* the smoothed-inverse-frequency weights are normalized and clamped — otherwise the boost is silently erased by the 0.05 floor.
-* **Setup** (drafted; not yet executed):
+* **Setup**:
   * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`. Data: Full Trompa-COCO dataset.
   * Checkpoint: Resume from `experiments/028_variable_patch_size_augmentation/train_detection/checkpoints/latest_model.pt`.
   * Augmentation: `--extract_patch_min 32 --extract_patch_max 96` (carried over from Exp 025-028).
@@ -480,5 +480,53 @@
         --compile \
         --log_epoch_interval 5
     ```
-* **Results**: (Pending — experiment not yet run.)
-* **Conclusion**: (Pending) Expected outcomes under test: (i) line `mAP@0.5` for `voltaBracket`/`staff`/`octave` rises above Exp 028 (0.686/0.896/0.040), since these are exactly the highest-CV line classes; (ii) symbol `slur`/`tie` rise above 0.568/0.504 without hurting the fixed-glyph classes (their weights are untouched); (iii) `octave` may hit the 0.85 weight ceiling and still not move, which would confirm it is a sheer sample/representation bottleneck (n=24, extreme aspect ratio) rather than a weighting problem. If the size-hard classes stay flat, the conclusion of Analysis 001 (specialized curve/keypoint representation) stands.
+* **Results**: The size-difficulty balanced loss produced a strict, global improvement over Exp 028 with no regression on any line class. In-training batch `mAP@0.5` peaked at ~0.984 (epoch 90) with `mIoU` ~0.974; final epoch `mAP@0.5` 0.954, `mIoU` 0.938.
+  * **Global COCO metrics:** Symbols `mAP@0.5` **0.891 → 0.919** and `mAP@0.5:0.95` **0.709 → 0.753**. Lines `mAP@0.5` **0.283 → 0.291** and `mAP@0.5:0.95` **0.250 → 0.261**.
+  * **Targeted size-hard classes — all improved:**
+    * **Lines (the headline result):** every line class rose: `voltaBracket` 0.686 → **0.726**, `staff` 0.896 → **0.935**, `octave` 0.040 → **0.052**, `beam` 0.988 → 0.989, `system` 0.979 → **0.990**, `ledgerLines` 0.952 → 0.962, `stem` 0.975 → 0.978, `barLine` 0.979 → 0.980. The two highest-CV classes (`voltaBracket` cv=1.37, `staff` cv=0.51) gained the most.
+    * **Symbols:** `slur` 0.568 → **0.597** (`mAP@0.5:0.95` 0.389 → 0.434), `tie` 0.504 → **0.546** (0.276 → 0.319). Fixed-glyph classes were untouched as predicted.
+  * **Rare-class spillover:** several rarity-hard (cv≈0) classes also rose, since their frequency weights dominate: `timeSig9` 0.257 → 0.691, `accidentalNaturalSharp` 0.401 → 0.812, `dynamicMP` 0.354 → 1.000, `dynamicRinforzando1` 0.835 → 1.000, `tuplet1` 0.693 → 0.830, `articMarcatoAbove` 0.865 → 1.000. Only notable regressions: `accidentalDoubleFlat` 0.916 → 0.598 and `accidentalNaturalFlat` 0.800 → 0.729 (rare, high noise). `tuplet8` and `articStaccatissimoWedgeBelow` remained at 0.000.
+* **Conclusion**: The hypothesis held. Adding intra-class size variability (via the coefficient of variation) to the class weights, applied *after* the frequency normalization+clamping, rescued exactly the size-hard classes that Exp 028/027 leave behind — `octave`/`voltaBracket`/`staff` (lines, the previously-worst size case: 0.040/0.686/0.896) and `slur`/`tie` (symbols) — while leaving the fixed-glyph majority bit-identical in weight and, empirically, at-or-above their Exp 028 AP. The line head's residual problem identified in Analysis 001 is therefore addressable in part by *weighting* rather than only by representation. `octave` is the one caveat: despite the largest absolute weight ceiling (0.85) it only moved 0.040 → 0.052, indicating the extreme aspect-ratio + n=24 sample bottleneck is now the binding constraint, not loss weighting. Next steps: (1) keep `variance_lambda=0.5` as a default and evaluate on a fresh full training (not resumed) to confirm the gains aren't partly extended-training artifacts; (2) raise `variance_lambda` (e.g. 1.0) selectively for lines only; (3) address the remaining dead spots (`tuplet8`, `articStaccatissimoWedgeBelow`, `octave` beyond 0.05) via instance-balanced sampling or curve/keypoint representation as Analysis 001 already concluded.
+
+* **Addendum (2026-09-19, metric fix)**: The global line numbers reported above (mAP@0.5 `0.291`, mAP@0.5:0.95 `0.261`) were **wrong** — an evaluation bug, not a model result. pycocotools' `summarize()` hard-codes `maxDets=20` for the keypoints aggregator while the bbox aggregator uses `maxDets=2000`, so the line metrics were computed by truncating every line prediction to its top-20 scored detections (the line head emits ~1785 detections/image). Fixed in `src/evaluate_coco.py` (new `summarize_at_maxdet`, now used for both modalities at `maxDets=2000`), and exp 29 was re-evaluated with the corrected script.
+  * **Corrected global numbers (maxDets=2000, exp 28 → exp 29, recomputed consistently for both):**
+    * Lines: `mAP@0.5` **0.812 → 0.8265**, `mAP@0.5:0.95` **0.718 → 0.7481**. All per-category line APs in this report were already computed at maxDets=2000 and are unaffected — the corrected global is now consistent with them (mean per-cat `mAP@0.5` = 0.8265).
+    * Symbols: `mAP@0.5` **0.891 → 0.9190**, `mAP@0.5:0.95` **0.723 → 0.7681**.
+  * **Re-interpretation:** with the metric bug fixed, the line head is NOT dramatically worse than symbols — it's ~0.08 worse at `mAP@0.5` (0.827 vs 0.919) and nearly equal at `mAP@0.5:0.95` (0.748 vs 0.768). The residual line-vs-symbol gap is small and lives in the same size-hard classes already discussed (`octave` 0.052, `voltaBracket` 0.726), not in a modality-wide shortfall. Exp 029's per-class conclusions and its improvement over Exp 028 stand; only the aggregate line headline numbers were overstated as failures.
+
+## Experiment 030: IMSLP Dense-LeJEPA Backbone Adaptation (DRAFT)
+* **Experiment Name/ID**: `experiments/030_imslp_lejepa_backbone`
+* **Status**: 🚧 DRAFT — implementation committed (`train_lejepa.py`: IMSLP data source + checkpoint init/resume), experiment **not yet launched**. Results/Conclusion to be filled from `metrics.jsonl` after the run.
+* **Hypothesis/Goal**: Adapt the **feature side** of the exp-29 detector (synthetic verovio → real scanned IMSLP) without any labels, by fine-tuning **only the backbone** with the Dense LeJEPA objective on the unannotated IMSLP pages. The objective is the same visual-grammar world model used in pretraining (masked patch prediction + SIGReg), so it should re-fit the feature extractor to the real marginal (ink/paper/noise/DPI) while the dense per-patch heads stay frozen and (by the patch-as-predictor + low-LR argument) remain near-continuously compatible. This tests the *feature-side transfer* leg of the three-arm A/B (none vs LeJEPA-only vs LeJEPA + pseudo-label self-training). Success proxies without IMSLP labels: stable/collapse-free SSL losses, then anti-forgetting on trompa-val and per-class confidence calibration of the un-adapted heads re-mounted on the adapted backbone.
+* **Setup**:
+  * Model: `vit_nano` (patch_size=64, channels=3), **backbone initialized from exp-29** via `--detector_checkpoint` (prefix-stripping `model.backbone.*`; verified 140 keys strict-load). Predictor (depth=4) and SIGReg trained fresh (SSL stage only, no heads in the graph).
+  * Data: `data/imslp/imslp.jsonl` (2,591 scanned pages), `data/imslp/images`. New IMSLP data source in `train_lejepa.py` — the COCO path is untouched.
+  * Preprocessing: 1024×1024 random crops, `pad_to_patch_size(64)`, `variance_patch_drop(var_threshold=0.001)`, `random_spatial_mask(mask_ratio=0.5)`.
+  * Training: 20 epochs over 2,591 samples (per-rank batch 8 → 2 ranks ≈ 12,960 samples/epoch, ~3,240 steps), sample-budget warmup+cosine, peak `lr=1e-4` (lower than from-scratch 5e-4 because we fine-tune a converged backbone), `warmup_epochs=1`, `min_lr_ratio=1e-4`, `lamb=0.05`, AdamW `weight_decay=0.05`. SDPA + `torch.compile(dynamic=True)`. **DDP on 2 GPUs** (backbone + predictor wrapped; per-rank shuffled indices, gradients all-reduced every step, rank 0 only logs/saves — mirrors `train_detection.py`).
+  * Checkpoint: `latest_model.pt` keeps `{backbone, predictor, optimizer, loss, samples, step, epoch}` → directly usable as `--backbone_checkpoint` for a later detector stage; resume via `--resume` (Gap B, detector-side overlay, not yet implemented in this experiment).
+  * Command:
+    ```bash
+    mamba run -n pytorch torchrun --nproc_per_node=2 src/train_lejepa.py \
+        --imslp_manifest data/imslp/imslp.jsonl \
+        --img_dir data/imslp/images \
+        --detector_checkpoint experiments/029_size_difficulty_balanced_loss/train_detection/checkpoints/latest_model.pt \
+        --exp_dir experiments/030_imslp_lejepa_backbone \
+        --crop_size 1024 \
+        --patch_size 64 \
+        --backbone_size nano \
+        --batch_size 8 \
+        --mask_ratio 0.5 \
+        --lamb 0.05 \
+        --epochs 20 \
+        --lr 1e-4 \
+        --warmup_epochs 1 \
+        --use_sdpa \
+        --compile
+    # resume (if interrupted):
+    #   --resume --backbone_checkpoint experiments/030_imslp_lejepa_backbone/pretrain_lejepa/checkpoints/latest_model.pt
+    ```
+* **Results**: TBD — read `experiments/030_imslp_lejepa_backbone/pretrain_lejepa/metrics.jsonl`. Monitor: `loss_l2` should fall steadily, `loss_sigreg` should stay bounded (not collapse toward 0, which would signal representation collapse), `loss_total` should not diverge from the exp-19 trompa reference (~0.3–0.9 at similar λ).
+* **Conclusion**: TBD. Expected outcomes to decide the three-arm A/B next step:
+  * If L2 falls and SIGReg stays healthy and anti-forgetting on trompa-val is mild → LeJEPA leg is validated; proceed to detector-side backbone overlay (Gap B) + confidence-calibration measurement on IMSLP.
+  * If the SSL run collapses (near-zero total loss) → the adaptation LR is too high or λ too small; restart with `lr=5e-5`.
+  * If the run looks healthy but downstream heads degrade badly on trompa-val → the feature-drift assumption is wrong for this geometry; fall back to pseudo-label self-training (head-side) as the primary leg.
