@@ -111,7 +111,6 @@ class Attention(Module):
         self.use_sdpa = use_sdpa
 
         if not self.use_sdpa:
-            self.scale = dim_head**-0.5
             self.attend = nn.Softmax(dim=-1)
 
         self.norm = nn.LayerNorm(dim)
@@ -145,7 +144,8 @@ class Attention(Module):
                 dropout_p=self.dropout.p if self.training else 0.0,
             )
         else:
-            dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+            scale = q.shape[-1] ** -0.5
+            dots = torch.matmul(q, k.transpose(-1, -2)) * scale
             attn = self.attend(dots)
             attn = self.dropout(attn)
             out = torch.matmul(attn, v)

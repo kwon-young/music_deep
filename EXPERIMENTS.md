@@ -530,3 +530,10 @@
   * If L2 falls and SIGReg stays healthy and anti-forgetting on trompa-val is mild → LeJEPA leg is validated; proceed to detector-side backbone overlay (Gap B) + confidence-calibration measurement on IMSLP.
   * If the SSL run collapses (near-zero total loss) → the adaptation LR is too high or λ too small; restart with `lr=5e-5`.
   * If the run looks healthy but downstream heads degrade badly on trompa-val → the feature-drift assumption is wrong for this geometry; fall back to pseudo-label self-training (head-side) as the primary leg.
+
+## Note 001: Manual Attention Scale Fixed (2026-11-15)
+* **Change**: `src/model/vit.py`, `Attention.forward`: the manual (non-SDPA) path now scales by `q.shape[-1] ** -0.5`, as `F.scaled_dot_product_attention` does by default.
+* **Bug**: PoPE stacks `[mag*cos, mag*sin]`, so q and k are `2*dim_head` wide. The manual path scaled by `dim_head**-0.5` (1/8) while SDPA scales by `(2*dim_head)**-0.5` (1/sqrt(128)), so the manual path's attention logits were sqrt(2) too large (max abs output difference 0.216 on a random `Attention`; now ~1e-7).
+* **Impact**:
+  * Checkpoints trained without `--use_sdpa` (Exp 001–009, `scripts/sanity_check.py` runs) were trained with the old scale. To reproduce them exactly, use the code before this change or multiply the logits by sqrt(2).
+  * Exp 010 onward were trained with `--use_sdpa` and are unaffected. Before this fix, `src/inference_coco.py` and `tools/interactive_viewer.py` run without `--use_sdpa` on those checkpoints applied the wrong scale; both paths now agree.
