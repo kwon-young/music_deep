@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .box_ops import generalized_box_iou, box_xyxy_to_cxcywh
 from .detector import DFINEWeightingFunction
-from .size_weighting import SizeWeighting
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -63,55 +62,6 @@ def sigmoid_focal_loss(
         loss = loss.sum()
 
     return loss
-
-
-OKS_SIGMA = 0.1
-
-
-def line_oks(
-    pred_keypoints: torch.Tensor,
-    target_keypoints: torch.Tensor,
-    thickness: torch.Tensor,
-) -> torch.Tensor:
-    """COCO keypoint similarity of matched line pairs, as in evaluate_coco.py.
-
-    The COCO area of a line is `length * thickness` (thickness is a per-class
-    constant in the annotations), all in the same unit as the keypoints.
-    """
-    length = (target_keypoints[:, 2:] - target_keypoints[:, :2]).norm(dim=-1)
-    area = (length * thickness).clamp(min=1e-6)
-    diff = (pred_keypoints - target_keypoints).view(-1, 2, 2)
-    d2 = (diff**2).sum(dim=-1)
-    e = d2 / (2 * (2 * OKS_SIGMA) ** 2 * area.unsqueeze(-1))
-    return torch.exp(-e).mean(dim=-1)
-
-
-def quality_focal_loss(
-    logits: torch.Tensor,
-    flat_idx: FlattenedIndices,
-    matched_classes: torch.Tensor,
-    quality: torch.Tensor,
-    positive_weights: torch.Tensor,
-    class_alpha: torch.Tensor,
-    gamma: float,
-) -> torch.Tensor:
-    """Quality Focal Loss (GFL, Li et al. 2020) with per-class alpha.
-
-    Positives regress their score toward `quality` (e.g. OKS of the match), with
-    modulating factor `|quality - p|^gamma`; negatives keep `p^gamma`. With
-    `quality == 1` and unit `positive_weights` this is exactly `sigmoid_focal_loss`
-    with `alpha=class_alpha`. Returns the unreduced loss.
-    """
-    target = torch.zeros_like(logits)
-    target[flat_idx.batch, flat_idx.src, matched_classes] = quality.to(logits.dtype)
-    alpha = (1 - class_alpha).expand_as(logits).clone()
-    alpha[flat_idx.batch, flat_idx.src, matched_classes] = (
-        class_alpha[matched_classes] * positive_weights
-    ).to(logits.dtype)
-
-    p = torch.sigmoid(logits)
-    ce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-    return alpha * (target - p).abs().pow(gamma) * ce
 
 
 def line_fgl_loss(
@@ -181,7 +131,6 @@ class DFINECriterion(nn.Module):
 
     symbol_weights: torch.Tensor
     line_weights: torch.Tensor
-    line_thickness: torch.Tensor
 
     def __init__(
         self,
@@ -194,30 +143,8 @@ class DFINECriterion(nn.Module):
         base_anchor_size: float = 1.0,
         reg_max: int = 32,
         gamma: float = 2.0,
-        symbol_size_weighting: SizeWeighting | None = None,
-        line_size_weighting: SizeWeighting | None = None,
-        line_thickness: list[float] | None = None,
-        line_quality_target: bool = False,
-        nominal_patch_size: float = 64.0,
     ):
-        """`nominal_patch_size` converts patch-unit targets back to pixels for the
-        size weighting and the OKS area. Under patch-size augmentation this is an
-        approximation of the extracted patch size, smoothed by the interpolated weights.
-        """
         super().__init__()
-        self.symbol_size_weighting = symbol_size_weighting
-        self.line_size_weighting = line_size_weighting
-        self.line_quality_target = line_quality_target
-        self.nominal_patch_size = nominal_patch_size
-        self.register_buffer(
-            "line_thickness",
-            torch.tensor(
-                line_thickness
-                if line_thickness is not None
-                else [4.0] * num_line_classes,
-                dtype=torch.float32,
-            ),
-        )
         self.matcher = matcher
         self.num_symbol_classes = num_symbol_classes
         self.num_line_classes = num_line_classes
@@ -236,17 +163,6 @@ class DFINECriterion(nn.Module):
         # We need the weighting function to map target residuals back to discrete bins
         self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
 
-    def size_weights(
-        self,
-        weighting: SizeWeighting | None,
-        classes: torch.Tensor,
-        sizes: torch.Tensor,
-    ) -> torch.Tensor:
-        """Per-instance intra-class size weights (1 when disabled)."""
-        if weighting is None:
-            return torch.ones_like(sizes)
-        return weighting(classes, sizes * self.nominal_patch_size)
-
     def loss_labels(
         self,
         src_logits: torch.Tensor,
@@ -254,29 +170,35 @@ class DFINECriterion(nn.Module):
         matched_classes: torch.Tensor,
         num_boxes: float,
         alpha_weights: torch.Tensor,
-        positive_weights: torch.Tensor,
-        quality: torch.Tensor,
     ) -> torch.Tensor:
-        """Quality focal loss applied to ALL predictions (focal loss when quality=1)."""
-        loss_ce = quality_focal_loss(
+        """Classification loss (Focal Loss) applied to ALL predictions."""
+        # Create a target tensor filled with 0s (Background)
+        target_classes = torch.zeros_like(src_logits)
+
+        # Set the matched indices to 1.0 for their specific class
+        target_classes[flat_idx.batch, flat_idx.src, matched_classes] = 1.0
+
+        # Compute Focal Loss
+        loss_ce = sigmoid_focal_loss(
             src_logits,
-            flat_idx,
-            matched_classes,
-            quality,
-            positive_weights,
-            alpha_weights,
-            self.gamma,
+            target_classes,
+            alpha=alpha_weights,
+            gamma=self.gamma,
+            reduction="none",
         )
-        return loss_ce.sum() / num_boxes
+        loss_ce = loss_ce.sum() / num_boxes
+        return loss_ce
 
     def loss_boxes(
         self,
         src_boxes: torch.Tensor,
         matched_boxes: torch.Tensor,
-        w: torch.Tensor,
+        matched_classes: torch.Tensor,
+        class_weights: torch.Tensor,
         num_boxes: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """L1 and GIoU loss applied ONLY to matched predictions, weighted per instance."""
+        """L1 and GIoU loss applied ONLY to matched predictions."""
+        w = class_weights[matched_classes]
 
         # Convert to CXCYWH for L1 loss
         src_boxes_cxcywh = box_xyxy_to_cxcywh(src_boxes)
@@ -302,10 +224,12 @@ class DFINECriterion(nn.Module):
         src_centers: torch.Tensor,
         src_shapes: torch.Tensor,
         matched_boxes: torch.Tensor,
-        w_class: torch.Tensor,
+        matched_classes: torch.Tensor,
+        class_weights: torch.Tensor,
         num_boxes: float,
     ) -> torch.Tensor:
         """D-FINE Fine-Grained Localization Loss applied ONLY to matched predictions."""
+        w_class = class_weights[matched_classes]
 
         # Detach the targets so the network doesn't cheat by shrinking the anchors
         with torch.no_grad():
@@ -365,7 +289,8 @@ class DFINECriterion(nn.Module):
         src_centers: torch.Tensor,
         src_base_dirs: torch.Tensor,
         matched_keypoints: torch.Tensor,
-        instance_weights: torch.Tensor,
+        matched_classes: torch.Tensor,
+        class_weights: torch.Tensor,
         num_lines: float,
     ) -> torch.Tensor:
         return line_fgl_loss(
@@ -373,7 +298,7 @@ class DFINECriterion(nn.Module):
             src_centers,
             src_base_dirs,
             matched_keypoints,
-            instance_weights,
+            class_weights[matched_classes],
             self.weighting_fn.w,
             self.base_anchor_size,
             num_lines,
@@ -429,26 +354,19 @@ class DFINECriterion(nn.Module):
             ],
         )
 
-        sym_size_w = self.size_weights(
-            self.symbol_size_weighting,
-            matched_sym_labels,
-            (matched_sym_boxes[:, 2:] - matched_sym_boxes[:, :2]).norm(dim=-1),
-        )
         loss_ce_sym = self.loss_labels(
             outputs.symbols.pred_logits.data,
             sym_flat_idx,
             matched_sym_labels,
             num_symbols,
             self.symbol_weights,
-            sym_size_w,
-            torch.ones_like(sym_size_w),
         )
         if len(matched_sym_boxes) > 0:
-            w_sym = self.symbol_weights[matched_sym_labels] * sym_size_w
             loss_bbox_sym, loss_giou_sym = self.loss_boxes(
                 matched_sym_outputs.boxes,
                 matched_sym_boxes,
-                w_sym,
+                matched_sym_labels,
+                self.symbol_weights,
                 num_symbols,
             )
             loss_fgl_sym = self.loss_fgl_symbols(
@@ -456,7 +374,8 @@ class DFINECriterion(nn.Module):
                 matched_sym_outputs.centers,
                 matched_sym_outputs.shapes,
                 matched_sym_boxes,
-                w_sym,
+                matched_sym_labels,
+                self.symbol_weights,
                 num_symbols,
             )
         else:
@@ -480,38 +399,19 @@ class DFINECriterion(nn.Module):
             )
         )
 
-        matched_line_kp_preds = outputs.lines.pred_keypoints.data[
-            line_flat_idx.batch, line_flat_idx.src
-        ]
-        line_size_w = self.size_weights(
-            self.line_size_weighting,
-            matched_line_labels,
-            (matched_line_keypoints[:, 2:] - matched_line_keypoints[:, :2]).norm(
-                dim=-1
-            ),
-        )
-        if self.line_quality_target:
-            with torch.no_grad():
-                line_quality = line_oks(
-                    matched_line_kp_preds.detach().float(),
-                    matched_line_keypoints.float(),
-                    self.line_thickness[matched_line_labels]
-                    / self.nominal_patch_size,
-                )
-        else:
-            line_quality = torch.ones_like(line_size_w)
         loss_ce_line = self.loss_labels(
             outputs.lines.pred_logits.data,
             line_flat_idx,
             matched_line_labels,
             num_lines,
             self.line_weights,
-            line_size_w,
-            line_quality,
         )
 
         if len(matched_line_keypoints) > 0:
-            w_line = self.line_weights[matched_line_labels] * line_size_w
+            matched_line_kp_preds = outputs.lines.pred_keypoints.data[
+                line_flat_idx.batch, line_flat_idx.src
+            ]
+            w_line = self.line_weights[matched_line_labels]
 
             loss_l1_line = F.l1_loss(
                 matched_line_kp_preds,
@@ -531,7 +431,8 @@ class DFINECriterion(nn.Module):
                     line_flat_idx.batch, line_flat_idx.src
                 ],
                 matched_line_keypoints,
-                w_line,
+                matched_line_labels,
+                self.line_weights,
                 num_lines,
             )
         else:

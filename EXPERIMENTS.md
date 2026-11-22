@@ -564,7 +564,7 @@
 
 ## Experiment 032: Intra-Class Size Weighting and OKS Quality Target
 * **Experiment Name/ID**: `experiments/032_size_weighting_oks_target`
-* **Status**: done (Kaggle kernel v38, 2×T4, 3.1 h). **Negative result**: global and staff metrics regressed.
+* **Status**: done (Kaggle kernel v38, 2×T4, 3.1 h). **Negative result**: global and staff metrics regressed. **Failed branch**: the size-weighting / OKS-target code (commit `ab90bb0`) was reverted, so the training code is back to the Exp 029 state; the experiment stays here as a record.
 * **Hypothesis/Goal**: Attack two of the three staff failure causes found in Analysis 003, as a fine-tune of Exp 029:
   1. **Intra-class size weighting**: within each class whose size distribution is wide (CV ≥ 0.3, n ≥ 100: `staff`, `stem`, `beam`, `barLine`, `voltaBracket`, `slur`, `tie`), weight each instance by `density(size)^-0.5`, normalized to mean 1 over the class (the Exp 029 class balance is unchanged) and clamped to [0.25, 4]. Staff gets ~4× at both tails (≤5 and ≥60 staff spaces, the 35% / 20% miss-rate bins) and ~0.75× in the 15–20 bulk. Applied to the positive classification term, L1/GIoU and FGL.
   2. **OKS quality target for lines**: the line classification loss becomes Quality Focal Loss (GFL): a matched query's target is the OKS of its current (detached) prediction instead of 1, so the score ranks queries by endpoint quality. QFL with quality = 1 is exactly the previous focal loss. Analysis 003 measured +0.028 staff mAP from re-ranking alone.

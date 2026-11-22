@@ -18,7 +18,6 @@ from model.detector import OMRDetector, create_detector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
-from model.size_weighting import SizeWeighting, SizeWeightingConfig
 import transform.det as det_tf
 from threaded_generator import ThreadedGenerator, Monitor
 from metric import compute_map_50, compute_mean_iou, compute_mean_endpoint_error
@@ -95,8 +94,6 @@ class TrainParams:
     loss_giou: float
     loss_fgl: float
     loss_line_l1: float
-    size_weighting: SizeWeightingConfig | None
-    line_quality_target: bool
     lr: float
     warmup_epochs: float
     min_lr_ratio: float
@@ -508,21 +505,6 @@ def log_and_save_checkpoint(
     torch.save(checkpoint, checkpoint_path)
 
 
-def log_size_weighting(criterion: DFINECriterion, dataset: CocoDataset) -> None:
-    for name, weighting, categories in (
-        ("symbol", criterion.symbol_size_weighting, dataset.symbol_categories),
-        ("line", criterion.line_size_weighting, dataset.line_categories),
-    ):
-        if weighting is None:
-            continue
-        for category, row in zip(categories, weighting.weights.tolist()):
-            if any(abs(w - 1.0) > 1e-6 for w in row):
-                print(
-                    f"[size weighting] {name} {category['name']}: "
-                    f"bin weights {min(row):.2f}..{max(row):.2f}"
-                )
-
-
 def train(params: TrainParams):
     # --- DDP Setup & Device Override ---
     is_distributed = "WORLD_SIZE" in os.environ
@@ -662,26 +644,7 @@ def train(params: TrainParams):
         symbol_weights=params.dataset.symbol_weights,
         line_weights=params.dataset.line_weights,
         base_anchor_size=params.base_anchor_size,
-        symbol_size_weighting=(
-            SizeWeighting(
-                params.dataset.symbol_size_histograms(), params.size_weighting
-            )
-            if params.size_weighting is not None
-            else None
-        ),
-        line_size_weighting=(
-            SizeWeighting(
-                params.dataset.line_size_histograms(), params.size_weighting
-            )
-            if params.size_weighting is not None
-            else None
-        ),
-        line_thickness=params.dataset.line_thickness_by_index(),
-        line_quality_target=params.line_quality_target,
-        nominal_patch_size=float(params.patch_size),
     ).to(params.train_device)
-    if is_main_process:
-        log_size_weighting(criterion, params.dataset)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
@@ -853,31 +816,6 @@ if __name__ == "__main__":
         type=float,
         default=0.5,
         help="How strongly intra-class size variability up-weights a class (difficulty proxy).",
-    )
-    parser.add_argument(
-        "--intra_class_size_alpha",
-        type=float,
-        default=0.0,
-        help="Intra-class size rebalancing: bin weight = size density^-alpha (0 disables).",
-    )
-    parser.add_argument(
-        "--intra_class_min_cv",
-        type=float,
-        default=0.3,
-        help="Only rebalance classes whose size coefficient of variation is at least this.",
-    )
-    parser.add_argument(
-        "--intra_class_min_count",
-        type=int,
-        default=100,
-        help="Only rebalance classes with at least this many instances.",
-    )
-    parser.add_argument("--intra_class_min_weight", type=float, default=0.25)
-    parser.add_argument("--intra_class_max_weight", type=float, default=4.0)
-    parser.add_argument(
-        "--line_quality_target",
-        action="store_true",
-        help="Line classification targets the OKS of the matched prediction (QFL) instead of 1.",
     )
     parser.add_argument(
         "--class_weight_size_difficulty_max",
@@ -1204,18 +1142,6 @@ if __name__ == "__main__":
         loss_giou=args.loss_giou,
         loss_fgl=args.loss_fgl,
         loss_line_l1=args.loss_line_l1,
-        size_weighting=(
-            SizeWeightingConfig(
-                alpha=args.intra_class_size_alpha,
-                min_cv=args.intra_class_min_cv,
-                min_count=args.intra_class_min_count,
-                min_weight=args.intra_class_min_weight,
-                max_weight=args.intra_class_max_weight,
-            )
-            if args.intra_class_size_alpha > 0
-            else None
-        ),
-        line_quality_target=args.line_quality_target,
         lr=args.lr,
         warmup_epochs=args.warmup_epochs,
         min_lr_ratio=args.min_lr_ratio,
