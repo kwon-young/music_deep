@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
 from model.detector import OMRDetector, create_detector
+from model.line_refiner import LineRefiner, LineRefinerConfig, gather_line_queries
+from music_types import (
+    Batch,
+    DetectionOutput,
+    Keypoints,
+    NumPatches,
+    PatchDim,
+    Patches,
+)
 from dataset.coco import (
     parse_coco,
     load_coco_sample,
@@ -172,6 +181,40 @@ def apply_oracle_fgl(outputs, item, patch_size, base_anchor_size):
             line_kps[pred_idx, 3] = cy + base[:, 3] + res_y2 * scale[:, 3]
 
 
+def refine_top_lines(
+    model: OMRDetector,
+    refiner: LineRefiner,
+    patches: Patches[Batch, NumPatches, PatchDim],
+    max_lines: int,
+) -> DetectionOutput:
+    """Runs the detector, then refines the endpoints of the top-k line candidates."""
+    features = model.backbone(patches)
+    outputs = DetectionOutput(
+        symbols=model.predict_symbols(features),
+        lines=model.predict_lines(features),
+    )
+    line_scores = outputs.lines.pred_logits.data.sigmoid().max(dim=-1).values
+    k_line = min(max_lines, line_scores.shape[1])
+    query_indices = torch.topk(line_scores, k_line, dim=-1).indices
+    queries = gather_line_queries(
+        features, outputs.lines, query_indices, refiner.config.num_shapes
+    )
+    refined = refiner(features, queries)
+    keypoints = outputs.lines.pred_keypoints.data.clone()
+    keypoints.scatter_(
+        1, query_indices.unsqueeze(-1).expand(-1, -1, 4), refined.keypoints[-1].data
+    )
+    outputs.lines.pred_keypoints = Keypoints(keypoints)
+    return outputs
+
+
+def load_line_refiner(path: Path, device: torch.device) -> LineRefiner:
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    refiner = LineRefiner(LineRefinerConfig(**checkpoint["config"])).to(device)
+    refiner.load_state_dict(checkpoint["refiner"])
+    return refiner.eval()
+
+
 def process_single_image(
     i,
     dataset,
@@ -182,6 +225,7 @@ def process_single_image(
     line_idx_to_cat_id,
     max_symbols,
     max_lines,
+    refiner: LineRefiner | None = None,
 ):
     img_meta = dataset.images[i]
 
@@ -216,7 +260,12 @@ def process_single_image(
     with torch.autocast(
         device_type=device.type, dtype=torch.float16, enabled=args.use_amp
     ):
-        outputs = model(dropped_item.sample.image)
+        if refiner is None:
+            outputs = model(dropped_item.sample.image)
+        else:
+            outputs = refine_top_lines(
+                model, refiner, dropped_item.sample.image, max_lines
+            )
 
     # Oracle FGL: replace FGL residuals with GT-derived perfect residuals
     if args.oracle_fgl:
@@ -336,6 +385,12 @@ def create_inference_iterator(
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
+    refiner = (
+        load_line_refiner(args.line_refiner_checkpoint, device)
+        if args.line_refiner_checkpoint is not None
+        else None
+    )
+
     with torch.no_grad():
         # Iterate over the shared, thread-safe index generator
         for i in index_gen:
@@ -349,6 +404,7 @@ def create_inference_iterator(
                 line_idx_to_cat_id,
                 max_symbols,
                 max_lines,
+                refiner,
             )
             yield sym_res, line_res
 
@@ -510,6 +566,14 @@ if __name__ == "__main__":
         help="Replace FGL residuals with GT-derived perfect residuals (oracle "
         "upper-bound evaluation). Uses GT from the dataset to compute "
         "optimal FGL targets for matched predictions.",
+    )
+
+    parser.add_argument(
+        "--line_refiner_checkpoint",
+        type=Path,
+        default=None,
+        help="Refine the top-k line candidates with a trained LineRefiner "
+        "(from train_line_refiner.py).",
     )
 
     args = parser.parse_args()

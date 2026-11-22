@@ -28,6 +28,10 @@ from music_types import (
     CoordDim,
     NumSymbolClasses,
     NumLineClasses,
+    EmbedDim,
+    LineQueries,
+    RefinedLines,
+    LineRefinerLosses,
 )
 
 
@@ -58,6 +62,50 @@ def sigmoid_focal_loss(
         loss = loss.sum()
 
     return loss
+
+
+def line_fgl_loss(
+    edge_logits: torch.Tensor,
+    centers: torch.Tensor,
+    base_dirs: torch.Tensor,
+    target_keypoints: torch.Tensor,
+    line_weights: torch.Tensor,
+    bins: torch.Tensor,
+    base_anchor_size: float,
+    num_lines: float,
+) -> torch.Tensor:
+    """D-FINE FGL for line endpoints.
+
+    The target residual of each endpoint coordinate is expressed in the frame of
+    the stage-0 prediction: relative to `center + base_dir`, in units of
+    `|base_dir| + base_anchor_size`. It is split between its two neighbouring bins.
+    """
+    with torch.no_grad():
+        scale = base_dirs.abs() + base_anchor_size
+        target_res = (target_keypoints - centers.repeat(1, 2) - base_dirs) / scale
+        target_res = target_res.clamp(bins[0], bins[-1])
+
+        idx_right = torch.searchsorted(bins, target_res).clamp(1, len(bins) - 1)
+        idx_left = idx_right - 1
+
+        bins_left = bins[idx_left]
+        bins_right = bins[idx_right]
+
+        w_left = (bins_right - target_res) / (bins_right - bins_left + 1e-6)
+        w_right = (target_res - bins_left) / (bins_right - bins_left + 1e-6)
+
+    log_probs = F.log_softmax(edge_logits, dim=-1)
+    loss_left = (
+        -torch.gather(log_probs, -1, idx_left.unsqueeze(-1)).squeeze(-1)
+        * w_left
+    )
+    loss_right = (
+        -torch.gather(log_probs, -1, idx_right.unsqueeze(-1)).squeeze(-1)
+        * w_right
+    )
+
+    loss_fgl = (loss_left + loss_right).sum(dim=-1)
+    return (loss_fgl * line_weights).sum() / num_lines
 
 
 def flatten_indices(indices: list[MatchIndices]) -> FlattenedIndices:
@@ -245,61 +293,16 @@ class DFINECriterion(nn.Module):
         class_weights: torch.Tensor,
         num_lines: float,
     ) -> torch.Tensor:
-        w_class = class_weights[matched_classes]
-
-        with torch.no_grad():
-            cx, cy = src_centers[:, 0], src_centers[:, 1]
-            base_x1, base_y1, base_x2, base_y2 = (
-                src_base_dirs[:, 0],
-                src_base_dirs[:, 1],
-                src_base_dirs[:, 2],
-                src_base_dirs[:, 3],
-            )
-            x1, y1, x2, y2 = (
-                matched_keypoints[:, 0],
-                matched_keypoints[:, 1],
-                matched_keypoints[:, 2],
-                matched_keypoints[:, 3],
-            )
-
-            scale_x1 = torch.abs(base_x1) + self.base_anchor_size
-            scale_y1 = torch.abs(base_y1) + self.base_anchor_size
-            scale_x2 = torch.abs(base_x2) + self.base_anchor_size
-            scale_y2 = torch.abs(base_y2) + self.base_anchor_size
-
-            res_x1 = (x1 - cx - base_x1) / scale_x1
-            res_y1 = (y1 - cy - base_y1) / scale_y1
-            res_x2 = (x2 - cx - base_x2) / scale_x2
-            res_y2 = (y2 - cy - base_y2) / scale_y2
-
-            target_res = torch.stack([res_x1, res_y1, res_x2, res_y2], dim=-1)
-
-            W = self.weighting_fn.w.to(target_res.device)
-            target_res = target_res.clamp(W[0].item(), W[-1].item())
-
-            idx_right = torch.searchsorted(W, target_res).clamp(1, self.reg_max)
-            idx_left = idx_right - 1
-
-            W_left = W[idx_left]
-            W_right = W[idx_right]
-
-            w_left = (W_right - target_res) / (W_right - W_left + 1e-6)
-            w_right = (target_res - W_left) / (W_right - W_left + 1e-6)
-
-        log_probs = F.log_softmax(src_edge_logits, dim=-1)
-        loss_left = (
-            -torch.gather(log_probs, -1, idx_left.unsqueeze(-1)).squeeze(-1)
-            * w_left
+        return line_fgl_loss(
+            src_edge_logits,
+            src_centers,
+            src_base_dirs,
+            matched_keypoints,
+            class_weights[matched_classes],
+            self.weighting_fn.w,
+            self.base_anchor_size,
+            num_lines,
         )
-        loss_right = (
-            -torch.gather(log_probs, -1, idx_right.unsqueeze(-1)).squeeze(-1)
-            * w_right
-        )
-
-        loss_fgl = (loss_left + loss_right).sum(dim=-1)
-        loss_fgl = (loss_fgl * w_class).sum() / num_lines
-
-        return loss_fgl
 
     def forward(
         self,
@@ -443,4 +446,70 @@ class DFINECriterion(nn.Module):
             loss_fgl=loss_fgl_sym * self.weights.loss_fgl,
             loss_line_l1=loss_l1_line * self.weights.loss_line_l1,
             loss_line_fgl=loss_fgl_line * self.weights.loss_fgl,
+        )
+
+
+class LineRefinerCriterion(nn.Module):
+    """Deep supervision of the line refiner: L1 + FGL on the output of every layer.
+
+    Matching is done once on the stage-0 predictions and shared by all layers.
+    """
+
+    line_weights: torch.Tensor
+
+    def __init__(
+        self,
+        line_weights: list[float],
+        loss_line_l1: float,
+        loss_line_fgl: float,
+        base_anchor_size: float = 1.0,
+        reg_max: int = 32,
+    ):
+        super().__init__()
+        self.loss_line_l1 = loss_line_l1
+        self.loss_line_fgl = loss_line_fgl
+        self.base_anchor_size = base_anchor_size
+        self.register_buffer(
+            "line_weights", torch.tensor(line_weights, dtype=torch.float32)
+        )
+        self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
+
+    def forward[B: Batch, Q: NumQueries, D: EmbedDim](
+        self,
+        refined: RefinedLines[B, Q, KeypointDim],
+        queries: LineQueries[B, Q, D, KeypointDim, CoordDim],
+        target_keypoints: Keypoints[
+            tuple[B, Q, KeypointDim], X1Y1X2Y2, PatchUnit, TopLeft
+        ],
+        target_labels: ClassLabels[tuple[B, Q], NumLineClasses],
+    ) -> LineRefinerLosses:
+        weights = self.line_weights[target_labels.data].flatten()
+        num_lines = float(max(1, weights.numel()))
+        centers = queries.absolute_centers.data.flatten(0, 1)
+        base_dirs = queries.raw_directions.data.flatten(0, 1)
+        targets = target_keypoints.data.flatten(0, 1)
+
+        losses_l1: list[torch.Tensor] = []
+        losses_fgl: list[torch.Tensor] = []
+        for keypoints, logits in zip(refined.keypoints, refined.endpoint_logits):
+            l1 = F.l1_loss(
+                keypoints.data.flatten(0, 1), targets, reduction="none"
+            ).sum(dim=-1)
+            losses_l1.append(
+                (l1 * weights).sum() / num_lines * self.loss_line_l1
+            )
+            fgl = line_fgl_loss(
+                logits.data.flatten(0, 1),
+                centers,
+                base_dirs,
+                targets,
+                weights,
+                self.weighting_fn.w,
+                self.base_anchor_size,
+                num_lines,
+            )
+            losses_fgl.append(fgl * self.loss_line_fgl)
+
+        return LineRefinerLosses(
+            loss_line_l1=losses_l1, loss_line_fgl=losses_fgl
         )

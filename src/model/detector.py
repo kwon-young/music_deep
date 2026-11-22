@@ -320,80 +320,79 @@ class OMRDetector(nn.Module):
         Returns a DetectionOutput ready for DFINECriterion.
         """
         features = self.backbone(patches)
+        return DetectionOutput(
+            symbols=self.predict_symbols(features),
+            lines=self.predict_lines(features),
+        )
 
-        # Compute centers dynamically based on the kept patches
-        patch_centers = compute_centers(features)
-        patch_tokens = features.data
+    # Note: We use .contiguous().flatten(1, 2) to merge the patch (P) and shape (K)
+    # dimensions into a single "num_queries" dimension (query = p * K + k).
+    # Slices of `preds` are non-contiguous and torch.compile's fake tensor
+    # tracing strictly enforces stride checks, which causes reshape() to crash.
 
-        # --- Forward through both heads ---
+    def predict_symbols[B: Batch](
+        self, features: Embeddings[B, NumPatches, EmbedDim]
+    ) -> SymbolOutput[B, NumQueries, BoxDim, CoordDim]:
+        patch_centers = compute_centers(features).unsqueeze(2)
+
         (
             sym_classes,
             sym_center_offsets,
             sym_shapes,
             sym_boxes,
             sym_edge_logits,
-        ) = self.symbol_head(patch_tokens)
+        ) = self.symbol_head(features.data)
+
+        sym_absolute_centers = patch_centers + sym_center_offsets
+        sym_boxes[..., 0] += patch_centers[..., 0]  # x1
+        sym_boxes[..., 1] += patch_centers[..., 1]  # y1
+        sym_boxes[..., 2] += patch_centers[..., 0]  # x2
+        sym_boxes[..., 3] += patch_centers[..., 1]  # y2
+
+        return SymbolOutput(
+            pred_logits=ClassLogits(sym_classes.contiguous().flatten(1, 2)),
+            pred_boxes=BoundingBoxes(sym_boxes.contiguous().flatten(1, 2)),
+            pred_edge_logits=EdgeLogits(
+                sym_edge_logits.contiguous().flatten(1, 2)
+            ),
+            absolute_centers=Coordinates(
+                sym_absolute_centers.contiguous().flatten(1, 2)
+            ),
+            learnable_shapes=Dimensions(sym_shapes.contiguous().flatten(1, 2)),
+        )
+
+    def predict_lines[B: Batch](
+        self, features: Embeddings[B, NumPatches, EmbedDim]
+    ) -> LineOutput[B, NumQueries, KeypointDim, CoordDim]:
+        patch_centers = compute_centers(features).unsqueeze(2)
+
         (
             line_classes,
             line_base_dirs,
             line_keypoints,
             line_edge_logits,
-        ) = self.line_head(patch_tokens)
+        ) = self.line_head(features.data)
 
-        B, P, K, _ = sym_boxes.shape
+        K = line_keypoints.shape[2]
 
-        # Reshape patch_centers for broadcasting: (Batch, Num_Patches, 1, 2)
-        patch_centers_expanded = patch_centers.unsqueeze(2)
-
-        # --- Absolute Positioning for Symbols ---
-        sym_absolute_centers = patch_centers_expanded + sym_center_offsets
-        sym_boxes[..., 0] += patch_centers_expanded[..., 0]  # x1
-        sym_boxes[..., 1] += patch_centers_expanded[..., 1]  # y1
-        sym_boxes[..., 2] += patch_centers_expanded[..., 0]  # x2
-        sym_boxes[..., 3] += patch_centers_expanded[..., 1]  # y2
-
-        # --- Absolute Positioning for Lines ---
         # Lines are anchored exactly to the patch center (no offset)
-        line_absolute_centers = patch_centers_expanded.expand(-1, -1, K, -1)
-        line_keypoints[..., 0] += patch_centers_expanded[..., 0]  # x1
-        line_keypoints[..., 1] += patch_centers_expanded[..., 1]  # y1
-        line_keypoints[..., 2] += patch_centers_expanded[..., 0]  # x2
-        line_keypoints[..., 3] += patch_centers_expanded[..., 1]  # y2
+        line_absolute_centers = patch_centers.expand(-1, -1, K, -1)
+        line_keypoints[..., 0] += patch_centers[..., 0]  # x1
+        line_keypoints[..., 1] += patch_centers[..., 1]  # y1
+        line_keypoints[..., 2] += patch_centers[..., 0]  # x2
+        line_keypoints[..., 3] += patch_centers[..., 1]  # y2
 
-        # Flatten P and K dimensions into a single "num_queries" dimension
-        # Note: We use .contiguous().flatten(1, 2) to safely merge P and K.
-        # Slices of `preds` are non-contiguous and torch.compile's fake tensor
-        # tracing strictly enforces stride checks, which causes reshape() to crash.
-        return DetectionOutput(
-            symbols=SymbolOutput(
-                pred_logits=ClassLogits(sym_classes.contiguous().flatten(1, 2)),
-                pred_boxes=BoundingBoxes(sym_boxes.contiguous().flatten(1, 2)),
-                pred_edge_logits=EdgeLogits(
-                    sym_edge_logits.contiguous().flatten(1, 2)
-                ),
-                absolute_centers=Coordinates(
-                    sym_absolute_centers.contiguous().flatten(1, 2)
-                ),
-                learnable_shapes=Dimensions(
-                    sym_shapes.contiguous().flatten(1, 2)
-                ),
+        return LineOutput(
+            pred_logits=ClassLogits(line_classes.contiguous().flatten(1, 2)),
+            pred_keypoints=Keypoints(line_keypoints.contiguous().flatten(1, 2)),
+            pred_endpoint_logits=EdgeLogits(
+                line_edge_logits.contiguous().flatten(1, 2)
             ),
-            lines=LineOutput(
-                pred_logits=ClassLogits(
-                    line_classes.contiguous().flatten(1, 2)
-                ),
-                pred_keypoints=Keypoints(
-                    line_keypoints.contiguous().flatten(1, 2)
-                ),
-                pred_endpoint_logits=EdgeLogits(
-                    line_edge_logits.contiguous().flatten(1, 2)
-                ),
-                absolute_centers=Coordinates(
-                    line_absolute_centers.contiguous().flatten(1, 2)
-                ),
-                raw_directions=Coordinates(
-                    line_base_dirs.contiguous().flatten(1, 2)
-                ),
+            absolute_centers=Coordinates(
+                line_absolute_centers.contiguous().flatten(1, 2)
+            ),
+            raw_directions=Coordinates(
+                line_base_dirs.contiguous().flatten(1, 2)
             ),
         )
 

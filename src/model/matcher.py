@@ -8,6 +8,7 @@ from .box_ops import box_xyxy_to_cxcywh
 from music_types import (
     DetectionTarget,
     DetectionOutput,
+    LineOutput,
     MatchIndices,
     BoundingBoxes,
     ClassLabels,
@@ -341,16 +342,8 @@ class HungarianMatcher(nn.Module):
         )
         sym_out_bbox = outputs.symbols.pred_boxes.data.to(calc_device)
 
-        line_out_prob = F.sigmoid(outputs.lines.pred_logits.data).to(
-            calc_device
-        )
-        line_out_kp = outputs.lines.pred_keypoints.data.to(calc_device)
-
         sym_indices = []
-        line_indices = []
-
         for b in range(bs):
-            # Symbols
             sym_tgt_ids = targets[b].box_labels.data.to(calc_device)
             sym_tgt_bbox = targets[b].boxes.data.to(calc_device)
             sym_match = self._match_modality(
@@ -363,7 +356,31 @@ class HungarianMatcher(nn.Module):
             )
             sym_indices.append(sym_match)
 
-            # Lines
+        return sym_indices, self.match_lines(outputs.lines, targets)
+
+    @torch.no_grad()
+    def match_lines(
+        self,
+        lines: LineOutput[Batch, NumQueries, KeypointDim, CoordDim],
+        targets: list[
+            DetectionTarget[
+                BoundingBoxes[BoxShape, XYXY, PatchUnit, TopLeft],
+                ClassLabels[LabelShape, NumSymbolClasses],
+                Keypoints[KeypointShape, X1Y1X2Y2, PatchUnit, TopLeft],
+                ClassLabels[LabelShape, NumLineClasses],
+            ]
+        ],
+    ) -> list[MatchIndices]:
+        calc_device = (
+            self.calc_device
+            if self.calc_device is not None
+            else lines.pred_logits.data.device
+        )
+        line_out_prob = F.sigmoid(lines.pred_logits.data).to(calc_device)
+        line_out_kp = lines.pred_keypoints.data.to(calc_device)
+
+        line_indices = []
+        for b in range(line_out_prob.shape[0]):
             line_tgt_ids = targets[b].keypoint_labels.data.to(calc_device)
             line_tgt_kp = targets[b].keypoints.data.to(calc_device)
             line_match = self._match_modality(
@@ -376,4 +393,4 @@ class HungarianMatcher(nn.Module):
             )
             line_indices.append(line_match)
 
-        return sym_indices, line_indices
+        return line_indices

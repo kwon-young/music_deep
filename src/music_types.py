@@ -404,6 +404,52 @@ class DetectionOutput[
     lines: LineOutput[B, Q, KD, CD]
 
 
+# --- Iterative Line Refinement ---
+
+type GridHeight = int
+type GridWidth = int
+
+
+@dataclass
+class TokenMap[B: Batch, D: EmbedDim](
+    TensorData[tuple[B, D, GridHeight, GridWidth]]
+):
+    """Patch tokens scattered back onto the full patch grid (dropped patches are zeros)."""
+
+
+@dataclass
+class LineQueries[
+    B: Batch,
+    Q: NumQueries,
+    D: EmbedDim,
+    KD: KeypointDim,
+    CD: CoordDim,
+](DetachMixin):
+    """Stage-0 line predictions selected for refinement, with their patch token."""
+
+    content: TensorData[tuple[B, Q, D]]
+    shape_ids: TensorData[tuple[B, Q]]
+    absolute_centers: Coordinates[tuple[B, Q, CD], PatchUnit]
+    raw_directions: Coordinates[tuple[B, Q, KD], PatchUnit]
+    endpoint_logits: EdgeLogits[tuple[B, Q, KD, NumBins]]
+
+
+@dataclass
+class RefinedLines[B: Batch, Q: NumQueries, KD: KeypointDim](DetachMixin):
+    """Endpoints and accumulated distributions after each refinement layer."""
+
+    keypoints: list[Keypoints[tuple[B, Q, KD], X1Y1X2Y2, PatchUnit, TopLeft]]
+    endpoint_logits: list[EdgeLogits[tuple[B, Q, KD, NumBins]]]
+
+
+@dataclass
+class LineRefinerLosses(DetachMixin):
+    """Weighted per-layer losses of the line refiner (deep supervision)."""
+
+    loss_line_l1: list[torch.Tensor]
+    loss_line_fgl: list[torch.Tensor]
+
+
 # --- Task-Specific Samples ---
 
 
