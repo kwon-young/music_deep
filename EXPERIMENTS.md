@@ -511,7 +511,6 @@
         --img_dir data/imslp/images \
         --detector_checkpoint experiments/029_size_difficulty_balanced_loss/train_detection/checkpoints/latest_model.pt \
         --exp_dir experiments/030_imslp_lejepa_backbone \
-        --crop_size 1024 \
         --patch_size 64 \
         --backbone_size nano \
         --batch_size 8 \
@@ -537,3 +536,28 @@
 * **Impact**:
   * Checkpoints trained without `--use_sdpa` (Exp 001–009, `scripts/sanity_check.py` runs) were trained with the old scale. To reproduce them exactly, use the code before this change or multiply the logits by sqrt(2).
   * Exp 010 onward were trained with `--use_sdpa` and are unaffected. Before this fix, `src/inference_coco.py` and `tools/interactive_viewer.py` run without `--use_sdpa` on those checkpoints applied the wrong scale; both paths now agree.
+
+## Analysis 002: Oracle FDR Refinement Ceiling on Exp 029 (Lines and Symbols)
+* **Experiment Name/ID**: `analysis/002_oracle_refinement_ceiling` (offline, Exp 029 checkpoint). Artifacts: `experiments/029_size_difficulty_balanced_loss/inference_local/` (baseline) and `.../inference_oracle/` (oracle), each with `coco_eval_summary.json`.
+* **Hypothesis/Goal**: Measure how much a *perfect* D-FINE refinement could gain, now with the corrected maxDets=2000 evaluation (the Exp 026 oracle line numbers predate that fix), to decide whether an iterative line refiner is worth building and which line classes it can help.
+* **Setup**: `inference_coco.py --oracle_fgl` (commit `2cf122d`): each GT is greedily matched (same class, nearest geometry) to one prediction among all P×K queries, regardless of score; its FDR residual is replaced by the exact GT residual in the stage-0 frame (`base_dirs`, scale `|base_dir| + anchor` for lines; learned shape for symbols), clamped to ±0.5. Scores are untouched. Both runs on the laptop (Quadro M1200), fp32, `--use_sdpa --force_pyvips`, all 351 trainval pages, then `evaluate_coco.py`. The local baseline reproduces the Kaggle Exp 029 evaluation exactly (identical global and per-class numbers).
+* **Results**:
+  * **Lines (global)**: `mAP@0.5:0.95` **0.748 → 0.831** (+0.083), `mAP@0.5` 0.827 → 0.862 (+0.036), `mAP@0.75` 0.772 → 0.833.
+  * **Lines (per class, mAP@0.5:0.95 baseline → oracle)**: `voltaBracket` 0.553 → **0.787** (+0.234), `stem` 0.835 → **0.958** (+0.123), `ledgerLines` 0.842 → **0.965** (+0.123), `octave` 0.006 → 0.105 (+0.099; and `mAP@0.5` 0.052 → 0.214), `staff` 0.837 → 0.872 (+0.035), `barLine` 0.963 → 0.988, `beam` 0.977 → 0.987, `system` 0.973 → 0.990.
+  * **Symbols (global)**: `mAP@0.5:0.95` 0.768 → **0.900** (+0.132), `mAP@0.5` 0.919 → 0.935, small-object AP 0.402 → **0.811**.
+* **Conclusion**: Refinement headroom is real for lines (+0.083 mAP@0.5:0.95), concentrated in `voltaBracket`, `stem`, `ledgerLines` and, unexpectedly, `octave` (whose `mAP@0.5` quadruples: part of its failure *is* endpoint localization within ±0.5 scale, not only missed detections). `staff` gains little (+0.035): its residual error is mostly beyond the ±0.5 range or a detection/scoring issue, so one-frame refinement will not fix it. Symbols have an even larger ceiling (+0.132), dominated by small objects. Next: train the iterative D-FINE line refiner (Exp 031, `src/train_line_refiner.py`) on the frozen Exp 029 detector and measure what fraction of this +0.083 it recovers.
+
+## Analysis 003: Staff Failure Diagnosis on Exp 029
+* **Experiment Name/ID**: `analysis/003_staff_failure_diagnosis` (offline, Exp 029 predictions in `experiments/029_size_difficulty_balanced_loss/inference_local/preds_lines.json`, 351 trainval pages, the same pages the model was trained on).
+* **Hypothesis/Goal**: Find why `staff` (mAP@0.5:0.95 0.837, AP@0.5 0.935) is well below `barLine`/`system` (~0.97–0.98). Suspected cause: variable length and the high instance count giving staff a low effective loss weight.
+* **Setup**: `PYTHONPATH=src:. mamba run -n pytorch python scripts/analyze_line_failures.py --predictions experiments/029_size_difficulty_balanced_loss/inference_local/preds_lines.json` replays the COCO greedy OKS matching (σ=0.1) and labels every miss and confident false positive. One-off scratch analyses (not committed) re-ranked scores, applied OKS-NMS, and ran the detector on 30 pages to locate the predicting patch. Note: a `staff` annotation is one staff line **between two barlines** (one measure), ~283 per page; consecutive segments share the barline x exactly.
+* **Results**:
+  * Per OKS threshold, staff AP 0.935 (0.50), 0.871 (0.75), 0.557 (0.95); recall 0.971 / 0.935 / 0.766. Localization (0.935 → 0.837 average) costs more than detection.
+  * **Vertical placement is not a failure mode**: matched predictions sit 0.3 px (median) / 2 px (p99) from the true line; no confusion with neighbouring staff lines.
+  * **All endpoint error is horizontal, and on the far end**: left endpoint |dx| median ~1 px at every length; right endpoint median 2.2 → 8.5 px and p90 7 → 42 px as length grows.
+  * **Cause of the asymmetry**: the matcher assigns 77% of staff segments to a patch in the left 40% of the segment (`t∈[0,0.4)`), and the top-scored prediction follows the same distribution. The endpoint near the predicting patch is precise (~0.8 px); the far one is not (4–5 px median, 17–24 px p90). Predictions made from right-side patches show the mirror pattern.
+  * **Ranking ignores localization quality**: for 34.7% of segments, the top-scored prediction is not the best-localized one among those with OKS ≥ 0.5. Re-ranking within each segment's cluster (same scores, re-assigned by OKS) gives mAP 0.837 → **0.865**, AP@0.95 0.557 → **0.645**.
+  * **Duplicates** are 71.5% of confident FPs, but removing all of them by oracle only gives +0.017 mAP. OKS-NMS hurts at strict thresholds (mAP 0.826–0.837).
+  * **Miss rate is U-shaped in length**: <8 staff spaces 34.9% (1,020 GT, mostly short measures between close barlines), 12–50 staff spaces 1.4–2.3%, >50 staff spaces 20.0% (1,880 GT). The long tail is mostly unbarred systems (cadenza-like passages) where one segment spans the whole system: such solo segments are missed 44% of the time. Both tails are concentrated on ~51 pages each.
+  * **Correction to Analysis 002**: its staff oracle gain (+0.035) underestimates the refinement headroom. The oracle corrected the nearest-geometry query, which is often not the top-scored one, so the uncorrected top-scored duplicate still ranks first.
+* **Conclusion**: Staff errors are not primarily a loss-weight problem: staff segments are found (97% recall) and the errors survive on training pages, so they are structural rather than under-weighted generalization. The three causes are, by size: (1) far-endpoint imprecision from predicting long segments from one end, which is what the iterative line refiner (Exp 031) targets; (2) classification scores not tied to localization quality (+0.028 mAP measured by re-ranking alone), which D-FINE handles with a quality-aware classification loss (VFL with IoU soft target), adapted here as an OKS target; (3) rare layouts (unbarred systems, very short measures) on a few pages, better addressed by data (synthetic pages) than by a global staff weight increase.
