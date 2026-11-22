@@ -76,7 +76,13 @@ class DFINEWeightingFunction(nn.Module):
 
     w: torch.Tensor
 
-    def __init__(self, reg_max: int = 32, a: float = 0.5, c: float = 0.25):
+    def __init__(
+        self,
+        reg_max: int = 32,
+        a: float = 0.5,
+        c: float = 0.25,
+        dfine_outer_bins: bool = False,
+    ):
         super().__init__()
         self.reg_max = reg_max
         num_bins = reg_max + 1
@@ -85,8 +91,11 @@ class DFINEWeightingFunction(nn.Module):
         w = torch.zeros(num_bins)
         N = reg_max
 
-        w[0] = -a
-        w[N] = a
+        # The paper (and the D-FINE code) puts the outer bins at +-2a. The legacy
+        # +-a duplicates the inner bins w[1] and w[N-1], wasting two bins.
+        outer = 2 * a if dfine_outer_bins else a
+        w[0] = -outer
+        w[N] = outer
 
         for n in range(1, N):
             if n < N / 2:
@@ -111,6 +120,7 @@ class SymbolHead(nn.Module):
         num_shapes: int = 5,
         reg_max: int = 32,
         base_anchor_size: float = 1.0,
+        dfine_outer_bins: bool = False,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -141,7 +151,9 @@ class SymbolHead(nn.Module):
         # Initialize the bias for the width/height predictions to 0.0 for log-space
         nn.init.constant_(bias_view[:, num_classes + 2 : num_classes + 4], 0.0)
 
-        self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
+        self.weighting_fn = DFINEWeightingFunction(
+            reg_max=reg_max, dfine_outer_bins=dfine_outer_bins
+        )
 
     def forward(
         self, patch_tokens: torch.Tensor
@@ -206,6 +218,7 @@ class LineHead(nn.Module):
         num_shapes: int = 5,
         reg_max: int = 32,
         base_anchor_size: float = 1.0,
+        dfine_outer_bins: bool = False,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -235,7 +248,9 @@ class LineHead(nn.Module):
         # Initialize the bias for the raw_dirs to 0.0 (which maps to 0 distance)
         nn.init.constant_(bias_view[:, num_classes : num_classes + 4], 0.0)
 
-        self.weighting_fn = DFINEWeightingFunction(reg_max=reg_max)
+        self.weighting_fn = DFINEWeightingFunction(
+            reg_max=reg_max, dfine_outer_bins=dfine_outer_bins
+        )
 
     def forward(
         self, patch_tokens: torch.Tensor
@@ -397,6 +412,23 @@ class OMRDetector(nn.Module):
         )
 
 
+def create_backbone(
+    backbone_size: str,
+    patch_size: int | tuple[int, int],
+    channels: int,
+    use_sdpa: bool,
+) -> BaseViT:
+    if backbone_size == "nano":
+        vit_fn = vit_nano
+    elif backbone_size == "small":
+        vit_fn = vit_small
+    elif backbone_size == "base":
+        vit_fn = vit_base
+    else:
+        raise ValueError(f"Unknown backbone size: {backbone_size}")
+    return vit_fn(patch_size=patch_size, channels=channels, use_sdpa=use_sdpa)
+
+
 def create_detector(
     backbone_size: str,
     patch_size: int | tuple[int, int],
@@ -410,23 +442,8 @@ def create_detector(
     """
     Factory function to create an OMRDetector with the specified backbone size.
     """
-    if backbone_size == "nano":
-        vit_fn = vit_nano
-    elif backbone_size == "small":
-        vit_fn = vit_small
-    elif backbone_size == "base":
-        vit_fn = vit_base
-    else:
-        raise ValueError(f"Unknown backbone size: {backbone_size}")
-
-    backbone = vit_fn(
-        patch_size=patch_size,
-        channels=channels,
-        use_sdpa=use_sdpa,
-    )
-
     return OMRDetector(
-        backbone,
+        create_backbone(backbone_size, patch_size, channels, use_sdpa),
         num_symbol_classes=num_symbol_classes,
         num_line_classes=num_line_classes,
         num_shapes=num_shapes,

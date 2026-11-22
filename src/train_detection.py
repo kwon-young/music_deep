@@ -3,7 +3,7 @@ import time
 import math
 import random
 import os
-from typing import ContextManager, cast
+from typing import Callable, ContextManager, cast
 from pathlib import Path
 from typing import Generator, Iterable
 from dataclasses import dataclass
@@ -15,8 +15,10 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model.detector import OMRDetector, create_detector
+from model.layered_detector import MultiLayerOMRDetector, create_layered_detector
 from model.matcher import HungarianMatcher
-from model.criterion import DFINECriterion
+from model.criterion import DFINECriterion, DetectionTargets
+from model.layered_criterion import DFINELayeredCriterion
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
 import transform.det as det_tf
 from threaded_generator import ThreadedGenerator, Monitor
@@ -26,8 +28,13 @@ from logger import ExperimentLogger, BaseMetrics
 from music_types import (
     DetectionTarget,
     DetectionOutput,
-    DetectionLosses,
     DetectionLossWeights,
+    LayeredDetectionLosses,
+    LayeredDetectionOutput,
+    BoxDim,
+    KeypointDim,
+    CoordDim,
+    NumQueries,
     Data,
     DetectionSample,
     TensorImage,
@@ -56,6 +63,9 @@ class DetectionMetrics(BaseMetrics):
     loss_fgl: float
     loss_line_l1: float
     loss_line_fgl: float
+    loss_pre: float
+    loss_aux: float
+    loss_ddf: float
     map50: float
     miou: float
     line_error: float
@@ -94,6 +104,9 @@ class TrainParams:
     loss_giou: float
     loss_fgl: float
     loss_line_l1: float
+    loss_ddf: float
+    refine_layers: int
+    dfine_outer_bins: bool
     lr: float
     warmup_epochs: float
     min_lr_ratio: float
@@ -118,6 +131,8 @@ class TrainParams:
     match_device: torch.device
     backbone_checkpoint: Path | None
     detector_checkpoint: Path | None
+    init_from_single_checkpoint: Path | None
+    resume: bool
     freeze_backbone: bool
     exp_dir: Path
     stage_name: str
@@ -133,7 +148,7 @@ class TrainStepResult:
     batch: BatchedData
     targets: list[DetectionTarget]
     outputs: DetectionOutput
-    losses: DetectionLosses
+    losses: LayeredDetectionLosses
     total_loss: float
     symbols_processed: int
 
@@ -285,6 +300,42 @@ def create_detection_iterator(
     return log_patch_count(_pipeline(), params.log_patches)
 
 
+type FinalOutput = DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim]
+type ForwardLoss = Callable[
+    [Patches[Batch, NumPatches, PatchDim], DetectionTargets],
+    tuple[FinalOutput, LayeredDetectionLosses],
+]
+
+
+def single_layer_forward_loss(
+    model: OMRDetector | DDP, criterion: DFINECriterion
+) -> ForwardLoss:
+    def forward_loss(
+        patches: Patches[Batch, NumPatches, PatchDim], targets: DetectionTargets
+    ) -> tuple[FinalOutput, LayeredDetectionLosses]:
+        outputs: FinalOutput = model(patches)
+        losses = criterion(outputs, targets)
+        return outputs, LayeredDetectionLosses(
+            layers=[losses], pre=None, loss_ddf=None
+        )
+
+    return forward_loss
+
+
+def layered_forward_loss(
+    model: MultiLayerOMRDetector | DDP, criterion: DFINELayeredCriterion
+) -> ForwardLoss:
+    def forward_loss(
+        patches: Patches[Batch, NumPatches, PatchDim], targets: DetectionTargets
+    ) -> tuple[FinalOutput, LayeredDetectionLosses]:
+        outputs: LayeredDetectionOutput[
+            Batch, NumQueries, BoxDim, KeypointDim, CoordDim
+        ] = model(patches)
+        return outputs.final, criterion(outputs, targets)
+
+    return forward_loss
+
+
 def train_step_pipeline(
     iterator: Iterable[
         BatchedData[
@@ -298,17 +349,19 @@ def train_step_pipeline(
             ],
         ]
     ],
-    model: OMRDetector | DDP,
-    criterion: DFINECriterion,
+    model: OMRDetector | MultiLayerOMRDetector | DDP,
+    forward_loss: ForwardLoss,
     optimizer: optim.Optimizer,
     params: TrainParams,
     total_symbol_budget: int,
     dataset_symbols: int,
     is_distributed: bool,
+    start_symbols: int = 0,
+    start_step: int = 0,
 ) -> Generator[TrainStepResult, None, None]:
     """Executes the forward/backward pass and yields detached results for the main thread."""
-    cumulative_symbols = 0
-    global_step = 0
+    cumulative_symbols = start_symbols
+    global_step = start_step
 
     scaler = torch.amp.GradScaler(
         device=params.train_device.type, enabled=params.use_amp
@@ -348,16 +401,8 @@ def train_step_pipeline(
                 dtype=torch.float16,
                 enabled=params.use_amp,
             ):
-                outputs = model(batch.sample.image)
-                losses = criterion(outputs, targets)
-                total_loss = (
-                    losses.loss_ce
-                    + losses.loss_bbox
-                    + losses.loss_giou
-                    + losses.loss_fgl
-                    + losses.loss_line_l1
-                    + losses.loss_line_fgl
-                )
+                outputs, losses = forward_loss(batch.sample.image, targets)
+                total_loss = losses.total()
 
             # Scale the loss to average gradients over the accumulation steps
             scaled_loss = total_loss / params.accumulation_steps
@@ -421,7 +466,7 @@ def log_and_save_checkpoint(
     params: TrainParams,
     matcher: HungarianMatcher,
     logger: ExperimentLogger,
-    model: OMRDetector,
+    model: OMRDetector | MultiLayerOMRDetector,
     optimizer: optim.Optimizer,
     running_loss: float,
     speed: float,
@@ -441,17 +486,29 @@ def log_and_save_checkpoint(
             result.outputs, result.targets, line_indices
         )
 
+    final = result.losses.final
     metrics = DetectionMetrics(
         step=result.step,
         epoch=result.epoch,
         lr=result.lr,
         loss_total=result.total_loss,
-        loss_ce=result.losses.loss_ce.item(),
-        loss_bbox=result.losses.loss_bbox.item(),
-        loss_giou=result.losses.loss_giou.item(),
-        loss_fgl=result.losses.loss_fgl.item(),
-        loss_line_l1=result.losses.loss_line_l1.item(),
-        loss_line_fgl=result.losses.loss_line_fgl.item(),
+        loss_ce=final.loss_ce.item(),
+        loss_bbox=final.loss_bbox.item(),
+        loss_giou=final.loss_giou.item(),
+        loss_fgl=final.loss_fgl.item(),
+        loss_line_l1=final.loss_line_l1.item(),
+        loss_line_fgl=final.loss_line_fgl.item(),
+        loss_pre=(
+            result.losses.pre.total().item()
+            if result.losses.pre is not None
+            else 0.0
+        ),
+        loss_aux=sum(layer.total().item() for layer in result.losses.layers[:-1]),
+        loss_ddf=(
+            result.losses.loss_ddf.item()
+            if result.losses.loss_ddf is not None
+            else 0.0
+        ),
         map50=map50,
         miou=miou,
         line_error=line_error,
@@ -463,9 +520,10 @@ def log_and_save_checkpoint(
         f"Epoch [{result.epoch:.2f}/{params.epochs}] Step [{result.step}] "
         f"LR: {result.lr:.2e} | "
         f"Loss: {result.total_loss:.4f} (Running: {running_loss:.4f}) | "
-        f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
-        f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
-        f"LineL1: {result.losses.loss_line_l1.item():.4f} | LineFGL: {result.losses.loss_line_fgl.item():.4f} | "
+        f"CE: {metrics.loss_ce:.4f} | BBox: {metrics.loss_bbox:.4f} | "
+        f"GIoU: {metrics.loss_giou:.4f} | FGL: {metrics.loss_fgl:.4f} | "
+        f"LineL1: {metrics.loss_line_l1:.4f} | LineFGL: {metrics.loss_line_fgl:.4f} | "
+        f"Pre: {metrics.loss_pre:.4f} | Aux: {metrics.loss_aux:.4f} | DDF: {metrics.loss_ddf:.4f} | "
         f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | LineErr: {line_error:.4f} | "
         f"Speed: {speed:.1f} symbols/s"
     )
@@ -498,11 +556,35 @@ def log_and_save_checkpoint(
         "epoch": result.epoch,
         "step": result.step,
         "model": model.state_dict(),
+        "architecture": {
+            "refine_layers": params.refine_layers,
+            "dfine_outer_bins": params.dfine_outer_bins,
+        },
         "optimizer": optimizer.state_dict(),
         "running_loss": running_loss,
     }
     checkpoint_path = logger.get_checkpoint_dir() / "latest_model.pt"
     torch.save(checkpoint, checkpoint_path)
+
+
+def wrap_model[M: OMRDetector | MultiLayerOMRDetector](
+    raw_model: M,
+    params: TrainParams,
+    is_distributed: bool,
+    local_rank: int,
+) -> M | DDP:
+    model: M | DDP = (
+        DDP(raw_model, device_ids=[local_rank], output_device=local_rank)
+        if is_distributed
+        else raw_model
+    )
+    if params.compile:
+        # topk yields static shapes, while var_threshold and drop_rate yield dynamic shapes
+        use_dynamic = params.topk_patches is None
+        if local_rank == 0:
+            print(f"Compiling model with torch.compile(dynamic={use_dynamic})...")
+        model = cast(M | DDP, torch.compile(model, dynamic=use_dynamic))
+    return model
 
 
 def train(params: TrainParams):
@@ -550,16 +632,31 @@ def train(params: TrainParams):
     )
 
     # 1. Setup Model
-    raw_model = create_detector(
-        backbone_size=params.backbone_size,
-        patch_size=params.patch_size,
-        channels=params.channels,
-        use_sdpa=params.use_sdpa,
-        num_symbol_classes=params.num_symbol_classes,
-        num_line_classes=params.num_line_classes,
-        num_shapes=params.num_shapes,
-        base_anchor_size=params.base_anchor_size,
-    ).to(params.train_device)
+    raw_model: OMRDetector | MultiLayerOMRDetector
+    if params.refine_layers > 0:
+        raw_model = create_layered_detector(
+            backbone_size=params.backbone_size,
+            patch_size=params.patch_size,
+            channels=params.channels,
+            use_sdpa=params.use_sdpa,
+            num_symbol_classes=params.num_symbol_classes,
+            num_line_classes=params.num_line_classes,
+            num_shapes=params.num_shapes,
+            base_anchor_size=params.base_anchor_size,
+            num_refine_layers=params.refine_layers,
+            dfine_outer_bins=params.dfine_outer_bins,
+        ).to(params.train_device)
+    else:
+        raw_model = create_detector(
+            backbone_size=params.backbone_size,
+            patch_size=params.patch_size,
+            channels=params.channels,
+            use_sdpa=params.use_sdpa,
+            num_symbol_classes=params.num_symbol_classes,
+            num_line_classes=params.num_line_classes,
+            num_shapes=params.num_shapes,
+            base_anchor_size=params.base_anchor_size,
+        ).to(params.train_device)
 
     loaded_checkpoint = None
     if params.detector_checkpoint:
@@ -574,6 +671,19 @@ def train(params: TrainParams):
             weights_only=True,
         )
         raw_model.load_state_dict(loaded_checkpoint["model"], strict=True)
+    elif params.init_from_single_checkpoint:
+        if not isinstance(raw_model, MultiLayerOMRDetector):
+            raise ValueError("--init_from_single_checkpoint needs --refine_layers > 0")
+        if is_main_process:
+            print(
+                f"Initializing backbone and dense heads from: {params.init_from_single_checkpoint}"
+            )
+        single = torch.load(
+            params.init_from_single_checkpoint,
+            map_location=params.train_device,
+            weights_only=True,
+        )
+        raw_model.load_single_layer_state(single["model"])
     elif params.backbone_checkpoint and params.backbone_checkpoint.exists():
         if is_main_process:
             print(f"Loading backbone weights from {params.backbone_checkpoint}")
@@ -597,27 +707,6 @@ def train(params: TrainParams):
     else:
         if is_main_process:
             print("Fine-tuning backbone parameters.")
-
-    model: OMRDetector | DDP
-    # --- Wrap Model in DDP ---
-    if is_distributed:
-        model = DDP(
-            raw_model, device_ids=[local_rank], output_device=local_rank
-        )
-    else:
-        model = raw_model
-    # ------------------------------
-
-    if params.compile:
-        # topk yields static shapes, while var_threshold and drop_rate yield dynamic shapes
-        use_dynamic = params.topk_patches is None
-        if is_main_process:
-            print(
-                f"Compiling model with torch.compile(dynamic={use_dynamic})..."
-            )
-        model = cast(
-            OMRDetector | DDP, torch.compile(model, dynamic=use_dynamic)
-        )
 
     # 2. Setup Matcher and Criterion
     matcher = HungarianMatcher(
@@ -644,7 +733,21 @@ def train(params: TrainParams):
         symbol_weights=params.dataset.symbol_weights,
         line_weights=params.dataset.line_weights,
         base_anchor_size=params.base_anchor_size,
+        dfine_outer_bins=params.dfine_outer_bins,
     ).to(params.train_device)
+
+    model: OMRDetector | MultiLayerOMRDetector | DDP
+    forward_loss: ForwardLoss
+    if isinstance(raw_model, MultiLayerOMRDetector):
+        layered = wrap_model(raw_model, params, is_distributed, local_rank)
+        model = layered
+        forward_loss = layered_forward_loss(
+            layered, DFINELayeredCriterion(criterion, loss_ddf=params.loss_ddf)
+        )
+    else:
+        single = wrap_model(raw_model, params, is_distributed, local_rank)
+        model = single
+        forward_loss = single_layer_forward_loss(single, criterion)
 
     optimizer = optim.AdamW(model.parameters(), lr=params.lr)
 
@@ -672,6 +775,16 @@ def train(params: TrainParams):
     model.train()
 
     total_symbol_budget = dataset_symbols * params.epochs
+    start_symbols, start_step = 0, 0
+    if params.resume:
+        if loaded_checkpoint is None:
+            raise ValueError("--resume needs --detector_checkpoint")
+        start_symbols = int(float(loaded_checkpoint["epoch"]) * dataset_symbols)
+        start_step = int(loaded_checkpoint["step"])
+        if is_main_process:
+            print(
+                f"Resuming the schedule at epoch {loaded_checkpoint['epoch']:.2f}, step {start_step}"
+            )
     if is_main_process:
         print("Training on full dataset.")
         print(
@@ -693,12 +806,14 @@ def train(params: TrainParams):
         train_step_pipeline(
             data_iterator,
             model,
-            criterion,
+            forward_loss,
             optimizer,
             params,
             total_symbol_budget,
             dataset_symbols,
             is_distributed,
+            start_symbols,
+            start_step,
         ),
         maxsize=params.train_maxsize,
         name="train_pipeline",
@@ -709,7 +824,7 @@ def train(params: TrainParams):
     total_symbols = 0
     last_log_symbols = 0
     running_loss = None
-    last_log_epoch = 0.0
+    last_log_epoch = start_symbols / dataset_symbols
     last_result = None
 
     ctx = monitor if monitor else nullcontext()
@@ -912,6 +1027,33 @@ if __name__ == "__main__":
     parser.add_argument("--loss_giou", type=float, default=2.0)
     parser.add_argument("--loss_fgl", type=float, default=0.05)
     parser.add_argument("--loss_line_l1", type=float, default=5.0)
+    parser.add_argument(
+        "--loss_ddf",
+        type=float,
+        default=1.5,
+        help="D-FINE decoupled distillation weight (only with --refine_layers > 0)",
+    )
+
+    # D-FINE multi-layer refinement
+    parser.add_argument(
+        "--refine_layers",
+        type=int,
+        default=0,
+        help="Number of last ViT blocks used as D-FINE refinement layers; "
+        "the dense heads read the block before them. 0 = single-layer detector.",
+    )
+    parser.add_argument(
+        "--dfine_outer_bins",
+        action="store_true",
+        help="Outer FDR bins at +-2a as in D-FINE (legacy: +-a, duplicating the inner bins)",
+    )
+    parser.add_argument(
+        "--init_from_single_checkpoint",
+        type=Path,
+        default=None,
+        help="Initialize a --refine_layers model from a single-layer detector checkpoint "
+        "(backbone and dense heads; fresh optimizer).",
+    )
 
     # Training params
     parser.add_argument(
@@ -1047,6 +1189,12 @@ if __name__ == "__main__":
         help="Path to a full detector checkpoint (model + optimizer) to resume training from.",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="With --detector_checkpoint: continue its LR schedule and epoch count "
+        "(same --epochs) instead of starting a new schedule.",
+    )
+    parser.add_argument(
         "--freeze_backbone",
         action="store_true",
         help="If set, the backbone weights will be frozen and only the detection head will be trained.",
@@ -1142,6 +1290,9 @@ if __name__ == "__main__":
         loss_giou=args.loss_giou,
         loss_fgl=args.loss_fgl,
         loss_line_l1=args.loss_line_l1,
+        loss_ddf=args.loss_ddf,
+        refine_layers=args.refine_layers,
+        dfine_outer_bins=args.dfine_outer_bins,
         lr=args.lr,
         warmup_epochs=args.warmup_epochs,
         min_lr_ratio=args.min_lr_ratio,
@@ -1166,6 +1317,8 @@ if __name__ == "__main__":
         match_device=match_device,
         backbone_checkpoint=args.backbone_checkpoint,
         detector_checkpoint=args.detector_checkpoint,
+        init_from_single_checkpoint=args.init_from_single_checkpoint,
+        resume=args.resume,
         freeze_backbone=args.freeze_backbone,
         exp_dir=args.exp_dir,
         stage_name=args.stage_name,

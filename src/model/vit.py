@@ -125,12 +125,26 @@ class Attention(Module):
             else nn.Identity()
         )
 
-    def forward(self, x, freqs=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        freqs: torch.Tensor | None = None,
+        pos: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         x = self.norm(x)
 
-        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        if pos is not None:
+            # D-FINE `with_pos_embed`: the position enters queries and keys only.
+            # to_qkv has no bias, so W(x + pos) = Wx + W pos.
+            pos_q, pos_k = F.linear(
+                pos, self.to_qkv.weight[: 2 * q.shape[-1]]
+            ).chunk(2, dim=-1)
+            q = q + pos_q
+            k = k + pos_k
         q, k, v = map(
-            lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2), qkv
+            lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2),
+            (q, k, v),
         )
 
         if freqs is not None:
@@ -185,6 +199,28 @@ class Transformer(Module):
 
         return self.norm(x)
 
+    def run_blocks(
+        self,
+        x: torch.Tensor,
+        freqs: torch.Tensor,
+        start: int,
+        stop: int,
+        pos: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Runs blocks [start, stop) on the residual stream, without the final norm."""
+        for index in range(start, stop):
+            attn, ff = self.block(index)
+            x = attn(x, freqs=freqs, pos=pos) + x
+            x = ff(x) + x
+        return x
+
+    def block(self, index: int) -> tuple[Attention, FeedForward]:
+        block = self.layers[index]
+        assert isinstance(block, ModuleList)
+        attn, ff = block[0], block[1]
+        assert isinstance(attn, Attention) and isinstance(ff, FeedForward)
+        return attn, ff
+
 
 class BaseViT(Module):
     def __init__(
@@ -204,6 +240,7 @@ class BaseViT(Module):
         super().__init__()
         self.patch_size = patch_height, patch_width = pair(patch_size)
         self.dim_head = dim_head
+        self.dim = dim
 
         patch_dim = channels * patch_height * patch_width
 
@@ -219,14 +256,21 @@ class BaseViT(Module):
             dim, depth, heads, dim_head, mlp_dim, dropout, use_sdpa
         )
 
+    @property
+    def depth(self) -> int:
+        return len(self.transformer.layers)
+
+    def embed[B: Batch, N: NumPatches](
+        self, patches: Embeddings[B, N, Any]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Patch embedding and PoPE frequencies: the input of the first block."""
+        freqs = compute_freqs(patches, self.dim_head)
+        return self.dropout(self.patch_embed(patches.data)), freqs
+
     def _forward_impl[B: Batch, N: NumPatches](
         self, patches: Embeddings[B, N, Any]
     ) -> Embeddings[B, N, EmbedDim]:
-        freqs = compute_freqs(patches, self.dim_head)
-        x_data = patches.data
-
-        x = self.patch_embed(x_data)
-        x = self.dropout(x)
+        x, freqs = self.embed(patches)
         x = self.transformer(x, freqs=freqs)
 
         return Embeddings(

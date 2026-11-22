@@ -55,3 +55,38 @@ def generalized_box_iou(
     area = wh[:, :, 0] * wh[:, :, 1]
 
     return iou - (area - union) / area
+
+
+def elementwise_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """IoU of each pair (boxes1[i], boxes2[i]); both are [K, 4] in xyxy."""
+    lt = torch.max(boxes1[:, :2], boxes2[:, :2])
+    rb = torch.min(boxes1[:, 2:], boxes2[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    return inter / (box_area(boxes1) + box_area(boxes2) - inter)
+
+
+def elementwise_generalized_box_iou(
+    boxes1: torch.Tensor, boxes2: torch.Tensor
+) -> torch.Tensor:
+    """
+    Computes the Generalized IoU element-wise for two 1D lists of boxes.
+    boxes1 and boxes2 must have the same shape [K, 4].
+    """
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+
+    lt = torch.max(boxes1[:, :2], boxes2[:, :2])
+    rb = torch.min(boxes1[:, 2:], boxes2[:, 2:])
+
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    union = area1 + area2 - inter
+    iou = inter / union
+
+    lt_hull = torch.min(boxes1[:, :2], boxes2[:, :2])
+    rb_hull = torch.max(boxes1[:, 2:], boxes2[:, 2:])
+    wh_hull = (rb_hull - lt_hull).clamp(min=0)
+    area_hull = wh_hull[:, 0] * wh_hull[:, 1]
+
+    return iou - (area_hull - union) / area_hull

@@ -457,6 +457,7 @@
   * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`. Data: Full Trompa-COCO dataset.
   * Checkpoint: Resume from `experiments/028_variable_patch_size_augmentation/train_detection/checkpoints/latest_model.pt`.
   * Augmentation: `--extract_patch_min 32 --extract_patch_max 96` (carried over from Exp 025-028).
+  * **Correction (2026-11-22)**: the Kaggle run actually used `--extract_patch_min 54 --extract_patch_max 74` (notebook version `f997b85`, Kaggle v32); the 32/96 values here and in the command below are wrong.
   * Training: 100 additional epochs, peak LR `1e-4`, 1 epoch linear warmup, standard (non-focal) L1/GIoU regression loss.
   * New rebalancing: per-class weights now equal the Exp 017 smoothed-inverse-frequency weights multiplied by `clamp(1 + variance_lambda * cv, 1, size_difficulty_max)` **after** normalization+clamping, where `cv` is the per-class coefficient of variation of instance size (bbox diagonal for symbols, keypoint-segment length for lines). `variance_lambda=0.5`, `size_difficulty_max=8.0`. Sanity-checked before launch via `scripts/sanity_check_size_balanced_weights.py` — only `slur`/`tie` (symbols) and `voltaBracket`/`beam`/`staff`/`stem`/`barLine`/`system` (lines) move, everything else stays bit-identical to Exp 028.
   * Cache note: cache now regenerates under the same `instances_trainval2017.pkl` name with the new weights (schema includes `size_difficulty_lambda`/`size_difficulty_max`), so the pre-existing stale pickle must be deleted once before launch.
@@ -600,3 +601,35 @@
   2. **Intra-class size weighting did not rescue the tails** (<8 and >50 staff-space miss rates unchanged or worse). Its effect cannot be separated from (1) and (3) in this run.
   3. **Unexplained global drop.** Fixed-glyph symbol classes, whose loss is bit-identical to Exp 029 with these flags (QFL at quality 1 equals focal loss, unit size weights; unit-tested), lost 0.01–0.10 mAP. Candidate causes: the LR restart (1e-4 again on a converged model, only 30 epochs to re-converge), the new Kaggle environment (py3.13 / CUDA 13.0 / torch 2.11 instead of Exp 029's), or the changed line losses perturbing the shared backbone.
   * **Next steps**: (a) a control run (`experiments/033_continuation_control`: same branch, environment and 30-epoch schedule from Exp 029, without `--intra_class_size_alpha`/`--line_quality_target`) to separate the restart/environment effect from the two losses; the notebook is prepared but not launched. (b) Do not reuse `--line_quality_target` as is; if retried, put OKS into the matcher cost first. (c) Keep size weighting off until (a) isolates its effect. (d) The far-endpoint problem of Analysis 003 still points to the iterative line refiner (Exp 031) on the frozen Exp 029 detector, which avoids touching the detector weights at all.
+
+## Experiment 034: D-FINE Multi-Layer Refinement on the Last 3 ViT Blocks
+* **Experiment Name/ID**: `experiments/034_dfine_multilayer_refinement`
+* **Status**: 🚧 DRAFT: implemented and smoke-tested on branch `exp-034-dfine-multilayer-refinement`, not launched yet. Results and conclusion to fill in from `metrics.jsonl` and the COCO evaluation.
+* **Hypothesis/Goal**: Analysis 002 measured a refinement ceiling of +0.083 line / +0.132 symbol mAP@0.5:0.95. Analysis 003 found the far-endpoint error of long staff segments to be the largest staff failure. Reproduce D-FINE's Fine-grained Distribution Refinement (decoder of D-FINE-N, 3 layers) **inside the backbone**: block 9 predicts, blocks 10 and 11 refine. Unlike the Exp 031 frozen refiner, the detector is trained jointly.
+* **Setup**:
+  * **Architecture** (`src/model/layered_detector.py`, `MultiLayerOMRDetector`), mapping D-FINE's DETR decoder to the dense head:
+    * Blocks 0–8 play the encoder. Every patch×slot is a query, so there is no top-K query selection.
+    * Tap 0 = block 9 (+ its own LayerNorm). The dense `SymbolHead`/`LineHead` give the coarse prediction (D-FINE `pre_bboxes`: center ± shape/2, center + base_dirs) and the first edge distribution. The **detached** coarse geometry is the FDR frame of every layer.
+    * Blocks 10 and 11 play decoder layers 1 and 2. Before each, `SlotBoxConditioner` (D-FINE `query_pos_head`: MLP of the concatenated 2×K slot geometries, signed-log, relative to the patch center, detached) is added to the attention **queries and keys only** (D-FINE `with_pos_embed`). Each `RefineHead` adds `delta(tokens + previous_tokens.detach())` to the previous logits (logit chain not detached), has its own score head, and has an `LQE`.
+    * The delta heads and the conditioner's last layer are zero-initialized, so at init the 3 layers decode the same boxes (unit-tested).
+  * **Loss** (`src/model/layered_criterion.py`): each layer and the pre-prediction are matched separately and classified with their own matching. L1/GIoU/FGL use the GO union of all matchings (vectorized `_get_go_indices`, tested against the D-FINE loop). Symbol FGL is IoU-weighted. The pre-prediction gets classification + L1/GIoU only. DDF (T=5, weight 1.5) distils the final distribution into layers 0 and 1. Deliberate deviations: **focal loss instead of VFL** (Exp 032: an IoU/OKS soft target in a one-to-one dense head degrades ranking); line FGL/DDF quality = 1 (no IoU for segments); no CDN denoising (there is no separate query set).
+  * **FDR bins**: `--dfine_outer_bins` puts the outer bins at ±1.0 anchor units as in D-FINE. The legacy ±0.5 duplicated the inner bins, so a residual could never exceed ±0.5×scale, which matters for the far endpoints of Analysis 003. This change is confounded with the multi-layer architecture in this run.
+  * **Init**: backbone and dense heads from the Exp 029 checkpoint (`--init_from_single_checkpoint`, bin buffers excluded). Refinement score heads start as copies of the dense classifiers; at init the final class logits equal Exp 029's (unit-tested). Fresh AdamW state (Exp 029 had loaded Exp 028's). Expect an initial drop: the tap-9 heads read block-9 features they were not trained on.
+  * **Scale** (target: 10k tokens = 50k queries per modality): the matcher's candidate search was dense `[Q, T]` (~3 GB for lines at 50k × 1,685) and now runs 4× per step. It is now chunked over targets in a targets-major layout (exactly the same pairs, tested against HEAD; top-k 9× faster). At 50k queries with the trainval maximum of targets (1,168 symbols, 1,685 lines), the full layered criterion (4 matchings × 2 modalities, losses, DDF, backward) peaks at 773 MiB extra GPU memory. The step overhead vs the single-layer model, measured on the laptop, is 1.25× at 1,600 tokens and 1.16× at 4,096. Exp 029 took 9.6 h, so the run is close to the 12 h Kaggle limit; `--resume` continues the same LR schedule in a second session if needed.
+  * Other changes: `DFINECriterion.forward` refactored into `layer_losses(classification, regression)` (bit-identical losses vs HEAD on an Exp 029 batch); GIoU loss computed element-wise instead of `diag(N×N)` (same values, no assert on inverted boxes, which the ±1.0 bins make possible); checkpoints record their `architecture`, read by `inference_coco.py` (`--eval_layer` evaluates taps 9/10/11).
+  * Training: same recipe as the Exp 029 Kaggle run, 100 epochs.
+  * Command (Kaggle, `scripts/music_deep.ipynb`):
+    ```bash
+    PYTHONPATH=. mamba run torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/034_dfine_multilayer_refinement \
+        --patch_size 64 --epochs 100 --lr 1e-4 --warmup_epochs 1 \
+        --extract_patch_min 54 --extract_patch_max 74 \
+        --class_weight_variance_lambda 0.5 --class_weight_size_difficulty_max 8.0 \
+        --refine_layers 2 --dfine_outer_bins \
+        --init_from_single_checkpoint <029>/train_detection/checkpoints/latest_model.pt \
+        --headless --use_sdpa --compile --log_epoch_interval 5
+    ```
+  * **No control run**: the Exp 032 confound (restart from 029 with a new LR schedule and a new Kaggle environment) is not isolated. A regression of classes that refinement should not touch would point to that confound rather than to the architecture.
+* **Results**: TBD. To report: global and per-class COCO (maxDets=2000) for the final layer and for `--eval_layer 0/1` (refinement should improve monotonically); staff diagnostics from Analysis 003 (far-endpoint error, share of mis-ranked segments); fraction recovered of the Analysis 002 oracle ceiling.
+* **Conclusion**: TBD.
+

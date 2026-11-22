@@ -213,6 +213,40 @@ class DetectionLosses(DetachMixin):
     loss_line_l1: torch.Tensor
     loss_line_fgl: torch.Tensor
 
+    def total(self) -> torch.Tensor:
+        return (
+            self.loss_ce
+            + self.loss_bbox
+            + self.loss_giou
+            + self.loss_fgl
+            + self.loss_line_l1
+            + self.loss_line_fgl
+        )
+
+
+@dataclass
+class LayeredDetectionLosses(DetachMixin):
+    """Losses of every refinement layer (last = final), of the pre-prediction and DDF.
+
+    A single-layer detector has one layer, no pre-prediction and no DDF.
+    """
+
+    layers: list[DetectionLosses]
+    pre: DetectionLosses | None
+    loss_ddf: torch.Tensor | None
+
+    @property
+    def final(self) -> DetectionLosses:
+        return self.layers[-1]
+
+    def total(self) -> torch.Tensor:
+        total = sum((layer.total() for layer in self.layers[1:]), self.layers[0].total())
+        if self.pre is not None:
+            total = total + self.pre.total()
+        if self.loss_ddf is not None:
+            total = total + self.loss_ddf
+        return total
+
 
 @dataclass
 class MatchIndices:
@@ -220,6 +254,16 @@ class MatchIndices:
 
     pred_indices: torch.Tensor  # 1D tensor of matched prediction indices
     target_indices: torch.Tensor  # 1D tensor of matched ground truth indices
+
+
+@dataclass
+class ModalityMatch:
+    """Matchings of a batch for both modalities, and the loss normalizers that go with them."""
+
+    symbols: list[MatchIndices]
+    lines: list[MatchIndices]
+    num_symbols: float
+    num_lines: float
 
 
 @dataclass
@@ -402,6 +446,29 @@ class DetectionOutput[
 
     symbols: SymbolOutput[B, Q, BD, CD]
     lines: LineOutput[B, Q, KD, CD]
+
+
+@dataclass
+class LayeredDetectionOutput[
+    B: Batch,
+    Q: NumQueries,
+    BD: BoxDim,
+    KD: KeypointDim,
+    CD: CoordDim,
+](DetachMixin):
+    """D-FINE style predictions of the last ViT blocks.
+
+    `pre` is the coarse prediction of the first tap (D-FINE `pre_bboxes`): its
+    boxes are the frame of every FDR layer. `layers[i]` decodes the accumulated
+    distribution of tap i in that detached frame; `layers[-1]` is the final output.
+    """
+
+    pre: DetectionOutput[B, Q, BD, KD, CD]
+    layers: list[DetectionOutput[B, Q, BD, KD, CD]]
+
+    @property
+    def final(self) -> DetectionOutput[B, Q, BD, KD, CD]:
+        return self.layers[-1]
 
 
 # --- Iterative Line Refinement ---

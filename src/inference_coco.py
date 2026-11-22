@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
 from model.detector import OMRDetector, create_detector
+from model.layered_detector import MultiLayerOMRDetector, create_layered_detector
 from model.line_refiner import LineRefiner, LineRefinerConfig, gather_line_queries
 from music_types import (
     Batch,
@@ -260,7 +261,9 @@ def process_single_image(
     with torch.autocast(
         device_type=device.type, dtype=torch.float16, enabled=args.use_amp
     ):
-        if refiner is None:
+        if isinstance(model, MultiLayerOMRDetector):
+            outputs = model(dropped_item.sample.image).layers[args.eval_layer]
+        elif refiner is None:
             outputs = model(dropped_item.sample.image)
         else:
             outputs = refine_top_lines(
@@ -368,20 +371,40 @@ def create_inference_iterator(
         device = torch.device(args.device)
 
     # Each worker instantiates its own model here
-    model = create_detector(
-        backbone_size=args.backbone_size,
-        patch_size=args.patch_size,
-        channels=args.channels,
-        use_sdpa=args.use_sdpa,
-        num_symbol_classes=dataset.num_symbol_classes,
-        num_line_classes=dataset.num_line_classes,
-        num_shapes=args.num_shapes,
-        base_anchor_size=args.base_anchor_size,
-    ).to(device)
-
     checkpoint = torch.load(
         checkpoint_path, map_location=device, weights_only=True
     )
+    architecture = checkpoint.get("architecture", {})
+    refine_layers = int(architecture.get("refine_layers", 0))
+    model: OMRDetector | MultiLayerOMRDetector
+    if refine_layers > 0:
+        if args.oracle_fgl or args.line_refiner_checkpoint is not None:
+            raise ValueError(
+                "--oracle_fgl and --line_refiner_checkpoint need a single-layer detector"
+            )
+        model = create_layered_detector(
+            backbone_size=args.backbone_size,
+            patch_size=args.patch_size,
+            channels=args.channels,
+            use_sdpa=args.use_sdpa,
+            num_symbol_classes=dataset.num_symbol_classes,
+            num_line_classes=dataset.num_line_classes,
+            num_shapes=args.num_shapes,
+            base_anchor_size=args.base_anchor_size,
+            num_refine_layers=refine_layers,
+            dfine_outer_bins=bool(architecture.get("dfine_outer_bins", False)),
+        ).to(device)
+    else:
+        model = create_detector(
+            backbone_size=args.backbone_size,
+            patch_size=args.patch_size,
+            channels=args.channels,
+            use_sdpa=args.use_sdpa,
+            num_symbol_classes=dataset.num_symbol_classes,
+            num_line_classes=dataset.num_line_classes,
+            num_shapes=args.num_shapes,
+            base_anchor_size=args.base_anchor_size,
+        ).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -574,6 +597,14 @@ if __name__ == "__main__":
         default=None,
         help="Refine the top-k line candidates with a trained LineRefiner "
         "(from train_line_refiner.py).",
+    )
+
+    parser.add_argument(
+        "--eval_layer",
+        type=int,
+        default=-1,
+        help="Refinement layer to evaluate for a multi-layer (D-FINE) checkpoint: "
+        "0 = first tap, -1 = final.",
     )
 
     args = parser.parse_args()

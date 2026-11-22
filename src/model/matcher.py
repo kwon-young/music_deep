@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import cast
+from collections.abc import Callable
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching
-from .box_ops import box_xyxy_to_cxcywh
+from .box_ops import box_xyxy_to_cxcywh, elementwise_generalized_box_iou
 from music_types import (
     DetectionTarget,
     DetectionOutput,
@@ -65,32 +65,6 @@ def greedy_matcher_gpu(
     return match_preds[:count], match_targets[:count]
 
 
-def elementwise_generalized_box_iou(
-    boxes1: torch.Tensor, boxes2: torch.Tensor
-) -> torch.Tensor:
-    """
-    Computes the Generalized IoU element-wise for two 1D lists of boxes.
-    boxes1 and boxes2 must have the same shape [K, 4].
-    """
-    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
-    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
-
-    lt = torch.max(boxes1[:, :2], boxes2[:, :2])
-    rb = torch.min(boxes1[:, 2:], boxes2[:, 2:])
-
-    wh = (rb - lt).clamp(min=0)
-    inter = wh[:, 0] * wh[:, 1]
-    union = area1 + area2 - inter
-    iou = inter / union
-
-    lt_hull = torch.min(boxes1[:, :2], boxes2[:, :2])
-    rb_hull = torch.max(boxes1[:, 2:], boxes2[:, 2:])
-    wh_hull = (rb_hull - lt_hull).clamp(min=0)
-    area_hull = wh_hull[:, 0] * wh_hull[:, 1]
-
-    return iou - (area_hull - union) / area_hull
-
-
 class HungarianMatcher(nn.Module):
     """
     This class computes a sparse assignment between the targets and the predictions of the network.
@@ -109,8 +83,10 @@ class HungarianMatcher(nn.Module):
         radius_patches: float = 4.0,
         top_k: int = 10,
         matcher_type: str = "scipy",
+        max_pair_elements: int = 1 << 24,
     ):
         super().__init__()
+        self.max_pair_elements = max_pair_elements
         self.matcher_type = matcher_type
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
@@ -126,81 +102,80 @@ class HungarianMatcher(nn.Module):
             "all costs can't be 0"
         )
 
+    def _valid_pairs(
+        self,
+        distances: Callable[[slice], torch.Tensor],
+        num_queries: int,
+        num_targets: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """(query, target) pairs within `radius_patches`, plus the `top_k` closest
+        queries of every target.
+
+        Both criteria are per target, so targets are processed in chunks that keep
+        every [chunk, num_queries] intermediate under `max_pair_elements` (dense
+        pages reach ~50k queries x ~2k targets). Targets-major layout makes the
+        top-k reduction contiguous (~9x faster than along dim 0). The pairs are
+        returned in the (query, target) row-major order of a dense `torch.where`.
+        """
+        chunk = max(1, self.max_pair_elements // max(1, num_queries))
+        top_k = min(self.top_k, num_queries)
+        rows: list[torch.Tensor] = []
+        cols: list[torch.Tensor] = []
+        for start in range(0, num_targets, chunk):
+            distance = distances(slice(start, start + chunk))
+            valid_mask = distance <= self.radius_patches
+            topk_idx = torch.topk(distance, k=top_k, dim=-1, largest=False).indices
+            valid_mask.scatter_(-1, topk_idx, True)
+            col, row = torch.where(valid_mask)
+            rows.append(row)
+            cols.append(col + start)
+        row, col = torch.cat(rows), torch.cat(cols)
+        order = torch.argsort(row * num_targets + col)
+        return row[order], col[order]
+
     def _get_valid_pairs_boxes(
         self, out_bbox: torch.Tensor, tgt_bbox: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the dense distance matrix to find valid pairs for boxes.
-        """
-        dx = torch.clamp(
-            torch.max(
-                tgt_bbox[None, :, 0] - out_bbox[:, None, 2],
-                out_bbox[:, None, 0] - tgt_bbox[None, :, 2],
-            ),
-            min=0,
-        )
-        dy = torch.clamp(
-            torch.max(
-                tgt_bbox[None, :, 1] - out_bbox[:, None, 3],
-                out_bbox[:, None, 1] - tgt_bbox[None, :, 3],
-            ),
-            min=0,
-        )
-        box_distances = torch.sqrt(dx**2 + dy**2)
+        """Box-to-box gap distance."""
 
-        valid_mask = box_distances <= self.radius_patches
+        def distances(targets: slice) -> torch.Tensor:
+            tgt = tgt_bbox[targets]
+            dx = torch.clamp(
+                torch.max(
+                    tgt[:, None, 0] - out_bbox[None, :, 2],
+                    out_bbox[None, :, 0] - tgt[:, None, 2],
+                ),
+                min=0,
+            )
+            dy = torch.clamp(
+                torch.max(
+                    tgt[:, None, 1] - out_bbox[None, :, 3],
+                    out_bbox[None, :, 1] - tgt[:, None, 3],
+                ),
+                min=0,
+            )
+            return torch.sqrt(dx**2 + dy**2)
 
-        # Top-K Fallback: Ensure every GT box has at least K valid predictions
-        topk = min(self.top_k, len(out_bbox))
-        topk_idx = torch.topk(
-            box_distances, k=topk, dim=0, largest=False
-        ).indices
-        valid_mask.scatter_(0, topk_idx, True)
-
-        return cast(tuple[torch.Tensor, torch.Tensor], torch.where(valid_mask))
+        return self._valid_pairs(distances, len(out_bbox), len(tgt_bbox))
 
     def _get_valid_pairs_keypoints(
         self, out_kp: torch.Tensor, tgt_kp: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the true Point-to-Line-Segment distance.
-        Uses the midpoint of the predicted line (patch center) to the GT line segment.
-        """
-        # 1. Midpoint of predictions (Patch Centers) -> P: [N, 2]
-        p_x = (out_kp[:, 0] + out_kp[:, 2]) / 2.0
-        p_y = (out_kp[:, 1] + out_kp[:, 3]) / 2.0
-        P = torch.stack([p_x, p_y], dim=-1)
+        """Distance from the midpoint of each predicted line to each GT segment."""
+        P = (out_kp[:, :2] + out_kp[:, 2:]) / 2.0
 
-        # 2. Target line segments A -> B -> [M, 2]
-        A = tgt_kp[:, :2]
-        B = tgt_kp[:, 2:]
+        def distances(targets: slice) -> torch.Tensor:
+            A = tgt_kp[targets, :2]
+            AB = tgt_kp[targets, 2:] - A
+            AB_squared = (AB**2).sum(dim=-1).clamp(min=1e-6)
+            AP = P.unsqueeze(0) - A.unsqueeze(1)
+            t = ((AP * AB.unsqueeze(1)).sum(dim=-1) / AB_squared.unsqueeze(1)).clamp(
+                min=0.0, max=1.0
+            )
+            Proj = A.unsqueeze(1) + t.unsqueeze(-1) * AB.unsqueeze(1)
+            return torch.norm(P.unsqueeze(0) - Proj, p=2, dim=-1)
 
-        AB = B - A
-        AB_squared = (
-            (AB**2).sum(dim=-1).clamp(min=1e-6)
-        )  # Avoid division by zero
-
-        # 3. Vectorized projection of all N points onto all M segments
-        AP = P.unsqueeze(1) - A.unsqueeze(0)  # [N, M, 2]
-        dot_AP_AB = (AP * AB.unsqueeze(0)).sum(dim=-1)  # [N, M]
-
-        # Calculate projection scalar 't' and clamp to [0, 1] to keep it on the segment
-        t = (dot_AP_AB / AB_squared.unsqueeze(0)).clamp(min=0.0, max=1.0)
-
-        # 4. Find the exact closest point on the segment and compute distance
-        Proj = A.unsqueeze(0) + t.unsqueeze(-1) * AB.unsqueeze(0)  # [N, M, 2]
-        kp_distances = torch.norm(P.unsqueeze(1) - Proj, p=2, dim=-1)  # [N, M]
-
-        # 5. Apply radius and Top-K fallback
-        valid_mask = kp_distances <= self.radius_patches
-
-        topk = min(self.top_k, len(out_kp))
-        topk_idx = torch.topk(
-            kp_distances, k=topk, dim=0, largest=False
-        ).indices
-        valid_mask.scatter_(0, topk_idx, True)
-
-        return cast(tuple[torch.Tensor, torch.Tensor], torch.where(valid_mask))
+        return self._valid_pairs(distances, len(out_kp), len(tgt_kp))
 
     def _match_modality(
         self,
