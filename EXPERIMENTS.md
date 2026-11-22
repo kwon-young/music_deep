@@ -561,3 +561,29 @@
   * **Miss rate is U-shaped in length**: <8 staff spaces 34.9% (1,020 GT, mostly short measures between close barlines), 12–50 staff spaces 1.4–2.3%, >50 staff spaces 20.0% (1,880 GT). The long tail is mostly unbarred systems (cadenza-like passages) where one segment spans the whole system: such solo segments are missed 44% of the time. Both tails are concentrated on ~51 pages each.
   * **Correction to Analysis 002**: its staff oracle gain (+0.035) underestimates the refinement headroom. The oracle corrected the nearest-geometry query, which is often not the top-scored one, so the uncorrected top-scored duplicate still ranks first.
 * **Conclusion**: Staff errors are not primarily a loss-weight problem: staff segments are found (97% recall) and the errors survive on training pages, so they are structural rather than under-weighted generalization. The three causes are, by size: (1) far-endpoint imprecision from predicting long segments from one end, which is what the iterative line refiner (Exp 031) targets; (2) classification scores not tied to localization quality (+0.028 mAP measured by re-ranking alone), which D-FINE handles with a quality-aware classification loss (VFL with IoU soft target), adapted here as an OKS target; (3) rare layouts (unbarred systems, very short measures) on a few pages, better addressed by data (synthetic pages) than by a global staff weight increase.
+
+## Experiment 032: Intra-Class Size Weighting and OKS Quality Target
+* **Experiment Name/ID**: `experiments/032_size_weighting_oks_target`
+* **Status**: launched on Kaggle (2×T4), branch `exp-032-size-weighting-oks-target`. Results to be filled from `metrics.jsonl` and the local COCO evaluation.
+* **Hypothesis/Goal**: Attack two of the three staff failure causes found in Analysis 003, as a fine-tune of Exp 029:
+  1. **Intra-class size weighting**: within each class whose size distribution is wide (CV ≥ 0.3, n ≥ 100: `staff`, `stem`, `beam`, `barLine`, `voltaBracket`, `slur`, `tie`), weight each instance by `density(size)^-0.5`, normalized to mean 1 over the class (the Exp 029 class balance is unchanged) and clamped to [0.25, 4]. Staff gets ~4× at both tails (≤5 and ≥60 staff spaces, the 35% / 20% miss-rate bins) and ~0.75× in the 15–20 bulk. Applied to the positive classification term, L1/GIoU and FGL.
+  2. **OKS quality target for lines**: the line classification loss becomes Quality Focal Loss (GFL): a matched query's target is the OKS of its current (detached) prediction instead of 1, so the score ranks queries by endpoint quality. QFL with quality = 1 is exactly the previous focal loss. Analysis 003 measured +0.028 staff mAP from re-ranking alone.
+  * Expected: fewer misses in the staff length tails (per-length miss rates from `scripts/analyze_line_failures.py`), and a lower share of segments whose top-scored prediction is not the best-localized one (34.7% in Exp 029). Risk to watch: the bulk length bins losing more than the tails gain.
+* **Setup**:
+  * Implementation: `src/model/size_weighting.py` (per-class log-size histograms from `parse_coco`, interpolated bin weights), `quality_focal_loss` and `line_oks` in `src/model/criterion.py`. The OKS area is `length × class thickness`, with thickness = median COCO `area / length` (staff 3.9 px, stem 5.5, barLine 8.4, beam 39.3). Patch-unit targets are converted to pixels with the nominal patch size (64), an approximation under the 54–74 patch-size augmentation, smoothed by the interpolated weights. The COCO cache now carries a schema version and is re-parsed automatically when stale or when the class-weight parameters change.
+  * Local checks: unit tests (`tests/model/test_detection_losses.py`, QFL equals focal loss at quality 1), a 587-step single-GPU run on 1024 crops from the Exp 029 checkpoint (DDP could not be tested locally: NCCL does not support the laptop's Maxwell GPU).
+  * Training: resume from Exp 029 (Kaggle model `music-deep/pytorch/train_detection/11`), 30 epochs, peak LR `1e-4`, 1 warmup epoch, same flags as the Exp 029 Kaggle run otherwise.
+  * Command:
+    ```bash
+    PYTHONPATH=. mamba run torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/032_size_weighting_oks_target \
+        --detector_checkpoint <029>/train_detection/checkpoints/latest_model.pt \
+        --patch_size 64 --epochs 30 --lr 1e-4 --warmup_epochs 1 \
+        --extract_patch_min 54 --extract_patch_max 74 \
+        --class_weight_variance_lambda 0.5 --class_weight_size_difficulty_max 8.0 \
+        --intra_class_size_alpha 0.5 --line_quality_target \
+        --headless --use_sdpa --compile --log_epoch_interval 5
+    ```
+  * Caveat: this is a continuation of Exp 029, so part of any gain could come from the extra 30 epochs. The diagnosis metrics separate the two mechanisms better than mAP alone.
+* **Results**: TBD.
+* **Conclusion**: TBD.

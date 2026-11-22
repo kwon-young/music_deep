@@ -51,6 +51,25 @@ class CocoLineAnnotation:
     category_id: int
 
 
+CACHE_SCHEMA_VERSION = 2
+SIZE_HISTOGRAM_BINS = 20
+DEFAULT_LINE_THICKNESS = 4.0
+
+
+@dataclass(frozen=True)
+class SizeHistogram:
+    """Histogram of one class's instance sizes (pixels), on a log scale.
+
+    Sizes are the bbox diagonal for symbols and the segment length for lines.
+    """
+
+    n: int
+    cv: float
+    log_min: float
+    bin_width: float
+    counts: list[int]
+
+
 type CocoParsedAnnotation = CocoSymbolAnnotation | CocoLineAnnotation
 
 
@@ -88,6 +107,23 @@ class CocoDataset:
     annotations: dict[int, list[CocoParsedAnnotation]]
     symbol_categories: list[dict]
     line_categories: list[dict]
+    size_histograms: dict[int, SizeHistogram]
+    line_thickness: dict[int, float]
+    schema_version: int = CACHE_SCHEMA_VERSION
+
+    def symbol_size_histograms(self) -> list[SizeHistogram]:
+        return _ordered_histograms(self.size_histograms, self.symbol_cat_id_to_idx)
+
+    def line_size_histograms(self) -> list[SizeHistogram]:
+        return _ordered_histograms(self.size_histograms, self.line_cat_id_to_idx)
+
+    def line_thickness_by_index(self) -> list[float]:
+        """Median COCO `area / length` per line class, in pixels (OKS scale)."""
+        ordered = sorted(self.line_cat_id_to_idx.items(), key=lambda item: item[1])
+        return [
+            self.line_thickness.get(cat_id, DEFAULT_LINE_THICKNESS)
+            for cat_id, _ in ordered
+        ]
 
     @property
     def num_symbols(self) -> int:
@@ -246,6 +282,44 @@ def _compute_smoothed_weights(
     return clamped
 
 
+def _ordered_histograms(
+    histograms: dict[int, SizeHistogram], cat_id_to_idx: dict[int, int]
+) -> list[SizeHistogram]:
+    ordered = sorted(cat_id_to_idx.items(), key=lambda item: item[1])
+    empty = SizeHistogram(
+        n=0, cv=0.0, log_min=0.0, bin_width=1.0, counts=[0] * SIZE_HISTOGRAM_BINS
+    )
+    return [histograms.get(cat_id, empty) for cat_id, _ in ordered]
+
+
+def instance_size(ann: CocoParsedAnnotation) -> float:
+    """Bbox diagonal for symbols, segment length for lines (pixels)."""
+    if isinstance(ann, CocoLineAnnotation):
+        x1, y1, x2, y2 = ann.keypoints
+        return math.hypot(x2 - x1, y2 - y1)
+    _, _, w, h = ann.bbox
+    return math.hypot(w, h)
+
+
+def size_histogram(
+    sizes: list[float], num_bins: int = SIZE_HISTOGRAM_BINS
+) -> SizeHistogram:
+    stats = _size_stats(sizes)
+    logs = [math.log(max(size, 1.0)) for size in sizes]
+    if not logs:
+        return SizeHistogram(
+            n=0, cv=0.0, log_min=0.0, bin_width=1.0, counts=[0] * num_bins
+        )
+    log_min = min(logs)
+    bin_width = max((max(logs) - log_min) / num_bins, 1e-6)
+    counts = [0] * num_bins
+    for value in logs:
+        counts[min(int((value - log_min) / bin_width), num_bins - 1)] += 1
+    return SizeHistogram(
+        n=stats.n, cv=stats.cv, log_min=log_min, bin_width=bin_width, counts=counts
+    )
+
+
 def _size_stats(sizes: list[float]) -> ClassSizeStats:
     """Aggregates raw per-instance sizes into population statistics."""
     n = len(sizes)
@@ -356,9 +430,17 @@ def parse_coco(
         cache_path.exists()
         and cache_path.stat().st_mtime > anno_path.stat().st_mtime
     ):
-        print(f"Loading cached COCO dataset from {cache_path}")
         with open(cache_path, "rb") as f:
-            return pickle.load(f)
+            cached = pickle.load(f)
+        if (
+            isinstance(cached, CocoDataset)
+            and getattr(cached, "schema_version", None) == CACHE_SCHEMA_VERSION
+            and cached.size_difficulty_lambda == variance_lambda
+            and cached.size_difficulty_max == size_difficulty_max
+        ):
+            print(f"Loading cached COCO dataset from {cache_path}")
+            return cached
+        print(f"Ignoring stale COCO cache {cache_path} (schema or weights changed)")
 
     print(f"Parsing COCO JSON from {anno_path} (this might take a while)...")
     with open(anno_path, "r") as f:
@@ -412,6 +494,9 @@ def parse_coco(
         idx: 0 for idx in range(len(line_categories))
     }
 
+    sizes_by_cat: defaultdict[int, list[float]] = defaultdict(list)
+    thickness_by_cat: defaultdict[int, list[float]] = defaultdict(list)
+
     for ann in coco_data["annotations"]:
         img_id = ann["image_id"]
         cat_id = ann["category_id"]
@@ -429,6 +514,9 @@ def parse_coco(
             )
             idx = line_cat_id_to_idx[cat_id]
             line_counts[idx] += 1
+            length = math.hypot(x2 - x1, y2 - y1)
+            if "area" in ann and length >= 1.0:
+                thickness_by_cat[cat_id].append(ann["area"] / length)
         else:
             parsed_ann = CocoSymbolAnnotation(
                 bbox=ann["bbox"], category_id=cat_id
@@ -437,6 +525,7 @@ def parse_coco(
             symbol_counts[idx] += 1
 
         annotations[img_id].append(parsed_ann)
+        sizes_by_cat[cat_id].append(instance_size(parsed_ann))
 
     if os.environ.get("LOCAL_RANK", "0") == "0":
         print("\n--- Symbol Class Frequencies ---")
@@ -484,6 +573,13 @@ def parse_coco(
         annotations=dict(annotations),
         symbol_categories=symbol_categories,
         line_categories=line_categories,
+        size_histograms={
+            cat_id: size_histogram(sizes) for cat_id, sizes in sizes_by_cat.items()
+        },
+        line_thickness={
+            cat_id: sorted(values)[len(values) // 2]
+            for cat_id, values in thickness_by_cat.items()
+        },
     )
 
     if os.environ.get("LOCAL_RANK", "0") == "0":
