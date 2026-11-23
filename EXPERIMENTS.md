@@ -457,6 +457,7 @@
   * Model: `vit_nano` (patch_size=64) with `SymbolHead` and `LineHead`. Data: Full Trompa-COCO dataset.
   * Checkpoint: Resume from `experiments/028_variable_patch_size_augmentation/train_detection/checkpoints/latest_model.pt`.
   * Augmentation: `--extract_patch_min 32 --extract_patch_max 96` (carried over from Exp 025-028).
+  * **Correction (2026-11-22)**: the Kaggle run actually used `--extract_patch_min 54 --extract_patch_max 74` (notebook version `f997b85`, Kaggle v32); the 32/96 values here and in the command below are wrong.
   * Training: 100 additional epochs, peak LR `1e-4`, 1 epoch linear warmup, standard (non-focal) L1/GIoU regression loss.
   * New rebalancing: per-class weights now equal the Exp 017 smoothed-inverse-frequency weights multiplied by `clamp(1 + variance_lambda * cv, 1, size_difficulty_max)` **after** normalization+clamping, where `cv` is the per-class coefficient of variation of instance size (bbox diagonal for symbols, keypoint-segment length for lines). `variance_lambda=0.5`, `size_difficulty_max=8.0`. Sanity-checked before launch via `scripts/sanity_check_size_balanced_weights.py` — only `slur`/`tie` (symbols) and `voltaBracket`/`beam`/`staff`/`stem`/`barLine`/`system` (lines) move, everything else stays bit-identical to Exp 028.
   * Cache note: cache now regenerates under the same `instances_trainval2017.pkl` name with the new weights (schema includes `size_difficulty_lambda`/`size_difficulty_max`), so the pre-existing stale pickle must be deleted once before launch.
@@ -511,7 +512,6 @@
         --img_dir data/imslp/images \
         --detector_checkpoint experiments/029_size_difficulty_balanced_loss/train_detection/checkpoints/latest_model.pt \
         --exp_dir experiments/030_imslp_lejepa_backbone \
-        --crop_size 1024 \
         --patch_size 64 \
         --backbone_size nano \
         --batch_size 8 \
@@ -537,3 +537,120 @@
 * **Impact**:
   * Checkpoints trained without `--use_sdpa` (Exp 001–009, `scripts/sanity_check.py` runs) were trained with the old scale. To reproduce them exactly, use the code before this change or multiply the logits by sqrt(2).
   * Exp 010 onward were trained with `--use_sdpa` and are unaffected. Before this fix, `src/inference_coco.py` and `tools/interactive_viewer.py` run without `--use_sdpa` on those checkpoints applied the wrong scale; both paths now agree.
+
+## Analysis 002: Oracle FDR Refinement Ceiling on Exp 029 (Lines and Symbols)
+* **Experiment Name/ID**: `analysis/002_oracle_refinement_ceiling` (offline, Exp 029 checkpoint). Artifacts: `experiments/029_size_difficulty_balanced_loss/inference_local/` (baseline) and `.../inference_oracle/` (oracle), each with `coco_eval_summary.json`.
+* **Hypothesis/Goal**: Measure how much a *perfect* D-FINE refinement could gain, now with the corrected maxDets=2000 evaluation (the Exp 026 oracle line numbers predate that fix), to decide whether an iterative line refiner is worth building and which line classes it can help.
+* **Setup**: `inference_coco.py --oracle_fgl` (commit `2cf122d`): each GT is greedily matched (same class, nearest geometry) to one prediction among all P×K queries, regardless of score; its FDR residual is replaced by the exact GT residual in the stage-0 frame (`base_dirs`, scale `|base_dir| + anchor` for lines; learned shape for symbols), clamped to ±0.5. Scores are untouched. Both runs on the laptop (Quadro M1200), fp32, `--use_sdpa --force_pyvips`, all 351 trainval pages, then `evaluate_coco.py`. The local baseline reproduces the Kaggle Exp 029 evaluation exactly (identical global and per-class numbers).
+* **Results**:
+  * **Lines (global)**: `mAP@0.5:0.95` **0.748 → 0.831** (+0.083), `mAP@0.5` 0.827 → 0.862 (+0.036), `mAP@0.75` 0.772 → 0.833.
+  * **Lines (per class, mAP@0.5:0.95 baseline → oracle)**: `voltaBracket` 0.553 → **0.787** (+0.234), `stem` 0.835 → **0.958** (+0.123), `ledgerLines` 0.842 → **0.965** (+0.123), `octave` 0.006 → 0.105 (+0.099; and `mAP@0.5` 0.052 → 0.214), `staff` 0.837 → 0.872 (+0.035), `barLine` 0.963 → 0.988, `beam` 0.977 → 0.987, `system` 0.973 → 0.990.
+  * **Symbols (global)**: `mAP@0.5:0.95` 0.768 → **0.900** (+0.132), `mAP@0.5` 0.919 → 0.935, small-object AP 0.402 → **0.811**.
+* **Conclusion**: Refinement headroom is real for lines (+0.083 mAP@0.5:0.95), concentrated in `voltaBracket`, `stem`, `ledgerLines` and, unexpectedly, `octave` (whose `mAP@0.5` quadruples: part of its failure *is* endpoint localization within ±0.5 scale, not only missed detections). `staff` gains little (+0.035): its residual error is mostly beyond the ±0.5 range or a detection/scoring issue, so one-frame refinement will not fix it. Symbols have an even larger ceiling (+0.132), dominated by small objects. Next: train the iterative D-FINE line refiner (Exp 031, `src/train_line_refiner.py`) on the frozen Exp 029 detector and measure what fraction of this +0.083 it recovers.
+
+## Analysis 003: Staff Failure Diagnosis on Exp 029
+* **Experiment Name/ID**: `analysis/003_staff_failure_diagnosis` (offline, Exp 029 predictions in `experiments/029_size_difficulty_balanced_loss/inference_local/preds_lines.json`, 351 trainval pages, the same pages the model was trained on).
+* **Hypothesis/Goal**: Find why `staff` (mAP@0.5:0.95 0.837, AP@0.5 0.935) is well below `barLine`/`system` (~0.97–0.98). Suspected cause: variable length and the high instance count giving staff a low effective loss weight.
+* **Setup**: `PYTHONPATH=src:. mamba run -n pytorch python scripts/analyze_line_failures.py --predictions experiments/029_size_difficulty_balanced_loss/inference_local/preds_lines.json` replays the COCO greedy OKS matching (σ=0.1) and labels every miss and confident false positive. One-off scratch analyses (not committed) re-ranked scores, applied OKS-NMS, and ran the detector on 30 pages to locate the predicting patch. Note: a `staff` annotation is one staff line **between two barlines** (one measure), ~283 per page; consecutive segments share the barline x exactly.
+* **Results**:
+  * Per OKS threshold, staff AP 0.935 (0.50), 0.871 (0.75), 0.557 (0.95); recall 0.971 / 0.935 / 0.766. Localization (0.935 → 0.837 average) costs more than detection.
+  * **Vertical placement is not a failure mode**: matched predictions sit 0.3 px (median) / 2 px (p99) from the true line; no confusion with neighbouring staff lines.
+  * **All endpoint error is horizontal, and on the far end**: left endpoint |dx| median ~1 px at every length; right endpoint median 2.2 → 8.5 px and p90 7 → 42 px as length grows.
+  * **Cause of the asymmetry**: the matcher assigns 77% of staff segments to a patch in the left 40% of the segment (`t∈[0,0.4)`), and the top-scored prediction follows the same distribution. The endpoint near the predicting patch is precise (~0.8 px); the far one is not (4–5 px median, 17–24 px p90). Predictions made from right-side patches show the mirror pattern.
+  * **Ranking ignores localization quality**: for 34.7% of segments, the top-scored prediction is not the best-localized one among those with OKS ≥ 0.5. Re-ranking within each segment's cluster (same scores, re-assigned by OKS) gives mAP 0.837 → **0.865**, AP@0.95 0.557 → **0.645**.
+  * **Duplicates** are 71.5% of confident FPs, but removing all of them by oracle only gives +0.017 mAP. OKS-NMS hurts at strict thresholds (mAP 0.826–0.837).
+  * **Miss rate is U-shaped in length**: <8 staff spaces 34.9% (1,020 GT, mostly short measures between close barlines), 12–50 staff spaces 1.4–2.3%, >50 staff spaces 20.0% (1,880 GT). The long tail is mostly unbarred systems (cadenza-like passages) where one segment spans the whole system: such solo segments are missed 44% of the time. Both tails are concentrated on ~51 pages each.
+  * **Correction to Analysis 002**: its staff oracle gain (+0.035) underestimates the refinement headroom. The oracle corrected the nearest-geometry query, which is often not the top-scored one, so the uncorrected top-scored duplicate still ranks first.
+* **Conclusion**: Staff errors are not primarily a loss-weight problem: staff segments are found (97% recall) and the errors survive on training pages, so they are structural rather than under-weighted generalization. The three causes are, by size: (1) far-endpoint imprecision from predicting long segments from one end, which is what the iterative line refiner (Exp 031) targets; (2) classification scores not tied to localization quality (+0.028 mAP measured by re-ranking alone), which D-FINE handles with a quality-aware classification loss (VFL with IoU soft target), adapted here as an OKS target; (3) rare layouts (unbarred systems, very short measures) on a few pages, better addressed by data (synthetic pages) than by a global staff weight increase.
+
+## Experiment 032: Intra-Class Size Weighting and OKS Quality Target
+* **Experiment Name/ID**: `experiments/032_size_weighting_oks_target`
+* **Status**: done (Kaggle kernel v38, 2×T4, 3.1 h). **Negative result**: global and staff metrics regressed. **Failed branch**: the size-weighting / OKS-target code (commit `ab90bb0`) was reverted, so the training code is back to the Exp 029 state; the experiment stays here as a record.
+* **Hypothesis/Goal**: Attack two of the three staff failure causes found in Analysis 003, as a fine-tune of Exp 029:
+  1. **Intra-class size weighting**: within each class whose size distribution is wide (CV ≥ 0.3, n ≥ 100: `staff`, `stem`, `beam`, `barLine`, `voltaBracket`, `slur`, `tie`), weight each instance by `density(size)^-0.5`, normalized to mean 1 over the class (the Exp 029 class balance is unchanged) and clamped to [0.25, 4]. Staff gets ~4× at both tails (≤5 and ≥60 staff spaces, the 35% / 20% miss-rate bins) and ~0.75× in the 15–20 bulk. Applied to the positive classification term, L1/GIoU and FGL.
+  2. **OKS quality target for lines**: the line classification loss becomes Quality Focal Loss (GFL): a matched query's target is the OKS of its current (detached) prediction instead of 1, so the score ranks queries by endpoint quality. QFL with quality = 1 is exactly the previous focal loss. Analysis 003 measured +0.028 staff mAP from re-ranking alone.
+  * Expected: fewer misses in the staff length tails (per-length miss rates from `scripts/analyze_line_failures.py`), and a lower share of segments whose top-scored prediction is not the best-localized one (34.7% in Exp 029). Risk to watch: the bulk length bins losing more than the tails gain.
+* **Setup**:
+  * Implementation: `src/model/size_weighting.py` (per-class log-size histograms from `parse_coco`, interpolated bin weights), `quality_focal_loss` and `line_oks` in `src/model/criterion.py`. The OKS area is `length × class thickness`, with thickness = median COCO `area / length` (staff 3.9 px, stem 5.5, barLine 8.4, beam 39.3). Patch-unit targets are converted to pixels with the nominal patch size (64), an approximation under the 54–74 patch-size augmentation, smoothed by the interpolated weights. The COCO cache now carries a schema version and is re-parsed automatically when stale or when the class-weight parameters change.
+  * Local checks: unit tests (`tests/model/test_detection_losses.py`, QFL equals focal loss at quality 1), a 587-step single-GPU run on 1024 crops from the Exp 029 checkpoint (DDP could not be tested locally: NCCL does not support the laptop's Maxwell GPU).
+  * Training: resume from Exp 029 (Kaggle model `music-deep/pytorch/train_detection/11`), 30 epochs, peak LR `1e-4`, 1 warmup epoch, same flags as the Exp 029 Kaggle run otherwise.
+  * Command:
+    ```bash
+    PYTHONPATH=. mamba run torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/032_size_weighting_oks_target \
+        --detector_checkpoint <029>/train_detection/checkpoints/latest_model.pt \
+        --patch_size 64 --epochs 30 --lr 1e-4 --warmup_epochs 1 \
+        --extract_patch_min 54 --extract_patch_max 74 \
+        --class_weight_variance_lambda 0.5 --class_weight_size_difficulty_max 8.0 \
+        --intra_class_size_alpha 0.5 --line_quality_target \
+        --headless --use_sdpa --compile --log_epoch_interval 5
+    ```
+  * Caveat: this is a continuation of Exp 029, so part of any gain could come from the extra 30 epochs. The diagnosis metrics separate the two mechanisms better than mAP alone.
+  * Kaggle environment (v33–v38 failures, kept here for the next run): Miniforge `latest` now ships Python 3.14 and CUDA 13.5 packages, which crash on the T4 driver (CUDA 13.0) with an illegal memory access. Working install: `mamba install python=3.13 cuda-version=13.0 pytorch=2.11 pillow matplotlib scipy nvimgcodec nccl cuda-cudart-dev` run through `subprocess.run(check=True)` so a failed solve stops the notebook (do not add `cuda-toolkit`: its 13.0 build only exists for py3.12; `cuda-cudart-dev` provides the `cuda.h` Triton needs for `--compile`). The 2.1 GB COCO JSON took ~10 min to parse on each run; the parsed cache is now a private Kaggle dataset (`kwonyoungchoi/trompa-coco-cache`) copied into `--cache_dir` before training, and is re-parsed automatically if its schema is stale.
+* **Results**: Final checkpoint evaluated with `evaluate_coco.py` (maxDets=2000). Local laptop inference of the downloaded checkpoint reproduces the Kaggle evaluation to 4 decimals, so the inference environment is not involved.
+  * **Global (029 → 032)**: Symbols `mAP@0.5:0.95` **0.768 → 0.692**, `mAP@0.5` 0.919 → 0.886, small 0.402 → 0.307. Lines `mAP@0.5:0.95` **0.748 → 0.668**, `mAP@0.5` 0.827 → 0.776.
+  * **Lines per class (mAP@0.5:0.95)**: `staff` **0.837 → 0.666**, `voltaBracket` 0.553 → 0.299, `stem` 0.835 → 0.734, `ledgerLines` 0.842 → 0.787, `barLine` 0.963 → 0.944, `beam` 0.977 → 0.957, `system` 0.973 → 0.957, `octave` 0.006 → 0.000.
+  * **Symbols**: almost every class lost localization quality, including classes whose loss is unchanged by this experiment (`noteheadBlack` 0.982 → 0.973, `accidentalFlat` 0.926 → 0.853, `timeSig8` 0.861 → 0.754). The weighted `slur` 0.434 → 0.285 and `tie` 0.319 → 0.240 regressed the most.
+  * **Staff diagnostics** (`scripts/analyze_line_failures.py` and the Analysis 003 scratch scripts):
+    * AP@0.5 / 0.75 / 0.95 0.935 / 0.871 / 0.557 → **0.824 / 0.703 / 0.312**. Recall at OKS 0.5: FN 2.87% → 5.13%, with "missed (no pred OKS>0.1)" 591 → 2,104.
+    * Ranking got **worse**, not better: the top-scored prediction of a segment is not the best-localized one in 34.7% → **44.8%** of segments (median OKS gap 0.040 → 0.086). Duplicates among confident FPs 7,948 → **18,975**. Quality re-ranking would now add +0.059 mAP (vs +0.028 before).
+    * Miss rate per length (staff spaces): <8 34.9% → 35.3%, 12–18 2.3% → 5.0%, 18–25 1.4% → 3.4%, >50 20.0% → 25.3%. The rare-length tails did not improve and the bulk doubled its miss rate.
+    * Only the far-endpoint error of the FNs' closest prediction shrank (median |x2| 0.32 → 0.12 staff spaces), while TP endpoint error grew (x p50/p90 1.6/8.7 → 2.2/12.3 px).
+* **Conclusion**: Both mechanisms failed in this form, and something else regressed the untouched symbol classes too.
+  1. **OKS quality target is harmful in a dense one-to-one head.** Only the Hungarian-matched query gets a soft target (its own OKS, < 1), while its spatial neighbours, which are often as well or better localized, stay at target 0. This (a) shrinks the score margin between the match and its duplicates, so duplicates out-rank it more often, and (b) never tells the network that a better-localized neighbour should score higher, because the matched query is chosen by classification + L1 cost, not by OKS. D-FINE avoids both through query self-attention in its decoder; our patch-as-predictor head has no interaction between queries. A quality target only makes sense with quality-aware matching (e.g. OKS in the matcher cost) or with soft targets on every query near the segment.
+  2. **Intra-class size weighting did not rescue the tails** (<8 and >50 staff-space miss rates unchanged or worse). Its effect cannot be separated from (1) and (3) in this run.
+  3. **Unexplained global drop.** Fixed-glyph symbol classes, whose loss is bit-identical to Exp 029 with these flags (QFL at quality 1 equals focal loss, unit size weights; unit-tested), lost 0.01–0.10 mAP. Candidate causes: the LR restart (1e-4 again on a converged model, only 30 epochs to re-converge), the new Kaggle environment (py3.13 / CUDA 13.0 / torch 2.11 instead of Exp 029's), or the changed line losses perturbing the shared backbone.
+  * **Next steps**: (a) a control run (`experiments/033_continuation_control`: same branch, environment and 30-epoch schedule from Exp 029, without `--intra_class_size_alpha`/`--line_quality_target`) to separate the restart/environment effect from the two losses; the notebook is prepared but not launched. (b) Do not reuse `--line_quality_target` as is; if retried, put OKS into the matcher cost first. (c) Keep size weighting off until (a) isolates its effect. (d) The far-endpoint problem of Analysis 003 still points to the iterative line refiner (Exp 031) on the frozen Exp 029 detector, which avoids touching the detector weights at all.
+
+## Experiment 034: D-FINE Multi-Layer Refinement on the Last 3 ViT Blocks
+* **Experiment Name/ID**: `experiments/034_dfine_multilayer_refinement`
+* **Status**: ❌ Negative. Run on Kaggle (notebook version 44, branch `exp-034-dfine-multilayer-refinement` @ `4a21c5f`), stopped by the 11 h cap at epoch 85/100.
+* **Hypothesis/Goal**: Analysis 002 measured a refinement ceiling of +0.083 line / +0.132 symbol mAP@0.5:0.95. Analysis 003 found the far-endpoint error of long staff segments to be the largest staff failure. Reproduce D-FINE's Fine-grained Distribution Refinement (decoder of D-FINE-N, 3 layers) **inside the backbone**: block 9 predicts, blocks 10 and 11 refine. Unlike the Exp 031 frozen refiner, the detector is trained jointly.
+* **Setup**:
+  * **Architecture** (`src/model/layered_detector.py`, `MultiLayerOMRDetector`), mapping D-FINE's DETR decoder to the dense head:
+    * Blocks 0–8 play the encoder. Every patch×slot is a query, so there is no top-K query selection.
+    * Tap 0 = block 9 (+ its own LayerNorm). The dense `SymbolHead`/`LineHead` give the coarse prediction (D-FINE `pre_bboxes`: center ± shape/2, center + base_dirs) and the first edge distribution. The **detached** coarse geometry is the FDR frame of every layer.
+    * Blocks 10 and 11 play decoder layers 1 and 2. Before each, `SlotBoxConditioner` (D-FINE `query_pos_head`: MLP of the concatenated 2×K slot geometries, signed-log, relative to the patch center, detached) is added to the attention **queries and keys only** (D-FINE `with_pos_embed`). Each `RefineHead` adds `delta(tokens + previous_tokens.detach())` to the previous logits (logit chain not detached), has its own score head, and has an `LQE`.
+    * The delta heads and the conditioner's last layer are zero-initialized, so at init the 3 layers decode the same boxes (unit-tested).
+  * **Loss** (`src/model/layered_criterion.py`): each layer and the pre-prediction are matched separately and classified with their own matching. L1/GIoU/FGL use the GO union of all matchings (vectorized `_get_go_indices`, tested against the D-FINE loop). Symbol FGL is IoU-weighted. The pre-prediction gets classification + L1/GIoU only. DDF (T=5, weight 1.5) distils the final distribution into layers 0 and 1. Deliberate deviations: **focal loss instead of VFL** (Exp 032: an IoU/OKS soft target in a one-to-one dense head degrades ranking); line FGL/DDF quality = 1 (no IoU for segments); no CDN denoising (there is no separate query set).
+  * **FDR bins**: `--dfine_outer_bins` puts the outer bins at ±1.0 anchor units as in D-FINE. The legacy ±0.5 duplicated the inner bins, so a residual could never exceed ±0.5×scale, which matters for the far endpoints of Analysis 003. This change is confounded with the multi-layer architecture in this run.
+  * **Init**: backbone and dense heads from the Exp 029 checkpoint (`--init_from_single_checkpoint`, bin buffers excluded). Refinement score heads start as copies of the dense classifiers; at init the final class logits equal Exp 029's (unit-tested). Fresh AdamW state (Exp 029 had loaded Exp 028's). Expect an initial drop: the tap-9 heads read block-9 features they were not trained on.
+  * **Scale** (target: 10k tokens = 50k queries per modality): the matcher's candidate search was dense `[Q, T]` (~3 GB for lines at 50k × 1,685) and now runs 4× per step. It is now chunked over targets in a targets-major layout (exactly the same pairs, tested against HEAD; top-k 9× faster). At 50k queries with the trainval maximum of targets (1,168 symbols, 1,685 lines), the full layered criterion (4 matchings × 2 modalities, losses, DDF, backward) peaks at 773 MiB extra GPU memory. The step overhead vs the single-layer model, measured on the laptop, is 1.25× at 1,600 tokens and 1.16× at 4,096. Exp 029 took 9.6 h, so the run is close to the 12 h Kaggle limit; `--resume` continues the same LR schedule in a second session if needed.
+  * Other changes: `DFINECriterion.forward` refactored into `layer_losses(classification, regression)` (bit-identical losses vs HEAD on an Exp 029 batch); GIoU loss computed element-wise instead of `diag(N×N)` (same values, no assert on inverted boxes, which the ±1.0 bins make possible); checkpoints record their `architecture`, read by `inference_coco.py` (`--eval_layer` evaluates taps 9/10/11).
+  * Training: same recipe as the Exp 029 Kaggle run, 100 epochs.
+  * Command (Kaggle, `scripts/music_deep.ipynb`):
+    ```bash
+    PYTHONPATH=. mamba run torchrun --nproc_per_node=2 src/train_detection.py \
+        --exp_dir experiments/034_dfine_multilayer_refinement \
+        --patch_size 64 --epochs 100 --lr 1e-4 --warmup_epochs 1 \
+        --extract_patch_min 54 --extract_patch_max 74 \
+        --class_weight_variance_lambda 0.5 --class_weight_size_difficulty_max 8.0 \
+        --refine_layers 2 --dfine_outer_bins \
+        --init_from_single_checkpoint <029>/train_detection/checkpoints/latest_model.pt \
+        --headless --use_sdpa --compile --log_epoch_interval 5
+    ```
+  * **No control run**: the Exp 032 confound (restart from 029 with a new LR schedule and a new Kaggle environment) is not isolated. A regression of classes that refinement should not touch would point to that confound rather than to the architecture.
+* **Results** (checkpoint of epoch 85, step 14,933; `evaluate_coco.py` on all 351 trainval pages; Exp 032 shown because it had the same restart from Exp 029):
+
+  | | Symbols AP / AP50 / AP75 | Lines AP / AP50 / AP75 | staff AP50 / AP |
+  |---|---|---|---|
+  | Exp 029 (epoch 100) | 0.768 / 0.919 / 0.845 | 0.748 / 0.827 / 0.772 | 0.935 / 0.837 |
+  | Exp 032 (restart, 30 epochs) | 0.692 / 0.886 / 0.773 | 0.668 / 0.776 / 0.690 | 0.824 / 0.666 |
+  | 034 layer 0 (block 9) | 0.645 / 0.902 / 0.745 | 0.518 / 0.677 / 0.545 | 0.209 / 0.094 |
+  | 034 layer 1 (block 10) | 0.652 / 0.917 / 0.749 | 0.528 / 0.693 / 0.552 | 0.304 / 0.141 |
+  | 034 final (block 11) | 0.655 / 0.920 / 0.751 | 0.530 / 0.696 / 0.553 | 0.312 / 0.143 |
+
+  * Other line classes, AP@[.5:.95] from Exp 029 to Exp 034 final: barLine 0.963 → 0.850, beam 0.977 → 0.913, ledgerLines 0.842 → 0.621, stem 0.835 → 0.606, system 0.973 → 0.777, voltaBracket 0.553 → 0.325.
+  * Training (`metrics.jsonl`, final layer on the training batch, noisy): the in-training line endpoint error jumped from Exp 029's ~0.06 to 0.32 at epoch 5 (warm start on block 9) and only came down to 0.15 at epoch 85, staying 2–3× above Exp 029 at every logged epoch. Symbol mAP50 on the training batch was similar to Exp 029. At epoch 85, pre-prediction loss 0.22, intermediate-layer loss (`loss_aux`) 0.51, DDF 0.18.
+  * Cost: 1,440 steps/h vs 1,828 for Exp 029 (1.27× slower, as predicted at small token counts). 100 epochs would need ~12.2 h, so `timeout 11h` stopped training after epoch 85 (10.3 h); the learning rate at that point was 5.5e-6, already near the end of the cosine schedule.
+  * Not done: the Analysis 003 staff diagnostics and the Analysis 002 oracle fraction. Given the size of the regression they would not change the conclusion.
+* **Conclusion**:
+  1. **Moving the first prediction to block 9 is what hurts, and refinement cannot repair it.** Layer 0 → final layer gains only +0.010 symbol AP and +0.012 line AP, while layer 0 is far below Exp 029. Detection itself survives (symbol AP50 0.920 = Exp 029), but localization does not: AP75 and the strict thresholds drop, and long objects collapse (staff AP50 0.935 → 0.312). D-FINE's refinement corrects each edge only within its bin range (±1 anchor scale with the D-FINE outer bins) around a **detached** coarse frame. Here, that frame comes from block-9 features: when it is far off, as it is for the long staff segments, no residual inside the range fixes it. The decoder of D-FINE refines from a strong encoder proposal; in a 12-block ViT, block 9 is not yet such a proposal.
+  2. **The restart confound explains only part of the drop.** Exp 032 (the same restart from Exp 029, unchanged architecture) lost 0.076 symbol AP and 0.080 line AP. Exp 034 lost 0.113 and 0.218, and staff lost far more than in Exp 032 (AP50 0.312 vs 0.824). So most of the line regression comes from the architecture, not the restart. Without a control run, the restart's share of the symbol drop stays unknown.
+  3. **Box conditioning through q/k injection gives the refinement layers too little to work with.** The two refinement blocks see their slot's current box only as an additive embedding; with PoPE they cannot attend to the far end of a segment (see the Exp 035 proposal below).
+  * **Next steps**:
+    * (a) Do not resume to epoch 100 (≈2 h of GPU time and a web-UI upload): the last 15 epochs run at LR ≤ 5.5e-6 and cannot close gaps of 0.1–0.6 AP.
+    * (b) Keep the Exp 029 prediction on block 11 and put the D-FINE chain **after** it: extra refinement blocks on top of the full backbone, so the frame comes from the best features.
+    * (c) Exp 035: give those refinement blocks **sparse deformable sampling** at the slot's predicted endpoints / edges. The patch tokens lie on a regular grid (`Patches.indices`, sorted), so bilinear sampling needs only `searchsorted` on the 4 neighbour cells, with a learned "blank" embedding for dropped (low-variance) cells. Its cost is linear in the number of queries, so it fits the 10k-token target.
+  * **Kaggle notes** (for future launches): (1) the `trompa-coco-cache` dataset holds a pickle made by the reverted Exp 032 code; it no longer loads (`SizeHistogram`), and it bakes in Exp 032 class weights. The notebook now parses the COCO JSON fresh (~1 min). (2) `kaggle kernels push` (CLI 2.1.2 and 2.2.5) silently drops `model_sources`, so a run that needs a model input must be launched from the web UI. The model then mounts at `/kaggle/input/models/kwonyoungchoi/music-deep/pytorch/train_detection/<version>/`. (3) `!` shell cells do not stop the notebook on failure, so a crash shows up as a "complete" run within minutes; cell 5 asserts its inputs in Python so it does stop.
+
