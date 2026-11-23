@@ -604,7 +604,7 @@
 
 ## Experiment 034: D-FINE Multi-Layer Refinement on the Last 3 ViT Blocks
 * **Experiment Name/ID**: `experiments/034_dfine_multilayer_refinement`
-* **Status**: 🚧 DRAFT: implemented and smoke-tested on branch `exp-034-dfine-multilayer-refinement`, not launched yet. Results and conclusion to fill in from `metrics.jsonl` and the COCO evaluation.
+* **Status**: ❌ Negative. Run on Kaggle (notebook version 44, branch `exp-034-dfine-multilayer-refinement` @ `4a21c5f`), stopped by the 11 h cap at epoch 85/100.
 * **Hypothesis/Goal**: Analysis 002 measured a refinement ceiling of +0.083 line / +0.132 symbol mAP@0.5:0.95. Analysis 003 found the far-endpoint error of long staff segments to be the largest staff failure. Reproduce D-FINE's Fine-grained Distribution Refinement (decoder of D-FINE-N, 3 layers) **inside the backbone**: block 9 predicts, blocks 10 and 11 refine. Unlike the Exp 031 frozen refiner, the detector is trained jointly.
 * **Setup**:
   * **Architecture** (`src/model/layered_detector.py`, `MultiLayerOMRDetector`), mapping D-FINE's DETR decoder to the dense head:
@@ -630,6 +630,27 @@
         --headless --use_sdpa --compile --log_epoch_interval 5
     ```
   * **No control run**: the Exp 032 confound (restart from 029 with a new LR schedule and a new Kaggle environment) is not isolated. A regression of classes that refinement should not touch would point to that confound rather than to the architecture.
-* **Results**: TBD. To report: global and per-class COCO (maxDets=2000) for the final layer and for `--eval_layer 0/1` (refinement should improve monotonically); staff diagnostics from Analysis 003 (far-endpoint error, share of mis-ranked segments); fraction recovered of the Analysis 002 oracle ceiling.
-* **Conclusion**: TBD.
+* **Results** (checkpoint of epoch 85, step 14,933; `evaluate_coco.py` on all 351 trainval pages; Exp 032 shown because it had the same restart from Exp 029):
+
+  | | Symbols AP / AP50 / AP75 | Lines AP / AP50 / AP75 | staff AP50 / AP |
+  |---|---|---|---|
+  | Exp 029 (epoch 100) | 0.768 / 0.919 / 0.845 | 0.748 / 0.827 / 0.772 | 0.935 / 0.837 |
+  | Exp 032 (restart, 30 epochs) | 0.692 / 0.886 / 0.773 | 0.668 / 0.776 / 0.690 | 0.824 / 0.666 |
+  | 034 layer 0 (block 9) | 0.645 / 0.902 / 0.745 | 0.518 / 0.677 / 0.545 | 0.209 / 0.094 |
+  | 034 layer 1 (block 10) | 0.652 / 0.917 / 0.749 | 0.528 / 0.693 / 0.552 | 0.304 / 0.141 |
+  | 034 final (block 11) | 0.655 / 0.920 / 0.751 | 0.530 / 0.696 / 0.553 | 0.312 / 0.143 |
+
+  * Other line classes, AP@[.5:.95] from Exp 029 to Exp 034 final: barLine 0.963 → 0.850, beam 0.977 → 0.913, ledgerLines 0.842 → 0.621, stem 0.835 → 0.606, system 0.973 → 0.777, voltaBracket 0.553 → 0.325.
+  * Training (`metrics.jsonl`, final layer on the training batch, noisy): the in-training line endpoint error jumped from Exp 029's ~0.06 to 0.32 at epoch 5 (warm start on block 9) and only came down to 0.15 at epoch 85, staying 2–3× above Exp 029 at every logged epoch. Symbol mAP50 on the training batch was similar to Exp 029. At epoch 85, pre-prediction loss 0.22, intermediate-layer loss (`loss_aux`) 0.51, DDF 0.18.
+  * Cost: 1,440 steps/h vs 1,828 for Exp 029 (1.27× slower, as predicted at small token counts). 100 epochs would need ~12.2 h, so `timeout 11h` stopped training after epoch 85 (10.3 h); the learning rate at that point was 5.5e-6, already near the end of the cosine schedule.
+  * Not done: the Analysis 003 staff diagnostics and the Analysis 002 oracle fraction. Given the size of the regression they would not change the conclusion.
+* **Conclusion**:
+  1. **Moving the first prediction to block 9 is what hurts, and refinement cannot repair it.** Layer 0 → final layer gains only +0.010 symbol AP and +0.012 line AP, while layer 0 is far below Exp 029. Detection itself survives (symbol AP50 0.920 = Exp 029), but localization does not: AP75 and the strict thresholds drop, and long objects collapse (staff AP50 0.935 → 0.312). D-FINE's refinement corrects each edge only within its bin range (±1 anchor scale with the D-FINE outer bins) around a **detached** coarse frame. Here, that frame comes from block-9 features: when it is far off, as it is for the long staff segments, no residual inside the range fixes it. The decoder of D-FINE refines from a strong encoder proposal; in a 12-block ViT, block 9 is not yet such a proposal.
+  2. **The restart confound explains only part of the drop.** Exp 032 (the same restart from Exp 029, unchanged architecture) lost 0.076 symbol AP and 0.080 line AP. Exp 034 lost 0.113 and 0.218, and staff lost far more than in Exp 032 (AP50 0.312 vs 0.824). So most of the line regression comes from the architecture, not the restart. Without a control run, the restart's share of the symbol drop stays unknown.
+  3. **Box conditioning through q/k injection gives the refinement layers too little to work with.** The two refinement blocks see their slot's current box only as an additive embedding; with PoPE they cannot attend to the far end of a segment (see the Exp 035 proposal below).
+  * **Next steps**:
+    * (a) Do not resume to epoch 100 (≈2 h of GPU time and a web-UI upload): the last 15 epochs run at LR ≤ 5.5e-6 and cannot close gaps of 0.1–0.6 AP.
+    * (b) Keep the Exp 029 prediction on block 11 and put the D-FINE chain **after** it: extra refinement blocks on top of the full backbone, so the frame comes from the best features.
+    * (c) Exp 035: give those refinement blocks **sparse deformable sampling** at the slot's predicted endpoints / edges. The patch tokens lie on a regular grid (`Patches.indices`, sorted), so bilinear sampling needs only `searchsorted` on the 4 neighbour cells, with a learned "blank" embedding for dropped (low-variance) cells. Its cost is linear in the number of queries, so it fits the 10k-token target.
+  * **Kaggle notes** (for future launches): (1) the `trompa-coco-cache` dataset holds a pickle made by the reverted Exp 032 code; it no longer loads (`SizeHistogram`), and it bakes in Exp 032 class weights. The notebook now parses the COCO JSON fresh (~1 min). (2) `kaggle kernels push` (CLI 2.1.2 and 2.2.5) silently drops `model_sources`, so a run that needs a model input must be launched from the web UI. The model then mounts at `/kaggle/input/models/kwonyoungchoi/music-deep/pytorch/train_detection/<version>/`. (3) `!` shell cells do not stop the notebook on failure, so a crash shows up as a "complete" run within minutes; cell 5 asserts its inputs in Python so it does stop.
 
