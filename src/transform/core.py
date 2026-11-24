@@ -310,8 +310,9 @@ def resize_patches_img[B: Batch, N: NumPatches, D: PatchDim](
     if ph == target_ph and pw == target_pw:
         return patches
 
-    # Reshape to (B*N, C, ph, pw) for 2D interpolation
-    patches_2d = patches.data.view(b * n, c, ph, pw)
+    # Patches are flattened as (ph, pw, C) by extract_patches_img; interpolate
+    # channels-first, then restore that layout.
+    patches_2d = patches.data.view(b * n, ph, pw, c).permute(0, 3, 1, 2)
 
     resized_2d = F.interpolate(
         patches_2d,
@@ -320,8 +321,9 @@ def resize_patches_img[B: Batch, N: NumPatches, D: PatchDim](
         align_corners=False,
     )
 
-    # Flatten back to (B, N, C * target_ph * target_pw)
-    resized_flat = resized_2d.view(b, n, c * target_ph * target_pw)
+    resized_flat = resized_2d.permute(0, 2, 3, 1).reshape(
+        b, n, target_ph * target_pw * c
+    )
 
     # CRITICAL: Update image_shape so the ViT's RoPE grid dimensions remain identical
     grid_h, grid_w = h // ph, w // pw
