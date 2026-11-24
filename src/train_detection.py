@@ -6,7 +6,8 @@ import os
 from typing import ContextManager, cast
 from pathlib import Path
 from typing import Generator, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import itertools
 from itertools import batched
 from contextlib import nullcontext
 import torch
@@ -19,7 +20,19 @@ from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
 import transform.det as det_tf
-from threaded_generator import ThreadedGenerator, Monitor
+from threaded_generator import (
+    Monitor,
+    ParallelGenerator,
+    PartialGenerator,
+    ThreadedGenerator,
+)
+from dataset.synthetic import (
+    SYMBOL_NAMES,
+    GlyphAtlas,
+    SyntheticConfig,
+    SyntheticPageGenerator,
+    page_to_sample,
+)
 from metric import compute_map_50, compute_mean_iou, compute_mean_endpoint_error
 from visualization import update_plot, reconstruct_image_from_patches
 from logger import ExperimentLogger, BaseMetrics
@@ -34,6 +47,7 @@ from music_types import (
     CHW,
     RGB,
     Float1,
+    Int255,
     BoundingBoxes,
     ClassLabels,
     Keypoints,
@@ -123,6 +137,9 @@ class TrainParams:
     stage_name: str
     headless: bool
     use_monitor: bool
+    synthetic: SyntheticConfig | None
+    synthetic_workers: int
+    verovio_root: Path
 
 
 @dataclass
@@ -138,19 +155,17 @@ class TrainStepResult:
     symbols_processed: int
 
 
-def transform_image(
-    index: int,
-    dataset: CocoDataset,
-    img_dir: Path,
-    crop_size: int | None,
-    prep_device: torch.device,
-    affine: bool,
-    morphological_downscale: float | None,
-    max_translate_frac: float,
-    max_angle_deg: float,
-    max_shear_deg: float,
-    max_scale: float,
-) -> Data[
+type DecodedItem = Data[
+    CocoMetadata,
+    DetectionSample[
+        TensorImage[CHW, RGB, Int255],
+        BoundingBoxes,
+        ClassLabels,
+        Keypoints,
+        ClassLabels,
+    ],
+]
+type TransformedItem = Data[
     CocoMetadata,
     DetectionSample[
         TensorImage[CHW, RGB, Float1],
@@ -159,9 +174,34 @@ def transform_image(
         Keypoints,
         ClassLabels,
     ],
-]:
-    """Preprocessing: Load -> Decode/Crop -> Float1 -> Augment."""
-    item = load_coco_sample(dataset, img_dir, index, prep_device)
+]
+
+
+def augment_item(item: DecodedItem, params: TrainParams) -> TransformedItem:
+    """Float1 -> optional morphological downscale -> optional affine."""
+    item_tf = det_tf.to_float1(item)
+
+    if params.morphological_downscale is not None:
+        item_tf = det_tf.random_morphological_downscale(
+            item_tf, max_scale_factor=params.morphological_downscale
+        )
+
+    if params.affine:
+        return det_tf.random_affine(
+            item_tf,
+            max_translate_frac=params.max_translate_frac,
+            max_angle_deg=params.max_angle_deg,
+            max_shear_deg=params.max_shear_deg,
+            max_scale=params.max_scale,
+        )
+    return item_tf
+
+
+def transform_image(index: int, params: TrainParams) -> TransformedItem:
+    """Preprocessing of a real page: Load -> Decode/Crop -> augment_item."""
+    prep_device = params.prep_device
+    crop_size = params.crop_size
+    item = load_coco_sample(params.dataset, params.img_dir, index, prep_device)
 
     if prep_device.type == "cuda":
         item_decoded = det_tf.decode_nvimgcodec(item, device=prep_device)
@@ -177,25 +217,52 @@ def transform_image(
         else:
             item_cropped = det_tf.decode_pyvips(item, device=prep_device)
 
-    item_tf = det_tf.to_float1(item_cropped)
+    return augment_item(item_cropped, params)
 
-    if morphological_downscale is not None:
-        item_tf = det_tf.random_morphological_downscale(
-            item_tf, max_scale_factor=morphological_downscale
-        )
 
-    if affine:
-        item_aug = det_tf.random_affine(
-            item_tf,
-            max_translate_frac=max_translate_frac,
-            max_angle_deg=max_angle_deg,
-            max_shear_deg=max_shear_deg,
-            max_scale=max_scale,
-        )
-    else:
-        item_aug = item_tf
+def real_items(params: TrainParams) -> Generator[TransformedItem]:
+    """Real pages, reshuffled at every epoch, forever."""
+    indices = list(range(len(params.dataset.images)))
+    while True:
+        random.shuffle(indices)
+        for idx in indices:
+            yield transform_image(idx, params)
 
-    return item_aug
+
+def synthetic_items(
+    atlas: GlyphAtlas, config: SyntheticConfig, params: TrainParams
+) -> Generator[TransformedItem]:
+    """Freshly generated synthetic pages, forever (one generator per thread)."""
+    generator = SyntheticPageGenerator(atlas, config)
+    for index in itertools.count():
+        sample = page_to_sample(generator.generate(), index, params.prep_device)
+        yield augment_item(sample, params)
+
+
+def parallel_synthetic_items(
+    config: SyntheticConfig, params: TrainParams, rank: int
+) -> ParallelGenerator[TransformedItem]:
+    """Synthetic pages from ``params.synthetic_workers`` threads.
+
+    The atlas is shared and fully rendered first (FreeType is not thread-safe);
+    each thread gets its own page generator, with seeds far enough apart that no
+    two threads or ranks generate the same page.
+    """
+    atlas = GlyphAtlas(verovio_root=params.verovio_root, fonts=config.fonts)
+    atlas.prerender(SYMBOL_NAMES)
+    workers = itertools.count()
+
+    def worker_items() -> Generator[TransformedItem]:
+        worker = next(workers)
+        seed = config.seed + (rank * 64 + worker) * 1_000_000_000
+        return synthetic_items(atlas, replace(config, seed=seed), params)
+
+    return ParallelGenerator(
+        PartialGenerator(worker_items),
+        num_workers=params.synthetic_workers,
+        maxsize=2 * params.synthetic_workers,
+        name="synthetic_pages",
+    )
 
 
 def log_patch_count(iterator, enabled: bool):
@@ -208,7 +275,7 @@ def log_patch_count(iterator, enabled: bool):
 
 
 def create_detection_iterator(
-    params: TrainParams,
+    params: TrainParams, rank: int = 0
 ) -> Generator[
     BatchedData[
         CocoMetadata,
@@ -224,63 +291,44 @@ def create_detection_iterator(
     None,
 ]:
     """Creates an infinite Python generator pipeline for detection data."""
-    num_images = len(params.dataset.images)
-    indices = list(range(num_images))
+    items: Iterable[TransformedItem] = (
+        parallel_synthetic_items(params.synthetic, params, rank)
+        if params.synthetic is not None
+        else real_items(params)
+    )
 
     def _pipeline():
-        while True:
-            # 1. Shuffle indices at the start of every epoch
-            random.shuffle(indices)
-
-            # 2. Map the combined load+transform function over the indices
-            transformed_gen = (
-                transform_image(
-                    idx,
-                    params.dataset,
-                    params.img_dir,
-                    params.crop_size,
-                    params.prep_device,
-                    affine=params.affine,
-                    morphological_downscale=params.morphological_downscale,
-                    max_translate_frac=params.max_translate_frac,
-                    max_angle_deg=params.max_angle_deg,
-                    max_shear_deg=params.max_shear_deg,
-                    max_scale=params.max_scale,
-                )
-                for idx in indices
+        # Chunk into batches, collate, and extract patches
+        for batch_items in batched(items, params.batch_size):
+            # 1. Collate, pad to batch max, and extract patches with a random size
+            patched_item = det_tf.random_extract_patches_and_collate(
+                batch_items,
+                min_patch_size=params.extract_patch_min,
+                max_patch_size=params.extract_patch_max,
             )
 
-            # 3. Chunk into batches, collate, and extract patches
-            for batch_items in batched(transformed_gen, params.batch_size):
-                # 1. Collate, pad to batch max, and extract patches with a random size
-                patched_item = det_tf.random_extract_patches_and_collate(
-                    batch_items,
-                    min_patch_size=params.extract_patch_min,
-                    max_patch_size=params.extract_patch_max,
-                )
+            # 2. Normalize targets to Patch Units (PU) using the extracted patch size
+            norm_item = det_tf.normalize_batched_targets(patched_item)
 
-                # 2. Normalize targets to Patch Units (PU) using the extracted patch size
-                norm_item = det_tf.normalize_batched_targets(patched_item)
+            # 3. Drop patches based on variance
+            dropped_item = det_tf.variance_patch_drop(
+                norm_item,
+                var_threshold=params.var_threshold,
+                drop_rate=params.drop_rate,
+                topk=params.topk_patches,
+            )
 
-                # 3. Drop patches based on variance
-                dropped_item = det_tf.variance_patch_drop(
-                    norm_item,
-                    var_threshold=params.var_threshold,
-                    drop_rate=params.drop_rate,
-                    topk=params.topk_patches,
-                )
+            # 4. Resize the surviving patches to the ViT's static capacity (64x64)
+            resized_item = det_tf.resize_patches(
+                dropped_item,
+                target_patch_size=(params.patch_size, params.patch_size),
+            )
 
-                # 4. Resize the surviving patches to the ViT's static capacity (64x64)
-                resized_item = det_tf.resize_patches(
-                    dropped_item,
-                    target_patch_size=(params.patch_size, params.patch_size),
-                )
-
-                # 5. Move to GPU
-                final_item = det_tf.to_patches(
-                    resized_item, device=params.train_device
-                )
-                yield final_item
+            # 5. Move to GPU
+            final_item = det_tf.to_patches(
+                resized_item, device=params.train_device
+            )
+            yield final_item
 
     return log_patch_count(_pipeline(), params.log_patches)
 
@@ -682,7 +730,7 @@ def train(params: TrainParams):
 
     # 1. Data loading thread
     data_iterator = ThreadedGenerator(
-        create_detection_iterator(params),
+        create_detection_iterator(params, global_rank),
         maxsize=params.loader_maxsize,
         name="det_pipeline",
         monitor=monitor,
@@ -1065,6 +1113,26 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable the threaded generator monitor dashboard",
     )
+    synth = parser.add_argument_group(
+        "synthetic pretraining",
+        "Train on on-the-fly synthetic pages (dataset.synthetic) instead of the "
+        "real images. --anno_path still gives the classes and the epoch size.",
+    )
+    synth.add_argument("--synthetic", action="store_true")
+    synth.add_argument("--synth_workers", type=int, default=2)
+    synth.add_argument("--synth_page_size", type=int, default=4096)
+    synth.add_argument("--synth_staff_space_min", type=float, default=24.0)
+    synth.add_argument("--synth_staff_space_max", type=float, default=96.0)
+    synth.add_argument("--synth_objects_per_page", type=int, default=960)
+    synth.add_argument("--synth_lines_per_page", type=int, default=800)
+    synth.add_argument("--synth_line_max_pair_overlap", type=float, default=0.9)
+    synth.add_argument(
+        "--synth_fonts", type=str, default="Bravura,Leland,Leipzig,Gootville"
+    )
+    synth.add_argument("--synth_seed", type=int, default=0)
+    synth.add_argument(
+        "--verovio_root", type=Path, default=Path("/home/kwon-young/prog/verovio")
+    )
 
     args = parser.parse_args()
 
@@ -1094,6 +1162,31 @@ if __name__ == "__main__":
         variance_lambda=args.class_weight_variance_lambda,
         size_difficulty_max=args.class_weight_size_difficulty_max,
     )
+
+    synthetic_config = (
+        SyntheticConfig(
+            page_size=args.synth_page_size,
+            staff_space_min=args.synth_staff_space_min,
+            staff_space_max=args.synth_staff_space_max,
+            objects_per_page=args.synth_objects_per_page,
+            lines_per_page=args.synth_lines_per_page,
+            line_max_pair_overlap=args.synth_line_max_pair_overlap,
+            fonts=tuple(f.strip() for f in args.synth_fonts.split(",")),
+            seed=args.synth_seed,
+        )
+        if args.synthetic
+        else None
+    )
+    if synthetic_config is not None:
+        # Synthetic pages sample every class uniformly, so the real-data
+        # inverse-frequency weights would over-boost rare classes. Use uniform
+        # weights with the same mean, which keeps the overall loss scale.
+        dataset.symbol_weights = [
+            sum(dataset.symbol_weights) / len(dataset.symbol_weights)
+        ] * len(dataset.symbol_weights)
+        dataset.line_weights = [
+            sum(dataset.line_weights) / len(dataset.line_weights)
+        ] * len(dataset.line_weights)
 
     # Restrict dataset labels if requested
     if args.include_labels:
@@ -1171,6 +1264,9 @@ if __name__ == "__main__":
         stage_name=args.stage_name,
         headless=args.headless,
         use_monitor=args.monitor,
+        synthetic=synthetic_config,
+        synthetic_workers=args.synth_workers,
+        verovio_root=args.verovio_root,
     )
 
     train(params)
