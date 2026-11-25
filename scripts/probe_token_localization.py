@@ -30,7 +30,7 @@ import json
 import random
 import re
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import torch
@@ -257,6 +257,23 @@ def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> OMRDe
     return model
 
 
+def page_to(page: PageInput, device: torch.device) -> PageInput:
+    """Moves a page decoded on CPU to the device; only the kept patches travel."""
+    patches = replace(
+        page.patches,
+        data=page.patches.data.to(device),
+        indices=page.patches.indices.to(device),
+    )
+    return replace(
+        page,
+        patches=patches,
+        boxes=page.boxes.to(device),
+        box_labels=page.box_labels.to(device),
+        keypoints=page.keypoints.to(device),
+        keypoint_labels=page.keypoint_labels.to(device),
+    )
+
+
 def page_inputs(
     dataset: CocoDataset,
     cfg: Config,
@@ -439,12 +456,22 @@ def collect_points(
     rng = torch.Generator().manual_seed(cfg.seed)
     tables: list[PointTable] = []
     loader = ThreadedGenerator(
-        page_inputs(dataset, cfg, indices, device), maxsize=2, name="pages"
+        page_inputs(dataset, cfg, indices, torch.device("cpu")),
+        maxsize=2,
+        name="pages",
     )
     with torch.no_grad(), loader as pages:
         for n, page in enumerate(pages, start=1):
             tables.append(
-                extract_page(model, taps, cfg.taps, page, piece_ids[page.piece], cfg, rng)
+                extract_page(
+                    model,
+                    taps,
+                    cfg.taps,
+                    page_to(page, device),
+                    piece_ids[page.piece],
+                    cfg,
+                    rng,
+                )
             )
             if n % 10 == 0 or n == len(indices):
                 print(f"  features: {n}/{len(indices)} pages", flush=True)
