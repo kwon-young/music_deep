@@ -8,6 +8,7 @@ from model.refiner import (
     EndpointRefiner,
     LineQueries,
     QualityHead,
+    RefineStep,
     TokenGrid,
     fgl_loss,
     line_oks,
@@ -78,6 +79,43 @@ class TestRefiner(unittest.TestCase):
         for out in outputs:
             self.assertTrue(bool(torch.isfinite(out.endpoints).all()))
             torch.testing.assert_close(out.endpoints, endpoints)
+
+    def test_num_steps_override_reuses_last_step(self) -> None:
+        torch.manual_seed(0)
+        grid = grid_with_drops(6, 6, dropped=[7, 20], dim=12)
+        refiner = EndpointRefiner(dim=12, num_classes=3, num_steps=2, heads=3)
+        for step in refiner.steps:
+            assert isinstance(step, RefineStep)
+            # Non-zero bins so every step actually moves the endpoints.
+            torch.nn.init.normal_(step.to_bins.weight, std=0.5)
+        refiner.eval()
+        queries = LineQueries(
+            image=torch.tensor([0, 0, 0]),
+            source=torch.tensor([3, 10, 25]),
+            label=torch.tensor([0, 2, 1]),
+            endpoints=torch.tensor(
+                [[1.2, 1.4, 4.6, 1.5], [2.5, 0.3, 2.4, 5.2], [0.1, 5.8, 5.9, 0.2]]
+            ),
+        )
+        with torch.no_grad():
+            default = refiner(grid, queries)
+            explicit = refiner(grid, queries, num_steps=2)
+            short = refiner(grid, queries, num_steps=1)
+            long = refiner(grid, queries, num_steps=4)
+            none = refiner(grid, queries, num_steps=0)
+
+        self.assertEqual([len(default), len(short), len(long), len(none)], [2, 1, 4, 0])
+        for a, b in zip(default, explicit):
+            self.assertTrue(torch.equal(a.endpoints, b.endpoints))
+        self.assertTrue(torch.equal(short[0].endpoints, default[0].endpoints))
+        for s in range(2):
+            self.assertTrue(torch.equal(long[s].endpoints, default[s].endpoints))
+        # Steps 3 and 4 are the last trained step applied again, from the previous estimate.
+        self.assertTrue(torch.equal(long[2].start, long[1].endpoints))
+        self.assertFalse(torch.equal(long[3].endpoints, long[1].endpoints))
+        self.assertIs(refiner.schedule(4)[3], refiner.steps[1])
+        with self.assertRaises(ValueError):
+            refiner.schedule(-1)
 
     def test_fgl_loss_is_minimal_at_target_bin(self) -> None:
         weights = torch.linspace(-0.5, 0.5, 9)

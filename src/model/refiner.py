@@ -261,13 +261,27 @@ class EndpointRefiner(nn.Module):
         )
         return line.unsqueeze(1) + self.end_emb.weight.unsqueeze(0) + self.direction(direction)
 
-    def forward(self, grid: TokenGrid, queries: LineQueries) -> list[RefinedEndpoints]:
+    def schedule(self, num_steps: int | None) -> list[nn.Module]:
+        """The step modules to apply: all trained steps when ``num_steps`` is None, otherwise
+        the first ``num_steps`` of them, the last trained step repeating beyond them."""
+        trained = list(self.steps)
+        if num_steps is None:
+            return trained
+        if num_steps < 0:
+            raise ValueError(f"num_steps must be >= 0, got {num_steps}")
+        return [trained[min(i, len(trained) - 1)] for i in range(num_steps)]
+
+    def forward(
+        self, grid: TokenGrid, queries: LineQueries, num_steps: int | None = None
+    ) -> list[RefinedEndpoints]:
+        """One output per applied step; ``num_steps`` overrides the trained count (see
+        ``schedule``), each extra application re-centring the window once more."""
         num = queries.endpoints.shape[0]
         state = self.initial_state(grid, queries).reshape(2 * num, -1)
         image = queries.image.repeat_interleave(2)
         points = queries.endpoints.detach().reshape(2 * num, 2)
         outputs: list[RefinedEndpoints] = []
-        for step in self.steps:
+        for step in self.schedule(num_steps):
             start = points.detach()
             read: tuple[torch.Tensor, torch.Tensor] = step(state, grid, image, start)
             state, logits = read

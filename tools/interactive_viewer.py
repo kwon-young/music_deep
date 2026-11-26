@@ -1,6 +1,7 @@
 import math
 import sys
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 import torch
@@ -23,11 +24,13 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QProgressBar,
     QCheckBox,
+    QSpinBox,
 )
 from PySide6.QtGui import QPixmap, QPen, QColor, QPainter, QImage
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal
 
 from model.detector import create_detector
+from model.refiner import EndpointRefiner, LineQueries, RefinedEndpoints, TokenGrid
 from dataset.coco import parse_coco
 import transform.core as core_tf
 from music_types import TensorImage, CHW, RGB, Int255, Float1, Batch
@@ -108,8 +111,138 @@ class ZoomPanGraphicsView(QGraphicsView):
             super().mouseReleaseEvent(event)
 
 
+LineResult = tuple[float, float, float, float, float, int]
+
+MAX_REFINE_STEPS = 8
+
+
+@dataclass(frozen=True)
+class LineCache:
+    """What the refiner needs from one detector pass, so it can rerun without the backbone:
+    the kept final tokens and the kept coarse lines (patch units) with their scores."""
+
+    grid: TokenGrid
+    queries: LineQueries
+    scores: torch.Tensor
+
+
+@dataclass(frozen=True)
+class RefinedLines:
+    """Lines of ``cache`` after ``num_steps`` refiner applications, (N, 4) in patch units."""
+
+    cache: LineCache
+    num_steps: int
+    endpoints: torch.Tensor
+    lines: list[LineResult]
+
+
+def load_refiner(
+    path: Path, dim: int, num_classes: int, device: torch.device
+) -> EndpointRefiner:
+    saved: dict[str, object] = torch.load(path, map_location=device, weights_only=True)
+    config = saved["config"]
+    state = saved["refiner"]
+    assert isinstance(config, dict) and isinstance(state, dict)
+    refiner = EndpointRefiner(
+        dim=dim,
+        num_classes=num_classes,
+        num_steps=int(str(config["num_steps"])),
+        heads=int(str(config["heads"])),
+        scale=float(str(config["scale"])),
+    ).to(device)
+    refiner.load_state_dict(state)
+    refiner.eval()
+    return refiner
+
+
+def pixel_lines(
+    endpoints: torch.Tensor,
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    patch_size: int,
+    img_w: int,
+    img_h: int,
+) -> list[LineResult]:
+    """(N, 4) patch-unit endpoints -> pixel lines clipped to the image."""
+    px = (endpoints * patch_size).float()
+    px[:, 0::2] = px[:, 0::2].clamp(0.0, float(img_w))
+    px[:, 1::2] = px[:, 1::2].clamp(0.0, float(img_h))
+    return [
+        (float(x1), float(y1), float(x2), float(y2), float(score), int(label))
+        for (x1, y1, x2, y2), score, label in zip(
+            px.tolist(), scores.tolist(), labels.tolist()
+        )
+    ]
+
+
+def refine_lines(
+    refiner: EndpointRefiner,
+    cache: LineCache,
+    num_steps: int,
+    patch_size: int,
+    img_w: int,
+    img_h: int,
+) -> RefinedLines:
+    endpoints = cache.queries.endpoints
+    if num_steps > 0 and endpoints.shape[0] > 0:
+        with torch.no_grad():
+            outputs: list[RefinedEndpoints] = refiner(
+                cache.grid, cache.queries, num_steps=num_steps
+            )
+        endpoints = outputs[-1].endpoints
+    lines = pixel_lines(
+        endpoints, cache.scores, cache.queries.label, patch_size, img_w, img_h
+    )
+    return RefinedLines(cache=cache, num_steps=num_steps, endpoints=endpoints, lines=lines)
+
+
 class InferenceSignals(QObject):
-    inference_done = Signal(int, list, list, list)
+    # task id, symbols, coarse lines, dropped patches, LineCache | None, RefinedLines | None
+    inference_done = Signal(int, list, list, list, object, object)
+
+
+class RefineSignals(QObject):
+    refine_done = Signal(int, object)
+
+
+class RefineTask(QRunnable):
+    """Reruns only the refiner on cached tokens: cheap enough for every UI change."""
+
+    def __init__(
+        self,
+        refiner: EndpointRefiner,
+        cache: LineCache,
+        num_steps: int,
+        patch_size: int,
+        img_w: int,
+        img_h: int,
+        refine_id: int,
+    ) -> None:
+        super().__init__()
+        self.refiner = refiner
+        self.cache = cache
+        self.num_steps = num_steps
+        self.patch_size = patch_size
+        self.img_w = img_w
+        self.img_h = img_h
+        self.refine_id = refine_id
+        self.signals = RefineSignals()
+
+    def run(self) -> None:
+        try:
+            refined = refine_lines(
+                self.refiner,
+                self.cache,
+                self.num_steps,
+                self.patch_size,
+                self.img_w,
+                self.img_h,
+            )
+        except Exception as e:
+            print(f"Refinement error: {e}")
+            self.signals.refine_done.emit(self.refine_id, None)
+            return
+        self.signals.refine_done.emit(self.refine_id, refined)
 
 
 class InferenceTask(QRunnable):
@@ -126,8 +259,14 @@ class InferenceTask(QRunnable):
         use_amp,
         task_id,
         viewport_indices=None,
+        refiner: EndpointRefiner | None = None,
+        refine_steps: int | None = None,
+        num_shapes: int = 5,
     ):
         super().__init__()
+        self.refiner = refiner
+        self.refine_steps = refine_steps
+        self.num_shapes = num_shapes
         self.model = model
         self.patched_img = patched_img
         self.patch_size = patch_size
@@ -155,7 +294,7 @@ class InferenceTask(QRunnable):
                     keep_indices = keep_indices[:, mask]
 
                 if keep_indices.shape[1] == 0:
-                    self.signals.inference_done.emit(self.task_id, [], [], [])
+                    self.signals.inference_done.emit(self.task_id, [], [], [], None, None)
                     return
 
                 # --- Compute dropped patch coordinates for visualization ---
@@ -182,12 +321,31 @@ class InferenceTask(QRunnable):
                 )
                 # Move the patched image to the target device before inference
                 dropped_img = core_tf.to_device_embeddings(dropped_img, self.device)
-                with torch.autocast(
-                    device_type=self.device.type,
-                    dtype=torch.float16,
-                    enabled=self.use_amp,
-                ):
-                    outputs = self.model(dropped_img)
+                final: list[torch.Tensor] = []
+
+                def keep_final(
+                    module: torch.nn.Module,
+                    args: tuple[torch.Tensor, ...],
+                    output: torch.Tensor,
+                ) -> None:
+                    final.append(output)
+
+                norm = self.model.backbone.transformer.norm
+                handle = (
+                    norm.register_forward_hook(keep_final)
+                    if self.refiner is not None
+                    else None
+                )
+                try:
+                    with torch.autocast(
+                        device_type=self.device.type,
+                        dtype=torch.float16,
+                        enabled=self.use_amp,
+                    ):
+                        outputs = self.model(dropped_img)
+                finally:
+                    if handle is not None:
+                        handle.remove()
 
                 sym_results = []
                 sym_logits = outputs.symbols.pred_logits.data[0]
@@ -212,35 +370,61 @@ class InferenceTask(QRunnable):
                     y2 = max(0.0, min(y2, float(self.img_h)))
                     sym_results.append((x1, y1, x2, y2, score.item(), label.item()))
 
-                line_results = []
                 line_logits = outputs.lines.pred_logits.data[0]
                 line_kps = outputs.lines.pred_keypoints.data[0]
                 line_probs = torch.sigmoid(line_logits)
                 line_max_probs, line_labels = line_probs.max(dim=-1)
 
-                line_keep = line_max_probs >= self.threshold
-                line_kps_kept = line_kps[line_keep]
-                line_labels_kept = line_labels[line_keep]
-                line_scores_kept = line_max_probs[line_keep]
+                line_kept = (line_max_probs >= self.threshold).nonzero().squeeze(1)
+                coarse = line_kps[line_kept].float()
+                line_scores_kept = line_max_probs[line_kept]
+                line_labels_kept = line_labels[line_kept]
+                line_results = pixel_lines(
+                    coarse,
+                    line_scores_kept,
+                    line_labels_kept,
+                    self.patch_size,
+                    self.img_w,
+                    self.img_h,
+                )
 
-                line_kps_kept[:, [0, 1, 2, 3]] *= self.patch_size
-
-                for kp, score, label in zip(
-                    line_kps_kept, line_scores_kept, line_labels_kept
-                ):
-                    x1, y1, x2, y2 = kp.tolist()
-                    x1 = max(0.0, min(x1, float(self.img_w)))
-                    y1 = max(0.0, min(y1, float(self.img_h)))
-                    x2 = max(0.0, min(x2, float(self.img_w)))
-                    y2 = max(0.0, min(y2, float(self.img_h)))
-                    line_results.append((x1, y1, x2, y2, score.item(), label.item()))
+                cache: LineCache | None = None
+                refined: RefinedLines | None = None
+                if self.refiner is not None and final:
+                    # Each kept line query q comes from token q // num_shapes.
+                    cache = LineCache(
+                        grid=TokenGrid.from_batch(
+                            final[0], dropped_img.indices, grid_h, grid_w
+                        ),
+                        queries=LineQueries(
+                            image=torch.zeros_like(line_kept),
+                            source=line_kept // self.num_shapes,
+                            label=line_labels_kept,
+                            endpoints=coarse,
+                        ),
+                        scores=line_scores_kept,
+                    )
+                    if self.refine_steps is not None:
+                        refined = refine_lines(
+                            self.refiner,
+                            cache,
+                            self.refine_steps,
+                            self.patch_size,
+                            self.img_w,
+                            self.img_h,
+                        )
 
                 self.signals.inference_done.emit(
-                    self.task_id, sym_results, line_results, dropped_patches
+                    self.task_id,
+                    sym_results,
+                    line_results,
+                    dropped_patches,
+                    cache,
+                    refined,
                 )
         except Exception as e:
             print(f"Inference error: {e}")
-            self.signals.inference_done.emit(self.task_id, [], [], [])
+            self.signals.inference_done.emit(self.task_id, [], [], [], None, None)
 
 
 class InteractiveViewer(QMainWindow):
@@ -261,6 +445,13 @@ class InteractiveViewer(QMainWindow):
         self.current_path = None
         self.img_w = 0
         self.img_h = 0
+        self.refiner: EndpointRefiner | None = None
+        self.refine_id = 0
+        self.line_cache: LineCache | None = None
+        self.refined: RefinedLines | None = None
+        self.sym_results: list[tuple[float, float, float, float, float, int]] = []
+        self.coarse_lines: list[LineResult] = []
+        self.dropped_patches: list[tuple[int, int, int, int]] = []
 
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(1)
@@ -301,6 +492,16 @@ class InteractiveViewer(QMainWindow):
         self.model.load_state_dict(checkpoint["model"])
         self.model.eval()
         print("Model loaded successfully.")
+
+        if self.args.refiner_checkpoint is not None:
+            print(f"Loading endpoint refiner from {self.args.refiner_checkpoint}")
+            self.refiner = load_refiner(
+                self.args.refiner_checkpoint,
+                dim=self.model.backbone.transformer.norm.normalized_shape[0],
+                num_classes=dataset.num_line_classes,
+                device=self.device,
+            )
+            print(f"Refiner loaded ({len(self.refiner.steps)} trained steps).")
 
     def init_ui(self):
         self.setWindowTitle("Interactive OMR Viewer")
@@ -344,6 +545,34 @@ class InteractiveViewer(QMainWindow):
         self.conf_slider.setValue(int(self.conf_threshold * 100))
         self.conf_slider.valueChanged.connect(self.on_conf_changed)
         controls_layout.addWidget(self.conf_slider)
+
+        if self.refiner is not None:
+            controls_layout.addSpacing(20)
+            trained_steps = len(self.refiner.steps)
+
+            self.refine_checkbox = QCheckBox("Refine lines")
+            self.refine_checkbox.setChecked(True)
+            self.refine_checkbox.toggled.connect(self.sync_refinement)
+            controls_layout.addWidget(self.refine_checkbox)
+
+            self.refine_steps_spin = QSpinBox()
+            self.refine_steps_spin.setRange(0, MAX_REFINE_STEPS)
+            self.refine_steps_spin.setValue(trained_steps)
+            self.refine_steps_spin.setPrefix("steps: ")
+            self.refine_steps_spin.setToolTip(
+                f"Refiner applications (trained: {trained_steps}). 0 = coarse lines; "
+                "beyond the trained count the last step is applied again."
+            )
+            self.refine_steps_spin.valueChanged.connect(self.sync_refinement)
+            controls_layout.addWidget(self.refine_steps_spin)
+
+            self.show_coarse_checkbox = QCheckBox("Show coarse")
+            self.show_coarse_checkbox.setChecked(False)
+            self.show_coarse_checkbox.setToolTip(
+                "Also draw the detector's coarse lines (thin orange) under the refined ones"
+            )
+            self.show_coarse_checkbox.toggled.connect(self.redraw)
+            controls_layout.addWidget(self.show_coarse_checkbox)
 
         controls_layout.addSpacing(20)
 
@@ -490,6 +719,8 @@ class InteractiveViewer(QMainWindow):
 
         self.spinner.show()
         self.task_id += 1
+        # Any refinement still pending belongs to the previous inference.
+        self.refine_id += 1
         
         viewport_indices = None
         if self.viewport_crop_checkbox.isChecked():
@@ -507,15 +738,81 @@ class InteractiveViewer(QMainWindow):
             self.args.use_amp,
             self.task_id,
             viewport_indices=viewport_indices,
+            refiner=self.refiner,
+            refine_steps=self.requested_refine_steps(),
+            num_shapes=self.args.num_shapes,
         )
         task.signals.inference_done.connect(self.display_results)
         self.thread_pool.start(task)
 
-    def display_results(self, task_id, sym_results, line_results, dropped_patches):
+    def requested_refine_steps(self) -> int | None:
+        """Refiner applications wanted by the UI, None when refinement is off."""
+        if self.refiner is None or not self.refine_checkbox.isChecked():
+            return None
+        return self.refine_steps_spin.value()
+
+    def sync_refinement(self) -> None:
+        """Brings the refined lines in line with the UI, rerunning only the refiner on the
+        cached tokens of the last inference (off the GUI thread) when they are stale."""
+        steps = self.requested_refine_steps()
+        if steps is None or self.refiner is None or self.line_cache is None:
+            self.refine_id += 1
+            self.refined = None
+            self.redraw()
+            return
+        current = self.refined
+        if (
+            current is not None
+            and current.cache is self.line_cache
+            and current.num_steps == steps
+        ):
+            self.redraw()
+            return
+        self.refine_id += 1
+        self.spinner.show()
+        task = RefineTask(
+            self.refiner,
+            self.line_cache,
+            steps,
+            self.args.patch_size,
+            self.img_w,
+            self.img_h,
+            self.refine_id,
+        )
+        task.signals.refine_done.connect(self.on_refine_done)
+        self.thread_pool.start(task)
+
+    def on_refine_done(self, refine_id: int, refined: RefinedLines | None) -> None:
+        if refine_id != self.refine_id:
+            return
+        self.spinner.hide()
+        self.refined = refined
+        self.redraw()
+
+    def display_results(
+        self,
+        task_id: int,
+        sym_results: list[tuple[float, float, float, float, float, int]],
+        line_results: list[LineResult],
+        dropped_patches: list[tuple[int, int, int, int]],
+        line_cache: LineCache | None,
+        refined: RefinedLines | None,
+    ) -> None:
         if task_id != self.task_id:
             return
 
         self.spinner.hide()
+        self.sym_results = sym_results
+        self.coarse_lines = line_results
+        self.dropped_patches = dropped_patches
+        self.line_cache = line_cache
+        self.refined = refined
+        # The controls may have changed while the backbone was running.
+        self.sync_refinement()
+
+    def redraw(self) -> None:
+        sym_results = self.sym_results
+        dropped_patches = self.dropped_patches
 
         # Clear previous overlays, keeping only the base pixmap
         for item in self.scene.items():
@@ -525,8 +822,8 @@ class InteractiveViewer(QMainWindow):
         # Draw dropped patches (semi-transparent gray)
         drop_brush = QColor(128, 128, 128, 100)
         drop_pen = QPen(Qt.NoPen)
-        for x1, y1, w, h in dropped_patches:
-            rect = QGraphicsRectItem(x1, y1, w, h)
+        for px, py, pw, ph in dropped_patches:
+            rect = QGraphicsRectItem(px, py, pw, ph)
             rect.setBrush(drop_brush)
             rect.setPen(drop_pen)
             self.scene.addItem(rect)
@@ -544,11 +841,42 @@ class InteractiveViewer(QMainWindow):
         line_pen = QPen(QColor(0, 0, 255, 200), 2)
         line_pen.setCosmetic(True)
 
-        for x1, y1, x2, y2, score, label in line_results:
+        refined = self.refined
+        if refined is None:
+            for x1, y1, x2, y2, score, label in self.coarse_lines:
+                line = QGraphicsLineItem(x1, y1, x2, y2)
+                line.setPen(line_pen)
+                name = self.line_idx_to_name.get(label, str(label))
+                line.setToolTip(f"Line: {name} ({score:.2f})")
+                self.scene.addItem(line)
+            return
+
+        if self.show_coarse_checkbox.isChecked():
+            coarse_pen = QPen(QColor(255, 140, 0, 160), 1)
+            coarse_pen.setCosmetic(True)
+            for x1, y1, x2, y2, score, label in self.coarse_lines:
+                line = QGraphicsLineItem(x1, y1, x2, y2)
+                line.setPen(coarse_pen)
+                line.setZValue(1)
+                name = self.line_idx_to_name.get(label, str(label))
+                line.setToolTip(f"Coarse line: {name} ({score:.2f})")
+                self.scene.addItem(line)
+
+        moves = (
+            torch.linalg.vector_norm(
+                (refined.endpoints - refined.cache.queries.endpoints).view(-1, 2, 2), dim=-1
+            )
+            * self.args.patch_size
+        ).tolist()
+        for (x1, y1, x2, y2, score, label), (d1, d2) in zip(refined.lines, moves):
             line = QGraphicsLineItem(x1, y1, x2, y2)
             line.setPen(line_pen)
+            line.setZValue(2)
             name = self.line_idx_to_name.get(label, str(label))
-            line.setToolTip(f"Line: {name} ({score:.2f})")
+            line.setToolTip(
+                f"Line: {name} ({score:.2f}), refined x{refined.num_steps}: "
+                f"endpoints moved {d1:.1f} / {d2:.1f} px"
+            )
             self.scene.addItem(line)
 
 
@@ -575,6 +903,12 @@ def main():
     parser.add_argument("--channels", type=int, default=3)
     parser.add_argument("--num_shapes", type=int, default=5)
     parser.add_argument("--base_anchor_size", type=float, default=1.0)
+    parser.add_argument(
+        "--refiner_checkpoint",
+        type=Path,
+        default=None,
+        help="Optional Exp 035 line endpoint refiner (refiner.pt); enables the refine controls",
+    )
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")
     parser.add_argument(
