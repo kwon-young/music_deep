@@ -908,3 +908,47 @@
   3. **Comparing detectors on coarse AP is misleading**: their differences sit mostly in the one-to-one scores, which this pipeline neutralises. Any detector comparison (augmentation, recipes, Phase B) should be reported with the full pipeline.
   4. Caveats: both detectors were trained on these pages (only the refiners are held-out); symbols are untouched by this pipeline (Exp 037 symbol AP 0.708 vs 0.768 on all pages).
   * **Next steps**: (a) make refine → NMS → merging the standard line post-processing in `inference_coco.py` and in the Phase B evaluation; (b) revisit the scale-augmentation question with the full pipeline and a held-out split; (c) investigate `system` on Exp 037.
+
+## Analysis 008: AP Breakdown of Exp 037 by Class Frequency, Object Size and Line Class
+* **Experiment Name/ID**: `analysis/008_ap_breakdown` (offline, existing evaluations). Output: `experiments/037_029_recipe_from_023/analysis_008_breakdown.txt`.
+* **Hypothesis/Goal**: COCO's global AP is a plain mean over 83 symbol classes, and its "small" AP a plain mean over the classes that have any small instance. Exp 037's headline numbers (symbols 0.708 vs 0.924 for Exp 023, small 0.358) may therefore be driven by a few rare classes. Regroup the per-class precision arrays to see where Exp 037 actually stands against Exp 023 (its init) and Exp 029.
+* **Setup**: `scripts/analyze_ap_breakdown.py` reads the raw pycocotools precision arrays (`coco_eval_raw_{symbols,lines}.pkl`, maxDets=2000) and averages them over class groups, as pycocotools does. Class counts and sizes come from the parsed COCO cache. Runs: Exp 023 (`037_029_recipe_from_023/inference_exp023_baseline`), Exp 029 (`inference_local`), Exp 029 oracle refinement (Analysis 002), Exp 037, and for lines the full refine → NMS → merge pipeline of Exp 035 (`+R`). All 351 trainval pages, on which every detector was trained.
+  ```bash
+  PYTHONPATH=src mamba run -n pytorch python scripts/analyze_ap_breakdown.py \
+      --symbol_run 023=experiments/037_029_recipe_from_023/inference_exp023_baseline \
+      --symbol_run 029=experiments/029_size_difficulty_balanced_loss/inference_local \
+      --symbol_run 029-oracle=experiments/029_size_difficulty_balanced_loss/inference_oracle \
+      --symbol_run 037=experiments/037_029_recipe_from_023/inference \
+      --line_run 023=... --line_run 029=... --line_run 037=... \
+      --line_run 029+R=experiments/035_endpoint_refiner/phase_a/inference_full_pipeline \
+      --line_run 037+R=experiments/037_029_recipe_from_023/refiner_phase_a/inference_full_pipeline
+  ```
+* **Results** (AP@[.5:.95], AP50 in brackets):
+  * **Symbols by class frequency** (fixed-shape classes; `slur`, `tie`, `brace` separate):
+
+    | group | classes | instances | Exp 023 | Exp 029 | Exp 029 oracle | Exp 037 |
+    |---|---|---|---|---|---|---|
+    | all classes (COCO global) | 83 | 223,819 | 0.924 (0.971) | 0.768 (0.919) | 0.900 (0.935) | 0.708 (0.888) |
+    | ≥ 1000 instances | 17 | 199,903 | 0.937 (0.987) | 0.904 (0.983) | 0.981 (0.989) | **0.923** (0.984) |
+    | 100–999 | 23 | 8,582 | 0.908 (0.985) | 0.848 (0.975) | 0.958 (0.981) | 0.819 (0.959) |
+    | 10–99 | 22 | 1,072 | 0.912 (0.950) | 0.730 (0.925) | 0.905 (0.961) | 0.628 (0.843) |
+    | 0–9 | 18 | 63 | **0.994** (1.000) | 0.615 (0.814) | 0.790 (0.831) | 0.482 (0.787) |
+    | `slur` | 1 | 8,838 | 0.430 (0.615) | 0.434 (0.597) | 0.470 (0.598) | 0.392 (0.556) |
+    | `tie` | 1 | 3,429 | 0.473 (0.685) | 0.319 (0.546) | 0.412 (0.560) | 0.390 (0.613) |
+    | `brace` | 1 | 1,932 | 0.987 | 0.989 | 0.990 | 0.983 |
+
+  * **Small objects** (box area < 32², AP on the small instances): 14 classes have small instances, but `articStaccatoAbove`, `articStaccatoBelow` and `dots` hold 16,957 of the 17,076 (99.3%).
+
+    | group | Exp 023 | Exp 029 | Exp 029 oracle | Exp 037 |
+    |---|---|---|---|---|
+    | COCO "small" (14 classes) | 0.542 (0.759) | 0.402 (0.762) | 0.811 (0.888) | 0.358 (0.654) |
+    | staccato ×2 + dots (3 classes) | 0.821 (0.973) | 0.727 (0.946) | **0.966** (0.980) | **0.793** (0.965) |
+
+  * **Lines** (`+R`: Exp 035 refiner + NMS 4 px + noisy-OR merging): all line classes 023 0.679, 029 0.748, 037 0.645, 029+R 0.823, 037+R 0.818. `staff` 0.481 / 0.837 / 0.523 / 0.978 / 0.973, `stem` 0.594 / 0.835 / 0.614 / 0.967 / 0.958, `system` 0.976 / 0.973 / 0.929 / 0.987 / 0.969, `voltaBracket` 0.607 / 0.553 / 0.429 / 0.744 / 0.690.
+* **Conclusion**:
+  1. **On the symbols that make 89% of the data, Exp 037 is at Exp 023's level (0.923 vs 0.937) and above Exp 029 (0.904).** The global drop 0.924 → 0.708 comes from the rare classes: 18 classes with 63 instances in total weigh 22% of the global mean, and Exp 023 scores 0.994 on them after 300 epochs on these very pages at a single scale, which is memorization rather than skill.
+  2. **The real losses of Exp 037 are the mid-frequency classes (10–999 instances: −0.09 and −0.28 vs Exp 023)**, e.g. `wiggleArpeggiatoUp` 0.650 → 0.249, `rest32nd` 0.895 → 0.730, `noteheadWhole` 0.844 → 0.691. Whether they are real losses or less memorization cannot be told on training pages.
+  3. **COCO "small" AP is a rare-class metric here.** On the three real small classes Exp 037 recovers most of Exp 029's loss (0.793 vs 0.727; Exp 023 0.821). The oracle confirms large headroom there (0.966): they are detected (AP50 ≈ 0.97) but need near-pixel box precision at the strict thresholds.
+  4. **`slur` and `tie` are weak in every run (AP50 ≈ 0.55–0.69)**, so the training recipe is not their main problem; they lose AP before localization matters.
+  5. **Lines: Exp 037's coarse head stays close to Exp 023's** (staff 0.52 vs 0.48), while Exp 029 got its line quality from 400 epochs of the augmented recipe; the refiner pipeline closes the gap except for `system` and `voltaBracket`.
+  * **Next steps**: (a) compare recipes only on a held-out split by piece (Exp 037 next step (a)); Exp 038 (Phase B) trains on the Analysis 005 split so its held-out pieces stay unseen during the continuation; (b) report symbol AP per frequency group and on the three real small classes alongside the COCO globals; (c) small-object box precision (oracle 0.73 → 0.97 on Exp 029) needs a resolution path (raw pixels), not the token-level endpoint refiner (Analysis 005: the local token is less precise than the predicting one for symbols).
