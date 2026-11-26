@@ -31,12 +31,12 @@ import torch
 import torch.nn.functional as F
 
 from dataset.coco import CocoDataset, CocoLineAnnotation, parse_coco
+from dataset.split import held_out_pieces
 from model.refiner import EndpointRefiner, LineQueries, QualityHead, TokenGrid, line_oks
 from train_endpoint_refiner import (
     PageRecord,
     build_tables,
     coco_lines,
-    held_out_pieces,
     page_queries,
 )
 

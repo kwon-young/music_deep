@@ -28,7 +28,6 @@ Usage (no GPU work is done at import time):
 import argparse
 import json
 import random
-import re
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -40,6 +39,7 @@ from torch.utils.hooks import RemovableHandle
 
 import transform.det as det_tf
 from dataset.coco import CocoDataset, load_coco_sample, parse_coco
+from dataset.split import piece_name
 from model.detector import OMRDetector, create_detector
 from music_types import Batch, NumPatches, PatchDim, Patches
 from threaded_generator import ThreadedGenerator
@@ -230,10 +230,6 @@ class Probe(nn.Module):
 
     def forward(self, feats: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         return self.net(torch.cat([self.norm(feats), cond], dim=-1))
-
-
-def piece_name(file_name: str) -> str:
-    return re.sub(r"_\d+$", "", Path(file_name).stem)
 
 
 def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> OMRDetector:

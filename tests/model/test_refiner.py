@@ -1,10 +1,13 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
 import numpy as np
 
 from model.refiner import (
+    DenoisingNoise,
     EndpointRefiner,
     LineQueries,
     QualityHead,
@@ -13,9 +16,12 @@ from model.refiner import (
     deduplicate_lines,
     fgl_loss,
     line_oks,
+    load_refiner,
     postprocess_lines,
+    refiner_batch,
     refiner_loss,
 )
+from music_types import MatchIndices
 
 
 def grid_with_drops(grid_h: int, grid_w: int, dropped: list[int], dim: int) -> TokenGrid:
@@ -258,6 +264,86 @@ class TestPostprocessLines(unittest.TestCase):
         )
         self.assertEqual(top1.scores.shape[0], 1)
         torch.testing.assert_close(top1.scores, torch.tensor([0.4]))
+
+
+class TestRefinerBatch(unittest.TestCase):
+    def test_real_and_denoising_queries_from_matches(self) -> None:
+        torch.manual_seed(0)
+        num_shapes, num_kept, num_classes = 2, 3, 4
+        keypoints = torch.zeros(2, num_kept * num_shapes, 4)
+        logits = torch.full((2, num_kept * num_shapes, num_classes), -5.0)
+        # Image 0: query 5 (token 2) predicts class 3 at 0.2 patches from GT line 1.
+        keypoints[0, 5] = torch.tensor([1.2, 1.0, 4.0, 1.0])
+        logits[0, 5, 3] = 5.0
+        # Image 1: query 1 (token 0) predicts class 2 with its end 2 patches off GT line 0.
+        keypoints[1, 1] = torch.tensor([0.0, 0.0, 1.0, 0.0])
+        logits[1, 1, 2] = 5.0
+        gt_keypoints = [
+            torch.tensor([[9.0, 9.0, 9.0, 9.0], [1.0, 1.0, 4.0, 1.0]]),
+            torch.tensor([[0.0, 0.0, 3.0, 0.0]]),
+        ]
+        gt_labels = [torch.tensor([0, 1]), torch.tensor([2])]
+        matches = [
+            MatchIndices(pred_indices=torch.tensor([5]), target_indices=torch.tensor([1])),
+            MatchIndices(pred_indices=torch.tensor([1]), target_indices=torch.tensor([0])),
+        ]
+        batch = refiner_batch(
+            num_kept, logits, keypoints, matches, gt_keypoints, gt_labels, num_shapes,
+            max_coarse_error=1.5, noise=DenoisingNoise(sigma=0.0, uniform=0.0, uniform_prob=0.0),
+        )
+        self.assertEqual(batch.num_real, 2)
+        self.assertEqual(batch.queries.image.tolist(), [0, 1, 0, 1])
+        self.assertEqual(batch.queries.source.tolist(), [2, 3, 2, 3])
+        # Real queries carry the predicted class, denoising ones the true class.
+        self.assertEqual(batch.queries.label.tolist(), [3, 2, 1, 2])
+        torch.testing.assert_close(batch.queries.endpoints[:2], keypoints[[0, 1], [5, 1]])
+        torch.testing.assert_close(batch.queries.endpoints[2:], batch.target[2:])
+        torch.testing.assert_close(batch.target[:2], torch.stack([gt_keypoints[0][1], gt_keypoints[1][0]]))
+        # The far end of image 1's real query is out of the window's reach.
+        torch.testing.assert_close(
+            batch.mask, torch.tensor([[1.0, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1], [1, 1, 1, 1]])
+        )
+
+    def test_no_line_still_reaches_every_parameter(self) -> None:
+        refiner = EndpointRefiner(dim=12, num_classes=2, heads=3)
+        grid = grid_with_drops(3, 3, dropped=[], dim=12)
+        empty = LineQueries(
+            image=torch.zeros(0, dtype=torch.long),
+            source=torch.zeros(0, dtype=torch.long),
+            label=torch.zeros(0, dtype=torch.long),
+            endpoints=torch.zeros(0, 4),
+        )
+        outputs = refiner(grid, empty)
+        self.assertEqual(outputs[-1].endpoints.shape, (0, 4))
+        loss, _ = refiner_loss(refiner, outputs, torch.zeros(0, 4), torch.zeros(0, 4), 0.15)
+        loss.backward()
+        self.assertEqual(float(loss), 0.0)
+        for name, param in refiner.named_parameters():
+            self.assertIsNotNone(param.grad, name)
+
+    def test_checkpoint_round_trip(self) -> None:
+        torch.manual_seed(0)
+        refiner = EndpointRefiner(dim=12, num_classes=2, num_steps=3, heads=3, scale=2.0)
+        with torch.no_grad():
+            for param in refiner.parameters():
+                param.add_(torch.randn_like(param) * 0.1)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "latest_model.pt"
+            torch.save(
+                {"model": {}, "refiner": refiner.state_dict(), "refiner_config": refiner.config()},
+                path,
+            )
+            loaded = load_refiner(path, dim=12, num_classes=2, device=torch.device("cpu"))
+        self.assertEqual(loaded.config(), {"num_steps": "3", "heads": "3", "scale": "2.0"})
+        grid = grid_with_drops(4, 4, dropped=[5], dim=12)
+        queries = LineQueries(
+            image=torch.zeros(2, dtype=torch.long),
+            source=torch.tensor([0, 3]),
+            label=torch.tensor([0, 1]),
+            endpoints=torch.tensor([[0.5, 0.5, 3.2, 0.7], [1.1, 1.2, 1.4, 3.3]]),
+        )
+        refiner.eval()
+        torch.testing.assert_close(loaded(grid, queries)[-1].endpoints, refiner(grid, queries)[-1].endpoints)
 
 
 if __name__ == "__main__":

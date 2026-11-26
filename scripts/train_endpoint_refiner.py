@@ -25,7 +25,6 @@ import argparse
 import json
 import math
 import random
-import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, fields, replace
@@ -35,6 +34,7 @@ import torch
 
 import transform.det as det_tf
 from dataset.coco import CocoDataset, CocoLineAnnotation, load_coco_sample, parse_coco
+from dataset.split import held_out_pieces, piece_name
 from model.detector import OMRDetector, create_detector
 from model.matcher import HungarianMatcher
 from model.refiner import EndpointRefiner, LineQueries, TokenGrid, refiner_loss
@@ -172,10 +172,6 @@ class ErrorStats:
     p90_px: float
     mean_px: float
     worse_2px: float
-
-
-def piece_name(file_name: str) -> str:
-    return re.sub(r"_\d+$", "", Path(file_name).stem)
 
 
 def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> OMRDetector:
@@ -322,14 +318,6 @@ def load_or_extract(cfg: Config, dataset: CocoDataset, device: torch.device) -> 
     torch.save([r.to_dict() for r in records], cache)
     print(f"Saved {cache}")
     return records
-
-
-def held_out_pieces(pieces: Sequence[str], seed: int, fraction: float) -> set[str]:
-    """Same split as Analysis 005: sorted pieces, shuffled with the seed, first fraction held out."""
-    order = list(range(len(pieces)))
-    random.Random(seed).shuffle(order)
-    num_holdout = max(1, round(fraction * len(pieces)))
-    return {pieces[k] for k in order[:num_holdout]}
 
 
 def endpoint_ambiguity(gt: torch.Tensor, labels: torch.Tensor, grid_w: int) -> torch.Tensor:

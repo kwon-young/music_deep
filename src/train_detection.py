@@ -1,24 +1,34 @@
 import argparse
+import json
 import time
 import math
 import random
 import os
-from typing import ContextManager, cast
+from typing import cast
 from pathlib import Path
 from typing import Generator, Iterable
 from dataclasses import dataclass, replace
 import itertools
 from itertools import batched
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import torch
 import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model.detector import OMRDetector, create_detector
+from model.detector import DetectorWithTokens, OMRDetector, create_detector
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion
+from model.refiner import (
+    DenoisingNoise,
+    EndpointRefiner,
+    TokenGrid,
+    load_refiner,
+    refiner_batch,
+    refiner_loss,
+)
 from dataset.coco import parse_coco, load_coco_sample, CocoMetadata, CocoDataset
+from dataset.split import split_by_piece
 import transform.det as det_tf
 from threaded_generator import (
     Monitor,
@@ -56,6 +66,13 @@ from music_types import (
     Batch,
     NumPatches,
     PatchDim,
+    EmbedDim,
+    Embeddings,
+    MatchIndices,
+    NumQueries,
+    BoxDim,
+    KeypointDim,
+    CoordDim,
 )
 
 
@@ -70,10 +87,42 @@ class DetectionMetrics(BaseMetrics):
     loss_fgl: float
     loss_line_l1: float
     loss_line_fgl: float
+    loss_refine: float
+    refine_coarse_l1: float
+    refine_l1: float
     map50: float
     miou: float
     line_error: float
     speed: float
+
+
+@dataclass(frozen=True)
+class RefinerParams:
+    """Exp 038 (Exp 035 Phase B): the line endpoint refiner trained inside the detector step."""
+
+    init: Path | None
+    num_steps: int
+    heads: int
+    scale: float
+    loss_weight: float
+    lr_scale: float
+    fgl_weight: float
+    max_coarse_error: float
+    noise: DenoisingNoise
+    detach_tokens: bool
+
+
+@dataclass(frozen=True)
+class RefineStats:
+    """Refiner loss and, on the real (matched) queries, the masked mean L1 per coordinate of
+    the coarse endpoints and of the last refinement step, in patches."""
+
+    loss: float
+    coarse_l1: float
+    refined_l1: float
+
+
+NO_REFINE = RefineStats(loss=0.0, coarse_l1=0.0, refined_l1=0.0)
 
 
 @dataclass
@@ -140,6 +189,8 @@ class TrainParams:
     synthetic: SyntheticConfig | None
     synthetic_workers: int
     verovio_root: Path
+    refiner: RefinerParams | None
+    held_out_image_ids: list[int]
 
 
 @dataclass
@@ -153,6 +204,7 @@ class TrainStepResult:
     losses: DetectionLosses
     total_loss: float
     symbols_processed: int
+    refine: RefineStats
 
 
 type DecodedItem = Data[
@@ -333,6 +385,52 @@ def create_detection_iterator(
     return log_patch_count(_pipeline(), params.log_patches)
 
 
+def refinement_loss(
+    refiner: EndpointRefiner | DDP,
+    raw_refiner: EndpointRefiner,
+    features: Embeddings[Batch, NumPatches, EmbedDim],
+    outputs: DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim],
+    line_matches: list[MatchIndices],
+    targets: list[DetectionTarget],
+    num_shapes: int,
+    cfg: RefinerParams,
+) -> tuple[torch.Tensor, RefineStats]:
+    """Refiner loss on the step's own (augmented, resized) tokens and line matching.
+
+    With ``cfg.detach_tokens`` the refiner only reads the tokens; otherwise its gradient also
+    reaches the backbone (joint training). Coordinates stay in the extraction-patch units of
+    the batch, so the window and the +-scale/2 correction are in the same units as at
+    inference.
+    """
+    tokens = features.data.detach() if cfg.detach_tokens else features.data
+    _, height, width = features.image_shape
+    patch_h, patch_w = features.patch_size
+    grid = TokenGrid.from_batch(tokens, features.indices, height // patch_h, width // patch_w)
+    batch = refiner_batch(
+        num_kept=tokens.shape[1],
+        logits=outputs.lines.pred_logits.data,
+        keypoints=outputs.lines.pred_keypoints.data,
+        matches=line_matches,
+        gt_keypoints=[t.keypoints.data for t in targets],
+        gt_labels=[t.keypoint_labels.data for t in targets],
+        num_shapes=num_shapes,
+        max_coarse_error=cfg.max_coarse_error,
+        noise=cfg.noise,
+    )
+    refined = refiner(grid, batch.queries)
+    loss, _ = refiner_loss(raw_refiner, refined, batch.target, batch.mask, cfg.fgl_weight)
+    with torch.no_grad():
+        n = batch.num_real
+        mask = batch.mask[:n]
+        denom = mask.sum().clamp(min=1.0)
+        target = batch.target[:n]
+        coarse_l1 = ((batch.queries.endpoints[:n] - target).abs() * mask).sum() / denom
+        refined_l1 = ((refined[-1].endpoints[:n] - target).abs() * mask).sum() / denom
+    return loss, RefineStats(
+        loss=loss.item(), coarse_l1=coarse_l1.item(), refined_l1=refined_l1.item()
+    )
+
+
 def train_step_pipeline(
     iterator: Iterable[
         BatchedData[
@@ -346,8 +444,11 @@ def train_step_pipeline(
             ],
         ]
     ],
-    model: OMRDetector | DDP,
+    model: DetectorWithTokens | DDP,
+    matcher: HungarianMatcher,
     criterion: DFINECriterion,
+    refiner: EndpointRefiner | DDP | None,
+    raw_refiner: EndpointRefiner | None,
     optimizer: optim.Optimizer,
     params: TrainParams,
     total_symbol_budget: int,
@@ -383,21 +484,22 @@ def train_step_pipeline(
             )
         ]
 
+        refine_stats = NO_REFINE
         # Prevent DDP from synchronizing gradients during accumulation steps
-        sync_context: ContextManager[None]
-        if isinstance(model, DDP) and is_accumulating:
-            sync_context = model.no_sync()
-        else:
-            sync_context = nullcontext()
-
-        with sync_context:
+        with ExitStack() as sync_context:
+            if is_accumulating:
+                for module in (model, refiner):
+                    if isinstance(module, DDP):
+                        sync_context.enter_context(module.no_sync())
             with torch.autocast(
                 device_type=params.train_device.type,
                 dtype=torch.float16,
                 enabled=params.use_amp,
             ):
-                outputs = model(batch.sample.image)
-                losses = criterion(outputs, targets)
+                outputs, features = model(batch.sample.image)
+                # One matching, shared by the detector losses and the refiner queries.
+                indices = matcher(outputs, targets)
+                losses = criterion(outputs, targets, indices)
                 total_loss = (
                     losses.loss_ce
                     + losses.loss_bbox
@@ -406,6 +508,19 @@ def train_step_pipeline(
                     + losses.loss_line_l1
                     + losses.loss_line_fgl
                 )
+                if refiner is not None:
+                    assert raw_refiner is not None and params.refiner is not None
+                    refine_loss, refine_stats = refinement_loss(
+                        refiner,
+                        raw_refiner,
+                        features,
+                        outputs,
+                        indices[1],
+                        targets,
+                        params.num_shapes,
+                        params.refiner,
+                    )
+                    total_loss = total_loss + params.refiner.loss_weight * refine_loss
 
             # Scale the loss to average gradients over the accumulation steps
             scaled_loss = total_loss / params.accumulation_steps
@@ -442,7 +557,7 @@ def train_step_pipeline(
             )
 
         for param_group in optimizer.param_groups:
-            param_group["lr"] = current_lr
+            param_group["lr"] = current_lr * float(param_group.get("lr_scale", 1.0))
         # ----------------------------------
 
         if not is_accumulating:
@@ -461,6 +576,7 @@ def train_step_pipeline(
             losses=losses.detach(),
             total_loss=total_loss.item(),
             symbols_processed=step_symbols,
+            refine=refine_stats,
         )
 
 
@@ -470,6 +586,7 @@ def log_and_save_checkpoint(
     matcher: HungarianMatcher,
     logger: ExperimentLogger,
     model: OMRDetector,
+    refiner: EndpointRefiner | None,
     optimizer: optim.Optimizer,
     running_loss: float,
     speed: float,
@@ -500,6 +617,9 @@ def log_and_save_checkpoint(
         loss_fgl=result.losses.loss_fgl.item(),
         loss_line_l1=result.losses.loss_line_l1.item(),
         loss_line_fgl=result.losses.loss_line_fgl.item(),
+        loss_refine=result.refine.loss,
+        refine_coarse_l1=result.refine.coarse_l1,
+        refine_l1=result.refine.refined_l1,
         map50=map50,
         miou=miou,
         line_error=line_error,
@@ -515,7 +635,13 @@ def log_and_save_checkpoint(
         f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
         f"LineL1: {result.losses.loss_line_l1.item():.4f} | LineFGL: {result.losses.loss_line_fgl.item():.4f} | "
         f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | LineErr: {line_error:.4f} | "
-        f"Speed: {speed:.1f} symbols/s"
+        + (
+            f"Refine: {result.refine.loss:.4f} (L1 coarse {result.refine.coarse_l1:.4f} -> "
+            f"{result.refine.refined_l1:.4f}) | "
+            if refiner is not None
+            else ""
+        )
+        + f"Speed: {speed:.1f} symbols/s"
     )
 
     # 2. Visualization
@@ -549,6 +675,11 @@ def log_and_save_checkpoint(
         "optimizer": optimizer.state_dict(),
         "running_loss": running_loss,
     }
+    if refiner is not None:
+        # load_refiner() reads these two keys, so inference_coco.py --refiner_checkpoint can
+        # point at this file directly.
+        checkpoint["refiner"] = refiner.state_dict()
+        checkpoint["refiner_config"] = refiner.config()
     checkpoint_path = logger.get_checkpoint_dir() / "latest_model.pt"
     torch.save(checkpoint, checkpoint_path)
 
@@ -646,14 +777,52 @@ def train(params: TrainParams):
         if is_main_process:
             print("Fine-tuning backbone parameters.")
 
-    model: OMRDetector | DDP
+    raw_refiner: EndpointRefiner | None = None
+    refiner: EndpointRefiner | DDP | None = None
+    if params.refiner is not None:
+        dim = raw_model.backbone.patch_embed[1].out_features
+        if loaded_checkpoint is not None and "refiner" in loaded_checkpoint:
+            assert params.detector_checkpoint is not None
+            source = f"checkpoint {params.detector_checkpoint}"
+            raw_refiner = load_refiner(
+                params.detector_checkpoint, dim, params.num_line_classes, params.train_device
+            )
+        elif params.refiner.init is not None:
+            source = f"init {params.refiner.init}"
+            raw_refiner = load_refiner(
+                params.refiner.init, dim, params.num_line_classes, params.train_device
+            )
+        else:
+            source = "scratch"
+            raw_refiner = EndpointRefiner(
+                dim=dim,
+                num_classes=params.num_line_classes,
+                num_steps=params.refiner.num_steps,
+                heads=params.refiner.heads,
+                scale=params.refiner.scale,
+            ).to(params.train_device)
+        raw_refiner.train()
+        refiner = (
+            DDP(raw_refiner, device_ids=[local_rank], output_device=local_rank)
+            if is_distributed
+            else raw_refiner
+        )
+        if is_main_process:
+            print(
+                f"Line endpoint refiner from {source}: {raw_refiner.config()}, "
+                f"loss weight {params.refiner.loss_weight}, LR x{params.refiner.lr_scale}, "
+                f"{'detached tokens' if params.refiner.detach_tokens else 'joint (gradients reach the backbone)'}"
+            )
+
+    model: DetectorWithTokens | DDP
     # --- Wrap Model in DDP ---
+    with_tokens = DetectorWithTokens(raw_model)
     if is_distributed:
         model = DDP(
-            raw_model, device_ids=[local_rank], output_device=local_rank
+            with_tokens, device_ids=[local_rank], output_device=local_rank
         )
     else:
-        model = raw_model
+        model = with_tokens
     # ------------------------------
 
     if params.compile:
@@ -664,7 +833,7 @@ def train(params: TrainParams):
                 f"Compiling model with torch.compile(dynamic={use_dynamic})..."
             )
         model = cast(
-            OMRDetector | DDP, torch.compile(model, dynamic=use_dynamic)
+            DetectorWithTokens | DDP, torch.compile(model, dynamic=use_dynamic)
         )
 
     # 2. Setup Matcher and Criterion
@@ -694,12 +863,30 @@ def train(params: TrainParams):
         base_anchor_size=params.base_anchor_size,
     ).to(params.train_device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=params.lr)
+    optimizer = optim.AdamW(raw_model.parameters(), lr=params.lr)
 
+    def add_refiner_group() -> None:
+        if raw_refiner is not None and params.refiner is not None:
+            optimizer.add_param_group(
+                {
+                    "params": list(raw_refiner.parameters()),
+                    "lr": params.lr * params.refiner.lr_scale,
+                    "lr_scale": params.refiner.lr_scale,
+                }
+            )
+
+    # A checkpoint saved with the refiner has its group in the optimizer state: add the group
+    # first so the state loads into it. Otherwise (e.g. Exp 037 -> Exp 038) the detector state
+    # loads alone and the refiner starts with a fresh Adam state.
+    checkpoint_has_refiner = loaded_checkpoint is not None and "refiner" in loaded_checkpoint
+    if checkpoint_has_refiner:
+        add_refiner_group()
     if loaded_checkpoint is not None and "optimizer" in loaded_checkpoint:
         if is_main_process:
             print("Loading optimizer state from checkpoint...")
         optimizer.load_state_dict(loaded_checkpoint["optimizer"])
+    if not checkpoint_has_refiner:
+        add_refiner_group()
 
     # Setup Interactive Plotting ONLY on main process
     if is_main_process:
@@ -716,6 +903,13 @@ def train(params: TrainParams):
     dataset_symbols = params.dataset.num_symbols
     if is_main_process:
         print(f"Total symbols in COCO dataset: {dataset_symbols} (True Epoch)")
+        if params.held_out_image_ids:
+            held_out_path = params.exp_dir / "held_out_image_ids.json"
+            held_out_path.write_text(json.dumps(params.held_out_image_ids))
+            print(
+                f"Training on {len(params.dataset.images)} pages; "
+                f"{len(params.held_out_image_ids)} held-out pages listed in {held_out_path}"
+            )
 
     model.train()
 
@@ -741,7 +935,10 @@ def train(params: TrainParams):
         train_step_pipeline(
             data_iterator,
             model,
+            matcher,
             criterion,
+            refiner,
+            raw_refiner,
             optimizer,
             params,
             total_symbol_budget,
@@ -802,6 +999,7 @@ def train(params: TrainParams):
                     matcher,
                     logger,
                     raw_model,
+                    raw_refiner,
                     optimizer,
                     running_loss,
                     speed,
@@ -830,6 +1028,7 @@ def train(params: TrainParams):
                 matcher,
                 logger,
                 raw_model,
+                raw_refiner,
                 optimizer,
                 running_loss,
                 speed,
@@ -1133,6 +1332,50 @@ if __name__ == "__main__":
     synth.add_argument(
         "--verovio_root", type=Path, default=Path("/home/kwon-young/prog/verovio")
     )
+    split = parser.add_argument_group(
+        "held-out split",
+        "Leave a fraction of the pieces out of training (same split by piece as Analysis 005 "
+        "and Exp 035 for the same seed); their image ids are written to "
+        "<exp_dir>/held_out_image_ids.json for evaluate_coco.py --image_ids.",
+    )
+    split.add_argument("--holdout_fraction", type=float, default=0.0)
+    split.add_argument("--holdout_seed", type=int, default=0)
+    refine = parser.add_argument_group(
+        "line endpoint refiner (Exp 038, Exp 035 Phase B)",
+        "Train the Exp 035 refiner inside the detector step, on the augmented tokens and the "
+        "step's line matching. Checkpoints then carry the refiner, so inference_coco.py "
+        "--refiner_checkpoint can point at latest_model.pt.",
+    )
+    refine.add_argument("--line_refiner", action="store_true")
+    refine.add_argument(
+        "--refiner_init",
+        type=Path,
+        default=None,
+        help="Start from a trained refiner (Phase A refiner.pt); ignored when "
+        "--detector_checkpoint already carries one.",
+    )
+    refine.add_argument("--refiner_num_steps", type=int, default=2)
+    refine.add_argument("--refiner_heads", type=int, default=3)
+    refine.add_argument(
+        "--refiner_scale", type=float, default=3.0, help="Correction range in patches (+-scale/2)."
+    )
+    refine.add_argument("--refiner_loss_weight", type=float, default=1.0)
+    refine.add_argument(
+        "--refiner_lr_scale",
+        type=float,
+        default=5.0,
+        help="Refiner LR as a multiple of the detector LR (same schedule).",
+    )
+    refine.add_argument("--refiner_fgl_weight", type=float, default=0.15)
+    refine.add_argument("--refiner_max_coarse_error", type=float, default=1.5)
+    refine.add_argument("--refiner_dn_sigma", type=float, default=0.05)
+    refine.add_argument("--refiner_dn_uniform", type=float, default=1.0)
+    refine.add_argument("--refiner_dn_uniform_prob", type=float, default=0.4)
+    refine.add_argument(
+        "--refiner_detach_tokens",
+        action="store_true",
+        help="The refiner reads the tokens without back-propagating into the backbone.",
+    )
 
     args = parser.parse_args()
 
@@ -1187,6 +1430,41 @@ if __name__ == "__main__":
         dataset.line_weights = [
             sum(dataset.line_weights) / len(dataset.line_weights)
         ] * len(dataset.line_weights)
+
+    held_out_image_ids: list[int] = []
+    if args.holdout_fraction > 0:
+        train_images, held_out_images = split_by_piece(
+            dataset.images, args.holdout_seed, args.holdout_fraction
+        )
+        kept = {img.img_id for img in train_images}
+        dataset.images = train_images
+        dataset.annotations = {
+            img_id: anns
+            for img_id, anns in dataset.annotations.items()
+            if img_id in kept
+        }
+        held_out_image_ids = [img.img_id for img in held_out_images]
+
+    refiner_params = (
+        RefinerParams(
+            init=args.refiner_init,
+            num_steps=args.refiner_num_steps,
+            heads=args.refiner_heads,
+            scale=args.refiner_scale,
+            loss_weight=args.refiner_loss_weight,
+            lr_scale=args.refiner_lr_scale,
+            fgl_weight=args.refiner_fgl_weight,
+            max_coarse_error=args.refiner_max_coarse_error,
+            noise=DenoisingNoise(
+                sigma=args.refiner_dn_sigma,
+                uniform=args.refiner_dn_uniform,
+                uniform_prob=args.refiner_dn_uniform_prob,
+            ),
+            detach_tokens=args.refiner_detach_tokens,
+        )
+        if args.line_refiner
+        else None
+    )
 
     # Restrict dataset labels if requested
     if args.include_labels:
@@ -1267,6 +1545,8 @@ if __name__ == "__main__":
         synthetic=synthetic_config,
         synthetic_workers=args.synth_workers,
         verovio_root=args.verovio_root,
+        refiner=refiner_params,
+        held_out_image_ids=held_out_image_ids,
     )
 
     train(params)

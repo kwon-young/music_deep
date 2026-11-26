@@ -319,6 +319,17 @@ class OMRDetector(nn.Module):
         """
         Returns a DetectionOutput ready for DFINECriterion.
         """
+        return self.forward_with_tokens(patches)[0]
+
+    def forward_with_tokens[B: Batch](
+        self,
+        patches: Patches[B, NumPatches, PatchDim],
+    ) -> tuple[
+        DetectionOutput[B, NumQueries, BoxDim, KeypointDim, CoordDim],
+        Embeddings[B, NumPatches, EmbedDim],
+    ]:
+        """The detection outputs and the final (normed) tokens of the kept patches they were
+        predicted from, which the Exp 035 endpoint refiner reads."""
         features = self.backbone(patches)
 
         # Compute centers dynamically based on the kept patches
@@ -395,7 +406,25 @@ class OMRDetector(nn.Module):
                     line_base_dirs.contiguous().flatten(1, 2)
                 ),
             ),
-        )
+        ), features
+
+
+class DetectorWithTokens(nn.Module):
+    """Makes ``OMRDetector.forward_with_tokens`` the ``forward`` that DDP and torch.compile
+    wrap, without changing the detector's own state-dict keys."""
+
+    def __init__(self, detector: OMRDetector) -> None:
+        super().__init__()
+        self.detector = detector
+
+    def forward[B: Batch](
+        self,
+        patches: Patches[B, NumPatches, PatchDim],
+    ) -> tuple[
+        DetectionOutput[B, NumQueries, BoxDim, KeypointDim, CoordDim],
+        Embeddings[B, NumPatches, EmbedDim],
+    ]:
+        return self.detector.forward_with_tokens(patches)
 
 
 def create_detector(

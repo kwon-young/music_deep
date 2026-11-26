@@ -314,8 +314,13 @@ class DFINECriterion(nn.Module):
                 ClassLabels[LabelShape, NumLineClasses],
             ]
         ],
+        indices: tuple[list[MatchIndices], list[MatchIndices]] | None = None,
     ) -> DetectionLosses:
-        sym_indices, line_indices = self.matcher(outputs, targets)
+        """``indices``: the (symbol, line) matching of ``outputs`` to ``targets`` when the caller
+        already computed it (e.g. to share the line assignment with the endpoint refiner)."""
+        sym_indices, line_indices = (
+            self.matcher(outputs, targets) if indices is None else indices
+        )
 
         num_symbols = max(1, sum(len(t.box_labels.data) for t in targets))
         num_lines = max(1, sum(len(t.keypoint_labels.data) for t in targets))

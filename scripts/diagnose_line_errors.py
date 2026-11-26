@@ -40,7 +40,8 @@ from model.refiner import (
     deduplicate_lines,
     line_oks,
 )
-from train_endpoint_refiner import PageRecord, build_tables, held_out_pieces
+from dataset.split import held_out_pieces
+from train_endpoint_refiner import PageRecord, build_tables
 from train_quality_branch import best_oks, line_areas, load_refiner
 
 FP_TYPES = ("dupe", "loc", "cls", "both", "bkg")

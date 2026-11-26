@@ -952,3 +952,29 @@
   4. **`slur` and `tie` are weak in every run (AP50 ≈ 0.55–0.69)**, so the training recipe is not their main problem; they lose AP before localization matters.
   5. **Lines: Exp 037's coarse head stays close to Exp 023's** (staff 0.52 vs 0.48), while Exp 029 got its line quality from 400 epochs of the augmented recipe; the refiner pipeline closes the gap except for `system` and `voltaBracket`.
   * **Next steps**: (a) compare recipes only on a held-out split by piece (Exp 037 next step (a)); Exp 038 (Phase B) trains on the Analysis 005 split so its held-out pieces stay unseen during the continuation; (b) report symbol AP per frequency group and on the three real small classes alongside the COCO globals; (c) small-object box precision (oracle 0.73 → 0.97 on Exp 029) needs a resolution path (raw pixels), not the token-level endpoint refiner (Analysis 005: the local token is less precise than the predicting one for symbols).
+
+## Experiment 038: Exp 035 Phase B, Exp 037 Continued with the Line Refiner in the Training Step
+* **Experiment Name/ID**: `experiments/038_phase_b_joint_refiner`
+* **Status**: 📝 Prepared, not run (branch `exp-038-phase-b-joint-refiner`, notebook `scripts/music_deep.ipynb`). Smoke-tested on the laptop only: DDP with gloo (NCCL and nvimgcodec do not run on its GPU), CPU `torch.compile` of the new forward, resume from a checkpoint that carries the refiner, `inference_coco.py` reading the refiner from the training checkpoint.
+* **Hypothesis/Goal**: The Phase A refiner was trained on frozen tokens of clean, unresized pages, while the detector trains on 54–74 px patches resized to 64. Training the refiner **inside the detector step**, on the step's own augmented tokens and line matching, (1) teaches it the same scale and resampling variation as the detector, and (2) lets the backbone adapt its tokens to the refiner (joint gradients). Expected: held-out line AP with the full pipeline above Phase A on Exp 037 (0.837, Exp 035 Phase A on Exp 037), with symbols unchanged.
+* **Setup**:
+  * Init: Exp 037 final checkpoint (detector and its Adam state) + the Phase A refiner trained on Exp 037 (`037_029_recipe_from_023/refiner_phase_a/refiner.pt`, fresh Adam state, its own parameter group).
+  * Data: the Exp 037 recipe (54–74 px extraction resized to 64, size-difficulty class weights 0.5 / 8.0) on the **46 training pieces** only (`--holdout_fraction 0.2 --holdout_seed 0`, `src/dataset/split.py`; it reproduces the 57 held-out pages of Exp 035 exactly). The held-out image ids are written to `held_out_image_ids.json`. The detector already saw those pages in Exp 037, so the held-out numbers are clean for the refiner and for this continuation only.
+  * Step (`src/train_detection.py`): `DetectorWithTokens` returns the outputs and the final tokens (the same tensor Phase A hooked); the matcher runs **once**, shared by the detector criterion (`DFINECriterion(..., indices)`) and `refiner_batch` (`src/model/refiner.py`): one real query per matched line (coarse endpoints, predicted class, endpoints beyond 1.5 patches masked) and one denoising query (GT + 60% Gaussian σ 0.05 / 40% uniform ±1 patch, true class), as in Phase A. Loss = detector losses + 1.0 × refiner loss (L1 + 0.15 FGL per step). Coordinates are in the batch's extraction-patch units, so the 3×3 window and the ±1.5 patch correction have the same meaning as at inference.
+  * Optimization: detector peak LR **2e-5** (1 warmup epoch, cosine over 30 epochs): restarting at 1e-4 cost Exp 032 and Exp 034 a lot. The refiner group runs at 5× (1e-4), on the same schedule. The refiner and the detector are separate DDP modules, both under `no_sync` during accumulation; the refiner runs even on a step without lines, so every rank always reduces its gradients.
+  * Checkpoints carry `refiner` and `refiner_config`; `inference_coco.py --refiner_checkpoint latest_model.pt` reads them.
+  * Ablation switches (not used in the planned run): `--refiner_detach_tokens` (refiner reads the tokens without back-propagating into the backbone), `--refiner_loss_weight`, `--refiner_lr_scale`.
+  * Kaggle: attach a model version with `037_029_recipe_from_023/train_detection/checkpoints/latest_model.pt` and `037_029_recipe_from_023/refiner_phase_a/refiner.pt` (cell 5 asserts both). Expected ~3 h for 30 epochs (Exp 037: ~6 min per epoch on all pages, 294/351 pages here, plus the refiner), then ~10 min of inference.
+  * Evaluation plan (local, pycocotools is not installed on Kaggle): `evaluate_coco.py` on all pages and with `--image_ids held_out_image_ids.json`, against Exp 037 + Phase A refiner on the same pages (`037_029_recipe_from_023/refiner_phase_a/inference_full_pipeline/held_out`: lines AP 0.837); symbols reported per frequency group as in Analysis 008. Also watch, in `metrics.jsonl`, `refine_coarse_l1` vs `refine_l1` and the detector losses for a drift away from Exp 037.
+  * Smoke test (4 cropped pages, 1 epoch, not a result): refiner loss 0.95 → 0.64, coarse → refined L1 on matched lines 0.25 → 0.17 patches at the start and 0.16 → 0.09 at the end. The refiner loss on augmented crops is about 3× Phase A's final 0.23, so the refiner term will weigh more than the detector loss at the start of the real run.
+  * Command: `scripts/music_deep.ipynb` cell 6:
+    ```bash
+    torchrun --nproc_per_node=2 src/train_detection.py --exp_dir experiments/038_phase_b_joint_refiner \
+        --patch_size 64 --epochs 30 --warmup_epochs 1 --lr 2e-5 --compile --use_sdpa --log_epoch_interval 1 \
+        --extract_patch_min 54 --extract_patch_max 74 \
+        --class_weight_variance_lambda 0.5 --class_weight_size_difficulty_max 8.0 \
+        --holdout_fraction 0.2 --holdout_seed 0 \
+        --detector_checkpoint <037>/latest_model.pt --line_refiner --refiner_init <037>/refiner_phase_a/refiner.pt
+    ```
+* **Results**: pending.
+* **Conclusion**: pending.

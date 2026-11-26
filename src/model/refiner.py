@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from music_types import MatchIndices
+
 from .detector import DFINEWeightingFunction
 
 WINDOW_OFFSETS = (-1, 0, 1)
@@ -218,14 +220,20 @@ class RefineStep(nn.Module):
         # One query against 10 keys: elementwise attention; fused SDPA or bmm kernels waste
         # nearly all their tiles on such tiny matrices.
         dim_head = dim // self.heads
+        num_keys = keys.shape[1]
+        # Explicit sizes everywhere: a step without any line (num == 0) must still run, so
+        # that under DDP every parameter receives its (zero) gradient.
         q = self.to_q(self.norm_q(state)).view(num, self.heads, dim_head)
-        k, v = (t.view(num, -1, self.heads, dim_head) for t in self.to_kv(keys).chunk(2, dim=-1))
+        k, v = (
+            t.reshape(num, num_keys, self.heads, dim_head)
+            for t in self.to_kv(keys).chunk(2, dim=-1)
+        )
         logits = (q.unsqueeze(1) * k).sum(dim=-1) * dim_head**-0.5
         weights = logits.masked_fill(~mask.unsqueeze(-1), float("-inf")).softmax(dim=1)
         read = (weights.unsqueeze(-1) * v).sum(dim=1)
         state = state + self.to_out(read.reshape(num, dim))
         state = state + self.ffn(state)
-        return state, self.to_bins(self.out_norm(state)).view(num, 2, -1)
+        return state, self.to_bins(self.out_norm(state)).view(num, 2, self.to_bins.out_features // 2)
 
 
 class EndpointRefiner(nn.Module):
@@ -262,6 +270,17 @@ class EndpointRefiner(nn.Module):
         )
         return line.unsqueeze(1) + self.end_emb.weight.unsqueeze(0) + self.direction(direction)
 
+    def config(self) -> dict[str, str]:
+        """Constructor arguments besides ``dim`` and ``num_classes``, as ``load_refiner`` reads
+        them (strings, like the ``config`` of ``scripts/train_endpoint_refiner.py``)."""
+        first = self.steps[0]
+        assert isinstance(first, RefineStep)
+        return {
+            "num_steps": str(len(self.steps)),
+            "heads": str(first.heads),
+            "scale": str(self.scale),
+        }
+
     def schedule(self, num_steps: int | None) -> list[nn.Module]:
         """The step modules to apply: all trained steps when ``num_steps`` is None, otherwise
         the first ``num_steps`` of them, the last trained step repeating beyond them."""
@@ -278,7 +297,8 @@ class EndpointRefiner(nn.Module):
         """One output per applied step; ``num_steps`` overrides the trained count (see
         ``schedule``), each extra application re-centring the window once more."""
         num = queries.endpoints.shape[0]
-        state = self.initial_state(grid, queries).reshape(2 * num, -1)
+        dim = self.class_emb.embedding_dim
+        state = self.initial_state(grid, queries).reshape(2 * num, dim)
         image = queries.image.repeat_interleave(2)
         points = queries.endpoints.detach().reshape(2 * num, 2)
         outputs: list[RefinedEndpoints] = []
@@ -291,8 +311,8 @@ class EndpointRefiner(nn.Module):
                 RefinedEndpoints(
                     endpoints=points.reshape(num, 4),
                     start=start.reshape(num, 4),
-                    bin_logits=logits.reshape(num, 4, -1),
-                    state=state.reshape(num, 2, -1),
+                    bin_logits=logits.reshape(num, 4, logits.shape[-1]),
+                    state=state.reshape(num, 2, dim),
                 )
             )
         return outputs
@@ -388,10 +408,11 @@ def deduplicate_lines(
 def load_refiner(
     path: Path, dim: int, num_classes: int, device: torch.device
 ) -> EndpointRefiner:
-    """Loads a ``refiner.pt`` saved by ``scripts/train_endpoint_refiner.py`` (config values
-    are stored as strings), in eval mode."""
+    """Loads a ``refiner.pt`` saved by ``scripts/train_endpoint_refiner.py`` or a
+    ``train_detection.py`` checkpoint trained with the refiner (``refiner_config``), in eval
+    mode. Config values are stored as strings."""
     saved: dict[str, object] = torch.load(path, map_location=device, weights_only=True)
-    config = saved["config"]
+    config = saved["refiner_config"] if "refiner_config" in saved else saved["config"]
     state = saved["refiner"]
     assert isinstance(config, dict) and isinstance(state, dict)
     refiner = EndpointRefiner(
@@ -515,3 +536,87 @@ def refiner_loss(
         total = total + l1 + fgl_weight * fgl
         l1_per_step.append(l1.item())
     return total, l1_per_step
+
+
+@dataclass(frozen=True)
+class DenoisingNoise:
+    """Noise added to ground-truth endpoints for the denoising queries, in patches: with
+    probability ``uniform_prob`` uniform in +-``uniform`` (the head's tail), otherwise Gaussian
+    with std ``sigma`` (its precise bulk)."""
+
+    sigma: float
+    uniform: float
+    uniform_prob: float
+
+    def sample(self, num: int, device: torch.device) -> torch.Tensor:
+        """(num, 4) noise, drawn independently per endpoint."""
+        gaussian = torch.randn(num, 2, 2, device=device) * self.sigma
+        uniform = (torch.rand(num, 2, 2, device=device) * 2 - 1) * self.uniform
+        pick = torch.rand(num, 2, 1, device=device) < self.uniform_prob
+        return torch.where(pick, uniform, gaussian).reshape(num, 4)
+
+
+@dataclass(frozen=True)
+class RefinerBatch:
+    """Training queries of one detector step: the ``num_real`` matched coarse lines first, then
+    as many denoising queries; ``target`` and ``mask`` are (N, 4)."""
+
+    queries: LineQueries
+    target: torch.Tensor
+    mask: torch.Tensor
+    num_real: int
+
+
+def refiner_batch(
+    num_kept: int,
+    logits: torch.Tensor,
+    keypoints: torch.Tensor,
+    matches: Sequence[MatchIndices],
+    gt_keypoints: Sequence[torch.Tensor],
+    gt_labels: Sequence[torch.Tensor],
+    num_shapes: int,
+    max_coarse_error: float,
+    noise: DenoisingNoise,
+) -> RefinerBatch:
+    """Refiner queries from the line matching of a detector step (Exp 038, Phase B).
+
+    ``logits`` (B, Q, C) and ``keypoints`` (B, Q, 4) are the coarse line outputs, query q of
+    image b coming from token b * ``num_kept`` + q // ``num_shapes`` of the batch's
+    ``TokenGrid``. As in Phase A, each matched line gives a real query (coarse endpoints,
+    predicted class; endpoints off by more than ``max_coarse_error`` patches are masked, the
+    window cannot reach them) and a denoising query (ground truth + ``noise``, true class).
+    """
+    device = keypoints.device
+    images: list[torch.Tensor] = []
+    sources: list[torch.Tensor] = []
+    predicted: list[torch.Tensor] = []
+    coarse: list[torch.Tensor] = []
+    targets: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    for b, match in enumerate(matches):
+        query = match.pred_indices.to(device)
+        truth = match.target_indices.to(device)
+        images.append(torch.full_like(query, b))
+        sources.append(b * num_kept + query // num_shapes)
+        predicted.append(logits[b, query].argmax(dim=-1))
+        coarse.append(keypoints[b, query].detach().float())
+        targets.append(gt_keypoints[b].to(device)[truth].float())
+        labels.append(gt_labels[b].to(device)[truth])
+    image = torch.cat(images)
+    source = torch.cat(sources)
+    start = torch.cat(coarse)
+    target = torch.cat(targets)
+    num = target.shape[0]
+    within = (start - target).view(num, 2, 2).abs().amax(dim=-1) <= max_coarse_error
+    queries = LineQueries.concat(
+        [
+            LineQueries(image, source, torch.cat(predicted), start),
+            LineQueries(image, source, torch.cat(labels), target + noise.sample(num, device)),
+        ]
+    )
+    return RefinerBatch(
+        queries=queries,
+        target=torch.cat([target, target]),
+        mask=torch.cat([within.float().repeat_interleave(2, dim=1), torch.ones_like(target)]),
+        num_real=num,
+    )
