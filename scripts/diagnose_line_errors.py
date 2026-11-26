@@ -136,8 +136,9 @@ def page_geometry(
     page: int,
     max_lines: int,
     device: torch.device,
-) -> tuple[PageGeometry, PageGeometry]:
-    """Geometry for the cls score and for the cls^(1-a) * quality^a score."""
+) -> tuple[PageGeometry, PageGeometry, PageGeometry]:
+    """Geometry for: coarse endpoints + cls score, refined endpoints + cls score, refined
+    endpoints + cls^(1-a) * quality^a score."""
     r = records[page]
     probs = r.logits.float().sigmoid()
     best, labels = probs.max(dim=-1)
@@ -158,28 +159,34 @@ def page_geometry(
     num_gt = gt_label.shape[0]
     if num_gt:
         raw_oks = line_oks(refined * ps, gt_px, area, cfg.sigma)
+        coarse_oks = line_oks(all_queries.endpoints * ps, gt_px, area, cfg.sigma)
     else:
         raw_oks = refined.new_zeros(num, 0)
+        coarse_oks = raw_oks
     cls_score = best.to(device)
     combined = cls_score.pow(1 - cfg.alpha) * quality.pow(cfg.alpha)
 
     kept = cls_score.topk(min(max_lines, num)).indices
 
-    def geometry(score: torch.Tensor) -> PageGeometry:
+    def geometry(score: torch.Tensor, oks: torch.Tensor) -> PageGeometry:
         # Both variants keep the top queries by class score, as inference does, and only
         # the ranking inside that set changes.
         return PageGeometry(
             page=page,
             score=score[kept].cpu().numpy(),
             label=all_queries.label[kept].cpu().numpy(),
-            oks=raw_oks[kept].cpu().numpy(),
+            oks=oks[kept].cpu().numpy(),
             gt_label=gt_label.cpu().numpy(),
             kept_query=kept.cpu().numpy(),
             all_label=all_queries.label.cpu().numpy(),
-            all_oks=raw_oks.cpu().numpy(),
+            all_oks=oks.cpu().numpy(),
         )
 
-    return geometry(cls_score), geometry(combined)
+    return (
+        geometry(cls_score, coarse_oks),
+        geometry(cls_score, raw_oks),
+        geometry(combined, raw_oks),
+    )
 
 
 def match_page(geo: PageGeometry, t: float, per_class: dict[int, ClassDetections]) -> None:
@@ -364,20 +371,25 @@ def run(cfg: Config) -> None:
     names = {dataset.line_cat_id_to_idx[int(c["id"])]: str(c["name"]) for c in dataset.line_categories}
     common = {"barLine", "beam", "ledgerLines", "staff", "stem", "system"}
 
-    geometries = [
-        page_geometry(cfg, records, areas, grid, token_offsets, refiner, head, p, max_lines, device)
-        for p in test_pages
-    ]
+    variants = (
+        ("coarse endpoints, cls", 0),
+        ("refined endpoints, cls", 1),
+        (f"refined endpoints, cls*quality (alpha {cfg.alpha:g})", 2),
+    )
+    # Matching is per page, so each page's (queries x GT) OKS tables are dropped right away.
+    per_key: dict[str, dict[int, ClassDetections]] = {
+        f"{variant}, OKS {t:g}": {} for variant, _ in variants for t in cfg.thresholds
+    }
+    for p in test_pages:
+        geo = page_geometry(cfg, records, areas, grid, token_offsets, refiner, head, p, max_lines, device)
+        for variant, pick in variants:
+            for t in cfg.thresholds:
+                match_page(geo[pick], t, per_key[f"{variant}, OKS {t:g}"])
     summary: dict[str, dict[str, dict[str, float | int | dict[str, int]]]] = {}
-    for variant, pick in (("cls", 0), (f"cls*quality (alpha {cfg.alpha:g})", 1)):
-        for t in cfg.thresholds:
-            per_class: dict[int, ClassDetections] = {}
-            for geo in geometries:
-                match_page(geo[pick], t, per_class)
-            rows = report(per_class, names, common)
-            key = f"{variant}, OKS {t:g}"
-            summary[key] = rows
-            print_table(key, rows)
+    for key, per_class in per_key.items():
+        rows = report(per_class, names, common)
+        summary[key] = rows
+        print_table(key, rows)
     (cfg.out_dir / "line_error_diagnosis.json").write_text(json.dumps(summary, indent=2))
     print(f"\nSaved {cfg.out_dir / 'line_error_diagnosis.json'}")
 
