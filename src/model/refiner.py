@@ -14,6 +14,7 @@ grid cell (row, col) spans [col, col + 1) x [row, row + 1) and its center is at 
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -381,6 +382,95 @@ def deduplicate_lines(
         keep=torch.tensor(keep, dtype=torch.long)[rank].to(device),
         score=score_t[rank].to(device),
         group_size=torch.tensor(sizes, dtype=torch.long)[rank].to(device),
+    )
+
+
+def load_refiner(
+    path: Path, dim: int, num_classes: int, device: torch.device
+) -> EndpointRefiner:
+    """Loads a ``refiner.pt`` saved by ``scripts/train_endpoint_refiner.py`` (config values
+    are stored as strings), in eval mode."""
+    saved: dict[str, object] = torch.load(path, map_location=device, weights_only=True)
+    config = saved["config"]
+    state = saved["refiner"]
+    assert isinstance(config, dict) and isinstance(state, dict)
+    refiner = EndpointRefiner(
+        dim=dim,
+        num_classes=num_classes,
+        num_steps=int(str(config["num_steps"])),
+        heads=int(str(config["heads"])),
+        scale=float(str(config["scale"])),
+    ).to(device)
+    refiner.load_state_dict(state)
+    refiner.eval()
+    return refiner
+
+
+@dataclass(frozen=True)
+class LinePredictions:
+    """Final lines of one image: endpoints (K, 4) in patch units, scores, class indices and
+    how many candidates each line stands for after NMS."""
+
+    endpoints: torch.Tensor
+    scores: torch.Tensor
+    labels: torch.Tensor
+    group_size: torch.Tensor
+
+
+def postprocess_lines(
+    refiner: EndpointRefiner,
+    grid: TokenGrid,
+    logits: torch.Tensor,
+    keypoints: torch.Tensor,
+    num_shapes: int,
+    candidate_floor: float,
+    nms_radius: float | None,
+    merge: bool,
+    max_lines: int,
+    num_steps: int | None = None,
+    chunk: int = 8192,
+) -> LinePredictions:
+    """Line post-processing of one image (Analysis 007 / Exp 035 on Exp 037).
+
+    ``logits`` (Q, C) and ``keypoints`` (Q, 4, patch units) are the coarse line outputs of the
+    image whose kept final tokens are ``grid`` (a single image, index 0), with query q coming
+    from token q // ``num_shapes``. The queries scoring >= ``candidate_floor`` are refined, then
+    deduplicated by ``deduplicate_lines`` (``nms_radius`` in patch units, None to skip) with
+    optional noisy-OR merging, and the top ``max_lines`` by final score are returned.
+    """
+    best, labels = logits.float().sigmoid().max(dim=-1)
+    picked = (best >= candidate_floor).nonzero().squeeze(1)
+    queries = LineQueries(
+        image=torch.zeros_like(picked),
+        source=picked // num_shapes,
+        label=labels[picked],
+        endpoints=keypoints[picked].float(),
+    )
+    parts: list[torch.Tensor] = []
+    with torch.no_grad():
+        for start in range(0, picked.shape[0], chunk):
+            part = LineQueries(
+                image=queries.image[start : start + chunk],
+                source=queries.source[start : start + chunk],
+                label=queries.label[start : start + chunk],
+                endpoints=queries.endpoints[start : start + chunk],
+            )
+            outputs: list[RefinedEndpoints] = refiner(grid, part, num_steps=num_steps)
+            parts.append(outputs[-1].endpoints if outputs else part.endpoints)
+    endpoints = torch.cat(parts) if parts else queries.endpoints
+    scores = best[picked]
+    index = torch.arange(picked.shape[0], device=endpoints.device)
+    sizes = torch.ones_like(index)
+    if nms_radius is not None and picked.shape[0] > 0:
+        deduped = deduplicate_lines(endpoints, scores, queries.label, nms_radius, merge)
+        index, scores, sizes = deduped.keep, deduped.score, deduped.group_size
+    top = scores.topk(min(max_lines, scores.shape[0])).indices
+    index = index[top]
+    return LinePredictions(
+        endpoints=endpoints[index],
+        scores=scores[top],
+        labels=queries.label[index],
+        group_size=sizes[top],
     )
 
 

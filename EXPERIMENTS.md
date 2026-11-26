@@ -890,7 +890,16 @@
     | refined | 0.807 / 0.954 | 0.784 / 0.883 | 0.718 | 0.940 | 0.902 | 0.813 |
     | **refined + NMS + merging** | **0.817 / 0.960** | **0.836 / 0.936** | **0.963** | **0.954** | 0.905 | 0.834 |
 
-    Exp 029 with the full pipeline: staff 0.969, stem 0.965, ledgerLines 0.901, system 0.957. "All" includes `octave` (3 held-out lines: 029 0.024, 037 0.313) and `voltaBracket` (22: 0.754 vs 0.763), which dominate the all-class difference; "common" = barLine, beam, ledgerLines, staff, stem, system.
+    Exp 029 with the full pipeline: staff 0.969, stem 0.965, ledgerLines 0.901, system 0.957.
+  * **`inference_coco.py` with the full pipeline** (`--refiner_checkpoint <phase_a>/refiner.pt`, defaults: floor 0.05, NMS 4 px, merging, trained steps; `--force_pyvips --use_sdpa`, laptop, ~2.7 s/page). Held-out pages reproduce the diagnostic (029: AP 0.817, common 0.960, staff 0.969; 037: 0.837 vs 0.836, fp16 cache vs fp32 tokens). Symbols unchanged (029 0.768, 037 0.708). **All 351 pages** (comparable to the earlier tables; the refiners trained on 46 of the 57 pieces):
+
+    | all pages, AP@[.5:.95] | lines all / common | staff | stem | ledgerLines | system |
+    |---|---|---|---|---|---|
+    | Exp 029 coarse | 0.748 / 0.904 | 0.837 | 0.835 | 0.842 | 0.973 |
+    | Exp 029 full pipeline | **0.823 / 0.971** | **0.978** | **0.967** | 0.920 | 0.987 |
+    | Exp 037 coarse | 0.645 / 0.780 | 0.523 | 0.614 | 0.805 | 0.929 |
+    | Exp 037 full pipeline | **0.818 / 0.964** | **0.973** | **0.958** | 0.920 | 0.969 |
+ "All" includes `octave` (3 held-out lines: 029 0.024, 037 0.313) and `voltaBracket` (22: 0.754 vs 0.763), which dominate the all-class difference; "common" = barLine, beam, ledgerLines, staff, stem, system.
   * AP50 / AP75, common classes: Exp 037 0.878 / 0.781 (coarse) → 0.959 / 0.944 (full); Exp 029 0.966 / 0.915 → 0.981 / 0.967. Staff AP50 / AP75: 037 0.687 / 0.542 → **0.968 / 0.962**; 029 0.924 / 0.863 → 0.970 / 0.969.
   * Exp 037 staff at OKS 0.5 (14,460 GT): found 13,576 → 13,821 → 14,183; **found but scored < 0.3: 12,256 (90%)** → 12,459 → 423; missed 368 → 362 → **56** (Exp 029 full pipeline: 58); dAP of duplicates +0.182 → +0.203 → +0.001.
 * **Conclusion**:

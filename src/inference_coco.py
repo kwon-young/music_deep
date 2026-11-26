@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
 from model.detector import OMRDetector, create_detector
+from model.refiner import EndpointRefiner, TokenGrid, load_refiner, postprocess_lines
 from dataset.coco import (
     parse_coco,
     load_coco_sample,
@@ -182,6 +183,7 @@ def process_single_image(
     line_idx_to_cat_id,
     max_symbols,
     max_lines,
+    refiner: EndpointRefiner | None = None,
 ):
     img_meta = dataset.images[i]
 
@@ -212,11 +214,24 @@ def process_single_image(
         drop_rate=args.drop_rate,
     )
 
-    # Forward pass
-    with torch.autocast(
-        device_type=device.type, dtype=torch.float16, enabled=args.use_amp
-    ):
-        outputs = model(dropped_item.sample.image)
+    # Forward pass; with a refiner, also keep the final tokens it reads.
+    final: list[torch.Tensor] = []
+
+    def keep_final(
+        module: torch.nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor
+    ) -> None:
+        final.append(output)
+
+    norm = model.backbone.transformer.norm
+    handle = norm.register_forward_hook(keep_final) if refiner is not None else None
+    try:
+        with torch.autocast(
+            device_type=device.type, dtype=torch.float16, enabled=args.use_amp
+        ):
+            outputs = model(dropped_item.sample.image)
+    finally:
+        if handle is not None:
+            handle.remove()
 
     # Oracle FGL: replace FGL residuals with GT-derived perfect residuals
     if args.oracle_fgl:
@@ -264,13 +279,42 @@ def process_single_image(
     line_logits = outputs.lines.pred_logits.data[0]
     line_kps = outputs.lines.pred_keypoints.data[0]
 
-    line_probs = torch.sigmoid(line_logits)
-    line_max_probs, line_labels = line_probs.max(dim=-1)
+    if refiner is not None:
+        # Exp 035 pipeline: refine the candidates above the floor, NMS with merged
+        # scores, then keep the top lines by final score.
+        patches = dropped_item.sample.image
+        _, height, width = patches.image_shape
+        ph, pw = patches.patch_size
+        grid = TokenGrid.from_batch(
+            final[0].float(), patches.indices, height // ph, width // pw
+        )
+        lines = postprocess_lines(
+            refiner,
+            grid,
+            line_logits,
+            line_kps,
+            num_shapes=args.num_shapes,
+            candidate_floor=args.line_candidate_floor,
+            nms_radius=(
+                args.line_nms_radius / args.patch_size
+                if args.line_nms_radius > 0
+                else None
+            ),
+            merge=not args.no_line_merge,
+            max_lines=max_lines,
+            num_steps=args.refine_steps,
+        )
+        line_probs_kept = lines.scores
+        line_kps_kept = lines.endpoints.clone()
+        line_labels_kept = lines.labels
+    else:
+        line_probs = torch.sigmoid(line_logits)
+        line_max_probs, line_labels = line_probs.max(dim=-1)
 
-    k_line = min(max_lines, line_max_probs.shape[0])
-    line_probs_kept, line_keep = torch.topk(line_max_probs, k_line)
-    line_kps_kept = line_kps[line_keep]
-    line_labels_kept = line_labels[line_keep]
+        k_line = min(max_lines, line_max_probs.shape[0])
+        line_probs_kept, line_keep = torch.topk(line_max_probs, k_line)
+        line_kps_kept = line_kps[line_keep]
+        line_labels_kept = line_labels[line_keep]
 
     line_kps_kept[:, [0, 1, 2, 3]] *= args.patch_size
 
@@ -336,6 +380,15 @@ def create_inference_iterator(
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
+    refiner = None
+    if args.refiner_checkpoint is not None:
+        refiner = load_refiner(
+            args.refiner_checkpoint,
+            model.backbone.patch_embed[1].out_features,
+            dataset.num_line_classes,
+            device,
+        )
+
     with torch.no_grad():
         # Iterate over the shared, thread-safe index generator
         for i in index_gen:
@@ -349,6 +402,7 @@ def create_inference_iterator(
                 line_idx_to_cat_id,
                 max_symbols,
                 max_lines,
+                refiner,
             )
             yield sym_res, line_res
 
@@ -361,6 +415,12 @@ def run_inference(args):
     print(f"Using device: {device}")
     if args.oracle_fgl:
         print(">>> ORACLE FGL MODE: replacing FGL residuals with GT-derived targets")
+    if args.refiner_checkpoint is not None:
+        print(
+            f">>> Line pipeline: refiner {args.refiner_checkpoint}, candidates >= "
+            f"{args.line_candidate_floor}, NMS {args.line_nms_radius} px, "
+            f"merge {not args.no_line_merge}, steps {args.refine_steps or 'trained'}"
+        )
 
     # 1. Load dataset to get metadata and category mappings
     dataset = parse_coco(args.anno_path, cache_dir=args.cache_dir)
@@ -512,7 +572,42 @@ if __name__ == "__main__":
         "optimal FGL targets for matched predictions.",
     )
 
+    parser.add_argument(
+        "--refiner_checkpoint",
+        type=Path,
+        default=None,
+        help="Exp 035 endpoint refiner (refiner.pt). Enables the line pipeline: refine the "
+        "candidates above --line_candidate_floor, NMS, noisy-OR merged scores.",
+    )
+    parser.add_argument(
+        "--line_candidate_floor",
+        type=float,
+        default=0.05,
+        help="With a refiner: line queries scoring at least this much are refined.",
+    )
+    parser.add_argument(
+        "--line_nms_radius",
+        type=float,
+        default=4.0,
+        help="With a refiner: a line suppresses same-class lines whose two endpoints are "
+        "both within this many pixels (<= 0 disables NMS).",
+    )
+    parser.add_argument(
+        "--no_line_merge",
+        action="store_true",
+        help="With a refiner: keep the kept line's own score instead of the noisy-OR of "
+        "the lines it suppressed.",
+    )
+    parser.add_argument(
+        "--refine_steps",
+        type=int,
+        default=None,
+        help="With a refiner: number of refinement steps (default: the trained number).",
+    )
+
     args = parser.parse_args()
+    if args.refiner_checkpoint is not None and args.oracle_fgl:
+        raise ValueError("--oracle_fgl and --refiner_checkpoint cannot be combined")
 
     if args.var_threshold is None and args.drop_rate is None:
         args.var_threshold = 0.001

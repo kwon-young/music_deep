@@ -13,6 +13,7 @@ from model.refiner import (
     deduplicate_lines,
     fgl_loss,
     line_oks,
+    postprocess_lines,
     refiner_loss,
 )
 
@@ -225,6 +226,38 @@ class TestDeduplicateLines(unittest.TestCase):
             torch.zeros(0, 4), torch.zeros(0), torch.zeros(0, dtype=torch.long), 4.0, True
         )
         self.assertEqual(out.keep.numel(), 0)
+
+
+class TestPostprocessLines(unittest.TestCase):
+    def test_floor_nms_merge_and_top_k(self) -> None:
+        torch.manual_seed(0)
+        grid = grid_with_drops(4, 4, dropped=[], dim=12)
+        refiner = EndpointRefiner(dim=12, num_classes=2, heads=3)  # identity at init
+        keypoints = torch.tensor(
+            [
+                [0.5, 0.5, 3.5, 0.5],  # q0, class 0
+                [0.51, 0.5, 3.5, 0.52],  # q1, duplicate of q0
+                [0.5, 2.5, 3.5, 2.5],  # q2, distinct line, class 1
+                [1.5, 1.5, 2.5, 1.5],  # q3, below the floor
+            ]
+        )
+        probs = torch.tensor([[0.4, 0.0], [0.3, 0.0], [0.0, 0.2], [0.01, 0.0]])
+        logits = torch.logit(probs.clamp(1e-6, 1 - 1e-6))
+        out = postprocess_lines(
+            refiner, grid, logits, keypoints, num_shapes=1, candidate_floor=0.05,
+            nms_radius=0.1, merge=True, max_lines=10,
+        )
+        self.assertEqual(out.labels.tolist(), [0, 1])
+        torch.testing.assert_close(out.scores, torch.tensor([1 - 0.6 * 0.7, 0.2]))
+        self.assertEqual(out.group_size.tolist(), [2, 1])
+        torch.testing.assert_close(out.endpoints, keypoints[[0, 2]])
+
+        top1 = postprocess_lines(
+            refiner, grid, logits, keypoints, num_shapes=1, candidate_floor=0.05,
+            nms_radius=None, merge=False, max_lines=1,
+        )
+        self.assertEqual(top1.scores.shape[0], 1)
+        torch.testing.assert_close(top1.scores, torch.tensor([0.4]))
 
 
 if __name__ == "__main__":
