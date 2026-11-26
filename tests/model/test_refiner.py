@@ -304,6 +304,32 @@ class TestRefinerBatch(unittest.TestCase):
             batch.mask, torch.tensor([[1.0, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1], [1, 1, 1, 1]])
         )
 
+    def test_shared_token_keys_match_the_per_cell_formula(self) -> None:
+        torch.manual_seed(0)
+        dim, num = 12, 7
+        step = RefineStep(dim, heads=3, num_bins=9)
+        with torch.no_grad():
+            for param in step.parameters():
+                param.add_(torch.randn_like(param) * 0.3)
+        grid = grid_with_drops(4, 5, dropped=[3, 7], dim=dim)
+        image = torch.zeros(num, dtype=torch.long)
+        points = torch.rand(num, 2) * torch.tensor([5.0, 4.0])
+        state = torch.randn(num, dim)
+        new_state, logits = step(state, grid, image, points)
+
+        # The original formulation: project every window cell's key separately.
+        token, valid, centers = grid.window(image, points)
+        keys = step.norm_kv(grid.tokens[token]) + step.key_pos(centers - points.unsqueeze(1))
+        keys = torch.cat([step.null_key.expand(num, 1, dim), keys], dim=1)
+        mask = torch.cat([valid.new_ones(num, 1), valid], dim=1)
+        q = step.to_q(step.norm_q(state)).view(num, 3, dim // 3)
+        k, v = (t.view(num, -1, 3, dim // 3) for t in step.to_kv(keys).chunk(2, dim=-1))
+        w = ((q.unsqueeze(1) * k).sum(-1) * (dim // 3) ** -0.5).masked_fill(~mask.unsqueeze(-1), float("-inf")).softmax(1)
+        expected = state + step.to_out((w.unsqueeze(-1) * v).sum(1).reshape(num, dim))
+        expected = expected + step.ffn(expected)
+        torch.testing.assert_close(new_state, expected, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(logits, step.to_bins(step.out_norm(expected)).view(num, 2, -1), rtol=1e-5, atol=1e-5)
+
     def test_no_line_still_reaches_every_parameter(self) -> None:
         refiner = EndpointRefiner(dim=12, num_classes=2, heads=3)
         grid = grid_with_drops(3, 3, dropped=[], dim=12)

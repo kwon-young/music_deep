@@ -1363,7 +1363,7 @@ if __name__ == "__main__":
     refine.add_argument(
         "--refiner_lr_scale",
         type=float,
-        default=5.0,
+        default=1.0,
         help="Refiner LR as a multiple of the detector LR (same schedule).",
     )
     refine.add_argument("--refiner_fgl_weight", type=float, default=0.15)

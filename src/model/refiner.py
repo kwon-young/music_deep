@@ -170,10 +170,14 @@ class FourierOffsets(nn.Module):
         self.register_buffer("freqs", 2 * math.pi / periods)
         self.proj = nn.Linear(4 * num_freqs + 2, dim)
 
-    def forward(self, offsets: torch.Tensor) -> torch.Tensor:
+    def features(self, offsets: torch.Tensor) -> torch.Tensor:
+        """The input of ``proj``: sin/cos at every period plus the raw offsets."""
         angles = offsets.unsqueeze(-1) * self.freqs
         feats = torch.cat([angles.sin(), angles.cos()], dim=-1).flatten(-2)
-        return self.proj(torch.cat([feats, offsets], dim=-1))
+        return torch.cat([feats, offsets], dim=-1)
+
+    def forward(self, offsets: torch.Tensor) -> torch.Tensor:
+        return self.proj(self.features(offsets))
 
 
 class RefineStep(nn.Module):
@@ -212,25 +216,44 @@ class RefineStep(nn.Module):
         """``state`` (M, D) per endpoint, ``points`` (M, 2); returns new state and bin logits."""
         num, dim = state.shape
         token, valid, centers = grid.window(image, points)
-        keys = self.norm_kv(grid.tokens[token].float())
-        keys = keys + self.key_pos(centers - points.unsqueeze(1))
-        keys = torch.cat([self.null_key.expand(num, 1, dim), keys], dim=1)
-        mask = torch.cat([valid.new_ones(num, 1), valid], dim=1)
+        # A key is to_kv(norm_kv(token) + key_pos(offset)) and to_kv has no bias, so its token
+        # part is computed once per distinct token (instead of once per window cell) and the
+        # offset embedding is folded into a single linear map.
+        used, inverse = token.unique(return_inverse=True)
+        kv_used = self.to_kv(self.norm_kv(grid.tokens[used].float()))
+        num_cells = token.shape[1]
+        kv_tokens = kv_used.index_select(0, inverse.flatten()).view(num, num_cells, 2 * dim)
+        pos_weight = self.to_kv.weight @ self.key_pos.proj.weight
+        pos_bias = self.to_kv.weight @ self.key_pos.proj.bias
+        kv_window = kv_tokens + F.linear(
+            self.key_pos.features(centers - points.unsqueeze(1)), pos_weight, pos_bias
+        )
 
-        # One query against 10 keys: elementwise attention; fused SDPA or bmm kernels waste
-        # nearly all their tiles on such tiny matrices.
-        dim_head = dim // self.heads
-        num_keys = keys.shape[1]
+        # One query against 1 + 9 keys: elementwise attention; fused SDPA or bmm kernels waste
+        # nearly all their tiles on such tiny matrices. The null key is shared by all queries,
+        # so it is scored separately instead of being copied into every window.
         # Explicit sizes everywhere: a step without any line (num == 0) must still run, so
         # that under DDP every parameter receives its (zero) gradient.
+        dim_head = dim // self.heads
+        scale = dim_head**-0.5
         q = self.to_q(self.norm_q(state)).view(num, self.heads, dim_head)
         k, v = (
-            t.reshape(num, num_keys, self.heads, dim_head)
-            for t in self.to_kv(keys).chunk(2, dim=-1)
+            t.reshape(num, num_cells, self.heads, dim_head) for t in kv_window.chunk(2, dim=-1)
         )
-        logits = (q.unsqueeze(1) * k).sum(dim=-1) * dim_head**-0.5
-        weights = logits.masked_fill(~mask.unsqueeze(-1), float("-inf")).softmax(dim=1)
-        read = (weights.unsqueeze(-1) * v).sum(dim=1)
+        k_null, v_null = (
+            t.view(self.heads, dim_head) for t in self.to_kv(self.null_key.view(1, dim)).chunk(2, dim=-1)
+        )
+        logits = torch.cat(
+            [
+                (q * k_null).sum(dim=-1, keepdim=True).transpose(1, 2) * scale,
+                ((q.unsqueeze(1) * k).sum(dim=-1) * scale).masked_fill(
+                    ~valid.unsqueeze(-1), float("-inf")
+                ),
+            ],
+            dim=1,
+        )
+        weights = logits.softmax(dim=1)
+        read = weights[:, 0].unsqueeze(-1) * v_null + (weights[:, 1:].unsqueeze(-1) * v).sum(dim=1)
         state = state + self.to_out(read.reshape(num, dim))
         state = state + self.ffn(state)
         return state, self.to_bins(self.out_norm(state)).view(num, 2, self.to_bins.out_features // 2)
