@@ -683,15 +683,67 @@
 * **Found (2026-11-24)** while checking a synthetic training visualization (streaked glyphs). `extract_patches_img` (`src/transform/core.py`) flattens each patch as `(ph, pw, C)` (`permute(0, 2, 4, 3, 5, 1)`), but `resize_patches_img` viewed it as `(C, ph, pw)` before the bilinear resize, and flattened the result back as `(C, ph', pw')`. Every resized patch was therefore scrambled: each "channel plane" held a third of the patch's rows, each "row" a third of an image row with the RGB values of consecutive pixels interleaved, and the resize interpolated across that layout (mean absolute difference to a correct resize: 0.083 on a page with mean value 0.88).
 * **Scope**: the resize only runs when the extraction size differs from `--patch_size`. It was introduced by `1ce9ed6` (2026-07-02, "decouple patch extraction size from model capacity"), whose default range is 54–64 (resizing already); every Kaggle run since Exp 025 used 54–74. So Exp 025 → 034 trained on scrambled patches except for the ~1/21 of steps that drew exactly 64, with a different scramble per extraction size, while inference (`inference_coco.py`, patch size 64, no resize) always saw clean patches. Training-batch metrics in `metrics.jsonl` (mAP, mIoU, LineErr) were measured on scrambled inputs. The training visualizations show the scramble as horizontal streaks. Exp 021–023 (fixed 64, no resize) are not affected; `resize_patches` is used only by `train_detection.py` (the SSL path does not resize patches).
 * **Possible consequences**: symbol mAP@0.5 went 0.971 (Exp 023) → 0.841 (Exp 025/026, first runs with the bug) and never returned to 0.971 (Exp 029: 0.919, Exp 034: 0.920); the "aggressive scale augmentation" explanation of Exp 025 and the unexplained global drop of Exp 032 are both confounded with it. Line metrics before Exp 029 were computed with the maxDets=20 evaluation bug and cannot be compared.
+* **Update (Exp 037)**: rerunning the Exp 029 recipe from Exp 023 with the fix gives 0.708 symbol AP, below Exp 029: the bug is not what caused the drop after Exp 023 on this (training-set) evaluation; see Exp 037.
 * **Fix**: view as `(ph, pw, C)`, permute to channels-first for `F.interpolate`, permute back and flatten as `(ph', pw', C)`. Regression test `tests/test_patch_resize.py` checks that each resized patch equals the bilinear resize of its own image region (fails before the fix, passes after).
 
 ## Experiment 037: Exp 029 Recipe from the Pre-Bug Exp 023 Checkpoint, with the Patch-Resize Fix
 * **Experiment Name/ID**: `experiments/037_029_recipe_from_023`
-* **Status**: 🚧 DRAFT: to launch on Kaggle.
+* **Status**: ❌ Negative. Run on Kaggle (web-UI launch of notebook branch `exp-037-029-recipe-from-023` @ `e01475d`, with model version 6 attached), 100/100 epochs in ~10 h, 2026-11-24.
 * **Hypothesis/Goal**: The patch-resize bug (Note 002), not the scale augmentation, caused the Exp 025 regression and limited every run since. Restarting the exact Exp 029 recipe from the last pre-bug checkpoint (Exp 023, symbol mAP@0.5 0.971) with clean resized patches should beat Exp 029 (symbols 0.768 / 0.919 / 0.845, lines 0.748 / 0.827 / 0.772 for AP / AP50 / AP75).
 * **Setup**:
   * Init: `experiments/023_proportional_fgl_lines/train_detection/checkpoints/latest_model.pt` (Kaggle model `music-deep/PyTorch/train_detection` version 6, saved 2026-06-28, before `1ce9ed6`; epoch 100, step 17,550, LR annealed to 0). It loads strictly into the current model; its optimizer state is restored as Exp 029 did with Exp 028's.
   * Code: master + the `resize_patches_img` fix. Recipe identical to the Exp 029 Kaggle run (notebook `f997b85`): 100 epochs, peak LR `1e-4`, 1 warmup epoch, `--extract_patch_min 54 --extract_patch_max 74`, `--class_weight_variance_lambda 0.5 --class_weight_size_difficulty_max 8.0`, `--compile --use_sdpa`, 2×T4 DDP. The training command is wrapped in `timeout 11h` (Exp 029 took 9.6 h).
   * Confounds: compared with Exp 029, this run changes two things, the init (023 instead of 028, so it skips Exp 025–028) and the fix. Exp 023's own evaluation (0.971) predates the line maxDets evaluation fix; it should be re-evaluated with the current `evaluate_coco.py` for a clean baseline.
-* **Results**: TBD.
-* **Conclusion**: TBD.
+* **Results** (final checkpoint, epoch 100, step 17,550; `evaluate_coco.py`, maxDets=2000, all 351 trainval pages; the Exp 023 checkpoint re-evaluated in the same notebook with the current inference and evaluation code):
+
+  | | Symbols AP / AP50 / AP75 | Lines AP / AP50 / AP75 | staff AP50 / AP |
+  |---|---|---|---|
+  | Exp 023 (init, re-evaluated) | **0.924 / 0.971 / 0.952** | 0.679 / 0.792 / 0.697 | 0.667 / 0.481 |
+  | Exp 029 (bugged, 023 + 4×100 epochs) | 0.768 / 0.919 / 0.845 | **0.748 / 0.827 / 0.772** | **0.935 / 0.837** |
+  | Exp 037 (fixed, 023 + 100 epochs) | 0.708 / 0.888 / 0.776 | 0.645 / 0.765 / 0.664 | 0.691 / 0.523 |
+
+  * Lines, AP@[.5:.95] for 023 → 037 (029): barLine 0.898 → 0.895 (0.963), beam 0.853 → 0.912 (0.977), ledgerLines 0.815 → 0.805 (0.842), stem 0.594 → 0.614 (0.835), staff 0.481 → 0.523 (0.837), system 0.976 → 0.929 (0.973), voltaBracket 0.607 → 0.429 (0.553), octave 0.206 → 0.054 (0.006).
+  * Symbols: 56 of 83 classes are below Exp 029 (median −0.026 AP); the largest losses are rare classes that Exp 023 had at AP 1.0 (`dynamicSforzandoPiano` 1.000 → 0.295, `accidentalNaturalSharp` 0.888 → 0.172, `articMarcatoAbove` 1.000 → 0.392). `slur` 0.430 → 0.392, `tie` 0.473 → 0.390.
+  * Training batch (`metrics.jsonl`, now on clean resized inputs): mAP@0.5 dropped to 0.75–0.90 during the first 20 epochs (Exp 029: 0.93–0.97) and line endpoint error peaked at 0.33 (epoch 10), then both matched Exp 029 from epoch ~40; final 0.964 mAP@0.5, 0.960 mIoU, 0.090 LineErr (Exp 029: 0.954 / 0.938 / 0.137).
+* **Conclusion**:
+  1. **The hypothesis is rejected: the bug does not explain the drop after Exp 023.** With clean patches, the same recipe takes Exp 023 from 0.924 to 0.708 symbol AP, a larger drop than any bugged run. What remains between 023 and 037 is the 54–74 scale augmentation (plus the size-difficulty weights and a second LR cycle).
+  2. **The evaluation cannot reward scale augmentation.** The only Trompa annotation file is `instances_trainval2017.json`: every COCO number in this file is measured on the training pages, at the single scale they were trained at (staff space 54 px, 64 px patches). Exp 023 trained 100 epochs on exactly those inputs, so its 0.971 is in large part a fit to the training set; any augmentation moves training away from the evaluated inputs and can only cost on this metric. The Exp 025 "regression" and the 023 → 037 drop are therefore not evidence that augmentation hurts generalization, and the bug's effect on generalization is not measured either.
+  3. Exp 029 beats Exp 037 because it had 400 epochs on the augmented distribution (Exp 025 → 026 → 028 → 029, 100 each) against 100, and lines gained the most from that (staff 0.837 vs 0.523). One cycle from 023 is not enough to reach the same fit of long lines.
+  * **Next steps**:
+    * (a) **Create a held-out split before any further recipe comparison.** Split the 351 pages by piece (not by page, so the same score never appears on both sides), train on the train part, evaluate on the held-out part. Exp 023 (no augmentation) vs Exp 037 (augmentation, fixed) on that split is the comparison this experiment wanted.
+    * (b) Cheaper partial check with existing checkpoints: evaluate Exp 023, 029 and 037 on the trainval pages rescaled (e.g. staff space 0.8× and 1.25×). That measures scale robustness, which the augmentation is meant to buy, but still on training pages.
+    * (c) Exp 036 (synthetic pretraining) aims at generalization to shape variability; the current evaluation cannot show that either, so it also waits for (a).
+
+## Analysis 005: Token Localization Probe on Exp 029 (Reach vs Resolution)
+* **Experiment Name/ID**: `analysis/005_token_probe` (offline, Exp 029 checkpoint, laptop). Artifacts: `experiments/029_size_difficulty_balanced_loss/analysis_005_token_probe/` (`token_probe_summary.json`, `run.log`). Script: `scripts/probe_token_localization.py` (commits `d1b62c9`, `718b6d6`).
+* **Hypothesis/Goal**: The detector predicts a whole box or segment from one 64 px token. Analysis 003 found that the endpoint near the predicting patch is precise and the far one is not. Decide which of two causes limits localization, because they call for different second stages: **reach** (the predicting token is far from the point; a stage that samples tokens at the predicted endpoints is enough) or **resolution** (fine geometry is lost in the 12288→192 patch embedding or in the backbone; the second stage would also need raw pixels).
+* **Setup**:
+  * Points: both endpoints of every line, top-left and bottom-right corners of every box, all 351 trainval pages (up to 2000 random points per page), Exp 029 features frozen, inference preprocessing (no resize, variance drop 0.001).
+  * Sources, evaluated on the same points: `head` = the detector's own prediction of the point, from the closest (L1) same-class query with score ≥ 0.3; `matched@12` = MLP probe on that query's final token (+ class, point type, slot); `local@t` = MLP probe on the token of the patch **containing** the point, at tap t = 0 (patch embedding output), 6, 12 (+ class, point type); `center` = center of the containing patch (no model).
+  * Probes: LayerNorm + 2×512 MLP, L1 loss, 4000 steps × 4096, AdamW 1e-3 cosine. Split by piece (file name without page number), 20% of pieces held out: 558,550 train / 108,036 held-out points. 97.9% of points have both a kept local patch and a matched query.
+  * Fair comparison: `matched@12` vs `local@t` (same probe, same data, only the token changes). `head` is not a fair competitor: the detector was trained on all 351 pages, held-out pieces included.
+  * "Ambiguous" = another point of the same class and type lies in the same patch (e.g. two staff segments ending at one barline); the local probe has no slot to tell them apart.
+  * Command: `PYTHONPATH=src mamba run -n pytorch python scripts/probe_token_localization.py --use_sdpa` (20 min, 6.2 GB RAM).
+* **Results** (held-out, median / p90 error in px):
+
+  | group | n | head | matched@12 | local@12 | local@6 | local@0 | center |
+  |---|---|---|---|---|---|---|---|
+  | lines | 66,300 | 1.2 / 9.8 | 1.9 / 15.3 | 1.8 / 19.0 | 2.0 / 19.6 | 2.4 / 25.5 | 25.8 / 35.9 |
+  | lines, unambiguous | 58,542 | 1.2 / 8.1 | 1.8 / 11.6 | **1.5 / 7.1** | 1.7 / 9.8 | 1.8 / 16.1 | 24.8 / 35.0 |
+  | lines, reach 0–1 patch | 22,525 | 0.8 / 2.3 | 1.2 / 3.7 | 1.6 / 11.7 | 1.8 / 13.5 | 2.1 / 19.1 | |
+  | lines, reach 2–4 | 17,033 | 1.3 / 7.0 | 2.1 / 10.4 | 1.8 / 16.6 | 2.1 / 19.3 | 2.4 / 27.6 | |
+  | lines, reach 4–8 | 7,500 | 2.6 / 54.2 | 4.2 / 54.5 | 1.8 / 20.2 | 2.1 / 21.2 | 2.6 / 28.3 | |
+  | lines, reach 8–16 | 4,681 | 3.9 / 55.4 | 5.5 / 104.7 | 1.5 / 29.4 | 1.6 / 30.2 | 1.5 / 26.6 | |
+  | lines, reach ≥ 16 | 4,273 | 8.8 / 216.0 | 11.9 / 339.4 | 1.4 / 30.2 | 1.5 / 32.0 | 1.7 / 27.4 | |
+  | `staff` | 17,665 | 2.4 / 54.9 | 4.2 / 56.7 | **1.4** / 31.0 | 1.5 / 32.2 | 1.3 / 32.3 | |
+  | symbols | 41,736 | 0.7 / 2.6 | **1.1 / 5.8** | 3.4 / 19.5 | 2.6 / 17.8 | 2.5 / 19.9 | 25.4 / 35.6 |
+  | symbols, diag 0–32 px | 4,894 | 0.8 / 2.4 | 2.0 / 6.5 | 2.7 / 11.9 | 3.6 / 14.2 | 3.7 / 16.4 | |
+
+  * Reach = distance from the predicting token's patch center to the point. Other line classes: `barLine` local@12 1.3 vs matched 1.3, `stem` 1.6 vs 1.5, `beam` 1.9 vs 2.0, `ledgerLines` 3.4 vs 1.6 (short lines, reach ≤ 1), `system` 0.9 vs 4.1.
+  * p90 outliers of `head`/`matched` (symbols diag ≥ 128 px: 1257 px; `system` matched: 495 px) come from the matching rule: when the object is not detected, the nearest confident same-class query belongs to another object. Medians are not affected.
+* **Conclusion**:
+  1. **Lines are limited by reach, not resolution.** The error from the predicting token grows with its distance to the endpoint (matched probe median 1.2 → 11.9 px, head 0.8 → 8.8 px from reach < 1 to ≥ 16 patches), while the token that contains the endpoint stays at 1.4–2.3 px at every reach. Crossover at about 2–4 patches; 25% of line endpoints lie ≥ 4 patches from their predicting token.
+  2. **The patch embedding keeps line geometry.** `local@0` medians ≈ `local@12` for lines (staff 1.3 vs 1.4). Depth mainly shortens the tail (unambiguous p90 16.1 → 7.1 px), because context separates nearby same-class endpoints. A raw-pixel path is not needed for lines; sample **final** tokens.
+  3. **The local tail is ambiguity.** p90 19.0 px over all line endpoints vs 7.1 px on unambiguous ones. A real second stage starts from a coarse estimate (class, approximate position), which resolves most of this ambiguity; the probe has no such input.
+  4. **Symbols are not reach-limited.** Their reach is ≤ 1–2 patches, and the token that predicts the object beats the token at its corner (1.1 vs 3.4 px), since a corner is defined by the whole glyph. Endpoint sampling does not apply; the small-object headroom of Analysis 002 needs another explanation (sub-pixel precision on 5–30 px objects).
+  * **Next steps**: Exp 035, lines first: after block 11, for each kept line query, bilinearly sample the final tokens at its two predicted endpoints (learned blank for dropped cells), cross-attend from the query, and predict an absolute residual (fixed bins over ±1 patch, not scaled by length). Train it with denoising from perturbed GT endpoints plus the detector's own detached predictions. Expected ceiling from this probe: far-endpoint median ~1.5 px instead of 2.6–8.8 px for the 25% of endpoints at reach ≥ 4. Evaluate on the held-out split by piece (Exp 037 next step (a)). Leave symbols to a separate study.
