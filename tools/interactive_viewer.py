@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QCheckBox,
     QSpinBox,
+    QDoubleSpinBox,
 )
 from PySide6.QtGui import QPixmap, QPen, QColor, QPainter, QImage
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal
@@ -125,10 +126,11 @@ MAX_REFINE_STEPS = 8
 @dataclass(frozen=True)
 class LineCache:
     """What the refiner needs from one detector pass, so it can rerun without the backbone:
-    the kept final tokens and the candidate coarse lines (patch units) with their scores.
+    the kept final tokens and **all** coarse line queries (patch units) with their scores.
 
-    Candidates go down to the candidate floor (below the display threshold): after NMS
-    with merged scores, a line whose duplicates were individually weak can still be shown.
+    Which of them are refined is decided later by ``RefineSettings.candidate_floor``, so the
+    floor can change without a backbone pass. It can go below the display threshold: after
+    NMS with merged scores, a line whose duplicates were individually weak can be shown.
     """
 
     grid: TokenGrid
@@ -139,21 +141,25 @@ class LineCache:
 
 @dataclass(frozen=True)
 class RefineSettings:
-    """Post-processing chosen in the UI: refiner applications, then optional NMS (both
-    endpoints within ``radius_px``) with optional noisy-OR merging of the group's scores."""
+    """Post-processing chosen in the UI: the coarse lines scoring >= ``candidate_floor`` are
+    refined ``num_steps`` times, then optional NMS (both endpoints within ``radius_px``) with
+    optional noisy-OR merging of the group's scores."""
 
     num_steps: int
     nms: bool
     merge: bool
     radius_px: float
+    candidate_floor: float
 
 
 @dataclass(frozen=True)
 class RefinedLines:
     """Displayed lines of ``cache`` after ``settings``: refined and coarse endpoints (K, 4)
-    in patch units, and how many candidates each displayed line stands for."""
+    in patch units, how many candidates each displayed line stands for, and how many
+    candidates were refined in total."""
 
     cache: LineCache
+    num_candidates: int
     settings: RefineSettings
     endpoints: torch.Tensor
     coarse_endpoints: torch.Tensor
@@ -208,18 +214,28 @@ def refine_lines(
     img_w: int,
     img_h: int,
 ) -> RefinedLines:
-    """Refine all candidates, optionally deduplicate, then keep scores >= display threshold."""
-    endpoints = cache.queries.endpoints
-    labels = cache.queries.label
+    """Refine the candidates above the floor, optionally deduplicate, then keep the
+    (merged) scores >= display threshold."""
+    picked = (cache.scores >= settings.candidate_floor).nonzero().squeeze(1)
+    queries = LineQueries(
+        image=cache.queries.image[picked],
+        source=cache.queries.source[picked],
+        label=cache.queries.label[picked],
+        endpoints=cache.queries.endpoints[picked],
+    )
+    coarse = queries.endpoints
+    endpoints = coarse
+    labels = queries.label
+    candidate_scores = cache.scores[picked]
     num = endpoints.shape[0]
     if settings.num_steps > 0 and num > 0:
         with torch.no_grad():
             outputs: list[RefinedEndpoints] = refiner(
-                cache.grid, cache.queries, num_steps=settings.num_steps
+                cache.grid, queries, num_steps=settings.num_steps
             )
         endpoints = outputs[-1].endpoints
     index = torch.arange(num, device=endpoints.device)
-    scores = cache.scores
+    scores = candidate_scores
     sizes = torch.ones(num, dtype=torch.long, device=endpoints.device)
     if settings.nms and num > 0:
         deduped = deduplicate_lines(
@@ -231,9 +247,10 @@ def refine_lines(
     lines = pixel_lines(endpoints[index], scores, labels[index], patch_size, img_w, img_h)
     return RefinedLines(
         cache=cache,
+        num_candidates=num,
         settings=settings,
         endpoints=endpoints[index],
-        coarse_endpoints=cache.queries.endpoints[index],
+        coarse_endpoints=coarse[index],
         group_size=[int(v) for v in sizes.tolist()],
         lines=lines,
     )
@@ -305,12 +322,10 @@ class InferenceTask(QRunnable):
         refiner: EndpointRefiner | None = None,
         refine_settings: RefineSettings | None = None,
         num_shapes: int = 5,
-        candidate_floor: float = 0.05,
     ):
         super().__init__()
         self.refiner = refiner
         self.refine_settings = refine_settings
-        self.candidate_floor = candidate_floor
         self.num_shapes = num_shapes
         self.model = model
         self.patched_img = patched_img
@@ -420,13 +435,10 @@ class InferenceTask(QRunnable):
                 line_probs = torch.sigmoid(line_logits)
                 line_max_probs, line_labels = line_probs.max(dim=-1)
 
-                # With a refiner, candidates go down to the floor; only lines above the
-                # display threshold are drawn as coarse lines.
-                candidate_threshold = (
-                    min(self.threshold, self.candidate_floor)
-                    if self.refiner is not None
-                    else self.threshold
-                )
+                # With a refiner, every line query is cached (the refinement floor is
+                # applied later, from the UI); only lines above the display threshold are
+                # drawn as coarse lines.
+                candidate_threshold = 0.0 if self.refiner is not None else self.threshold
                 line_kept = (line_max_probs >= candidate_threshold).nonzero().squeeze(1)
                 coarse = line_kps[line_kept].float()
                 line_scores_kept = line_max_probs[line_kept]
@@ -620,6 +632,22 @@ class InteractiveViewer(QMainWindow):
             self.refine_steps_spin.valueChanged.connect(self.sync_refinement)
             controls_layout.addWidget(self.refine_steps_spin)
 
+            self.candidate_floor_spin = QDoubleSpinBox()
+            self.candidate_floor_spin.setDecimals(3)
+            self.candidate_floor_spin.setRange(0.001, 1.0)
+            self.candidate_floor_spin.setSingleStep(0.01)
+            self.candidate_floor_spin.setValue(self.args.line_candidate_floor)
+            self.candidate_floor_spin.setPrefix("refine score >= ")
+            self.candidate_floor_spin.setToolTip(
+                "Only coarse lines scoring at least this much are refined (and then "
+                "deduplicated); the confidence slider applies afterwards, to the merged scores"
+            )
+            self.candidate_floor_spin.valueChanged.connect(self.sync_refinement)
+            controls_layout.addWidget(self.candidate_floor_spin)
+
+            self.candidates_label = QLabel("")
+            controls_layout.addWidget(self.candidates_label)
+
             self.nms_checkbox = QCheckBox("NMS")
             self.nms_checkbox.setChecked(True)
             self.nms_checkbox.setToolTip(
@@ -640,8 +668,7 @@ class InteractiveViewer(QMainWindow):
             self.merge_checkbox = QCheckBox("Merge scores")
             self.merge_checkbox.setChecked(True)
             self.merge_checkbox.setToolTip(
-                "Kept line score = noisy-OR 1 - prod(1 - s) of the lines it suppressed; "
-                f"candidates go down to score {self.args.line_candidate_floor:g}"
+                "Kept line score = noisy-OR 1 - prod(1 - s) of the lines it suppressed"
             )
             self.merge_checkbox.toggled.connect(self.sync_refinement)
             self.nms_checkbox.toggled.connect(self.merge_checkbox.setEnabled)
@@ -823,7 +850,6 @@ class InteractiveViewer(QMainWindow):
             refiner=self.refiner,
             refine_settings=self.requested_settings(),
             num_shapes=self.args.num_shapes,
-            candidate_floor=self.args.line_candidate_floor,
         )
         task.signals.inference_done.connect(self.display_results)
         self.thread_pool.start(task)
@@ -837,6 +863,7 @@ class InteractiveViewer(QMainWindow):
             nms=self.nms_checkbox.isChecked(),
             merge=self.merge_checkbox.isChecked(),
             radius_px=float(self.nms_radius_spin.value()),
+            candidate_floor=float(self.candidate_floor_spin.value()),
         )
 
     def sync_refinement(self) -> None:
@@ -930,6 +957,12 @@ class InteractiveViewer(QMainWindow):
         line_pen.setCosmetic(True)
 
         refined = self.refined
+        if self.refiner is not None:
+            self.candidates_label.setText(
+                ""
+                if refined is None
+                else f"refined {refined.num_candidates} / {refined.cache.scores.shape[0]}"
+            )
         if refined is None:
             for x1, y1, x2, y2, score, label in self.coarse_lines:
                 line = QGraphicsLineItem(x1, y1, x2, y2)
@@ -1008,8 +1041,9 @@ def main():
         "--line_candidate_floor",
         type=float,
         default=0.05,
-        help="With a refiner, line candidates down to this score are refined and deduplicated; "
-        "the confidence slider then applies to the (merged) scores",
+        help="Initial value of the 'refine score >=' control: with a refiner, coarse lines "
+        "down to this score are refined and deduplicated; the confidence slider then applies "
+        "to the (merged) scores",
     )
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--use_amp", action="store_true")
