@@ -326,6 +326,64 @@ def line_oks(
     return torch.exp(-e).mean(dim=-1)
 
 
+@dataclass(frozen=True)
+class DedupedLines:
+    """Result of ``deduplicate_lines``: kept input indices by decreasing (merged) score, their
+    scores, and how many input lines each kept one stands for (itself included)."""
+
+    keep: torch.Tensor
+    score: torch.Tensor
+    group_size: torch.Tensor
+
+
+def deduplicate_lines(
+    endpoints: torch.Tensor,
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    radius: float,
+    merge: bool,
+) -> DedupedLines:
+    """Greedy NMS for refined lines, per class.
+
+    In score order, a line suppresses every lower-scored line of its class whose **two**
+    endpoints both lie within ``radius`` of its own (same units as ``endpoints`` (N, 4)).
+    Refined duplicates land on the same pixels, while distinct lines that only share one
+    endpoint (consecutive staff segments at a barline) are kept. With ``merge``, the kept
+    score becomes the noisy-OR 1 - prod(1 - s) of its group: duplicates are evidence.
+    """
+    device = scores.device
+    keep: list[int] = []
+    merged: list[float] = []
+    sizes: list[int] = []
+    pts = endpoints.detach().float().cpu()
+    score_cpu = scores.detach().float().cpu()
+    label_cpu = labels.detach().cpu()
+    for c in label_cpu.unique().tolist():
+        order = (label_cpu == c).nonzero().squeeze(1)
+        order = order[score_cpu[order].argsort(descending=True)]
+        p = pts[order]
+        near = (
+            torch.cdist(p[:, :2], p[:, :2]).maximum(torch.cdist(p[:, 2:], p[:, 2:])) <= radius
+        )
+        s = score_cpu[order]
+        alive = torch.ones(order.shape[0], dtype=torch.bool)
+        for i in range(order.shape[0]):
+            if not bool(alive[i]):
+                continue
+            group = alive & near[i]
+            alive &= ~group
+            keep.append(int(order[i]))
+            merged.append(float(1 - torch.prod(1 - s[group])) if merge else float(s[i]))
+            sizes.append(int(group.sum()))
+    score_t = torch.tensor(merged, dtype=torch.float32)
+    rank = score_t.argsort(descending=True)
+    return DedupedLines(
+        keep=torch.tensor(keep, dtype=torch.long)[rank].to(device),
+        score=score_t[rank].to(device),
+        group_size=torch.tensor(sizes, dtype=torch.long)[rank].to(device),
+    )
+
+
 def fgl_loss(
     bin_logits: torch.Tensor, target_residual: torch.Tensor, weights: torch.Tensor
 ) -> torch.Tensor:

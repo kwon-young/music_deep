@@ -10,6 +10,7 @@ from model.refiner import (
     QualityHead,
     RefineStep,
     TokenGrid,
+    deduplicate_lines,
     fgl_loss,
     line_oks,
     refiner_loss,
@@ -191,6 +192,39 @@ class TestQuality(unittest.TestCase):
         head = QualityHead(dim=12)
         state = torch.randn(7, 2, 12)
         self.assertEqual(head(state).shape, (7,))
+
+
+class TestDeduplicateLines(unittest.TestCase):
+    def test_suppresses_coinciding_lines_only(self) -> None:
+        endpoints = torch.tensor(
+            [
+                [0.0, 0.0, 100.0, 0.0],  # staff segment
+                [1.0, 1.0, 101.0, 0.0],  # its duplicate (both endpoints within 2)
+                [100.0, 0.0, 200.0, 0.0],  # next segment: shares one endpoint only
+                [0.0, 0.0, 100.0, 0.0],  # same geometry, other class
+            ]
+        )
+        scores = torch.tensor([0.4, 0.5, 0.3, 0.2])
+        labels = torch.tensor([0, 0, 0, 1])
+
+        plain = deduplicate_lines(endpoints, scores, labels, radius=2.0, merge=False)
+        self.assertEqual(sorted(plain.keep.tolist()), [1, 2, 3])
+        kept = dict(zip(plain.keep.tolist(), plain.score.tolist()))
+        self.assertAlmostEqual(kept[1], 0.5)
+        sizes = dict(zip(plain.keep.tolist(), plain.group_size.tolist()))
+        self.assertEqual(sizes, {1: 2, 2: 1, 3: 1})
+        self.assertEqual(plain.score.tolist(), sorted(plain.score.tolist(), reverse=True))
+
+        merged = deduplicate_lines(endpoints, scores, labels, radius=2.0, merge=True)
+        kept = dict(zip(merged.keep.tolist(), merged.score.tolist()))
+        self.assertAlmostEqual(kept[1], 1 - (1 - 0.5) * (1 - 0.4), places=6)
+        self.assertAlmostEqual(kept[2], 0.3, places=6)
+
+    def test_empty_input(self) -> None:
+        out = deduplicate_lines(
+            torch.zeros(0, 4), torch.zeros(0), torch.zeros(0, dtype=torch.long), 4.0, True
+        )
+        self.assertEqual(out.keep.numel(), 0)
 
 
 if __name__ == "__main__":
