@@ -32,7 +32,14 @@ import numpy as np
 import torch
 
 from dataset.coco import CocoLineAnnotation, parse_coco
-from model.refiner import EndpointRefiner, LineQueries, QualityHead, TokenGrid, line_oks
+from model.refiner import (
+    EndpointRefiner,
+    LineQueries,
+    QualityHead,
+    TokenGrid,
+    deduplicate_lines,
+    line_oks,
+)
 from train_endpoint_refiner import PageRecord, build_tables, held_out_pieces
 from train_quality_branch import best_oks, line_areas, load_refiner
 
@@ -55,6 +62,9 @@ class Config:
     sigma: float
     thresholds: tuple[float, ...]
     alpha: float
+    line_areas: Path
+    candidate_floor: float
+    nms_radius: float
 
 
 @dataclass
@@ -132,13 +142,12 @@ def page_geometry(
     grid: TokenGrid,
     token_offsets: Sequence[int],
     refiner: EndpointRefiner,
-    head: QualityHead,
+    head: QualityHead | None,
     page: int,
     max_lines: int,
     device: torch.device,
-) -> tuple[PageGeometry, PageGeometry, PageGeometry]:
-    """Geometry for: coarse endpoints + cls score, refined endpoints + cls score, refined
-    endpoints + cls^(1-a) * quality^a score."""
+) -> dict[str, PageGeometry]:
+    """Geometry of one page for each ranking/post-processing variant (see ``variant_names``)."""
     r = records[page]
     probs = r.logits.float().sigmoid()
     best, labels = probs.max(dim=-1)
@@ -150,30 +159,24 @@ def page_geometry(
         endpoints=r.keypoints.to(device),
     )
     refined, state = refine_all(refiner, grid, all_queries)
-    with torch.no_grad():
-        quality = head(state).sigmoid()
     ps = float(cfg.patch_size)
     gt_px = r.gt_keypoints.to(device) * ps
     gt_label = r.gt_labels.to(device)
     area = areas[page].to(device)
-    num_gt = gt_label.shape[0]
-    if num_gt:
+    if gt_label.shape[0]:
         raw_oks = line_oks(refined * ps, gt_px, area, cfg.sigma)
         coarse_oks = line_oks(all_queries.endpoints * ps, gt_px, area, cfg.sigma)
     else:
         raw_oks = refined.new_zeros(num, 0)
         coarse_oks = raw_oks
     cls_score = best.to(device)
-    combined = cls_score.pow(1 - cfg.alpha) * quality.pow(cfg.alpha)
+    top = cls_score.topk(min(max_lines, num)).indices
 
-    kept = cls_score.topk(min(max_lines, num)).indices
-
-    def geometry(score: torch.Tensor, oks: torch.Tensor) -> PageGeometry:
-        # Both variants keep the top queries by class score, as inference does, and only
-        # the ranking inside that set changes.
+    def geometry(kept: torch.Tensor, score: torch.Tensor, oks: torch.Tensor) -> PageGeometry:
+        """``kept`` query indices with their final ``score`` (aligned with ``kept``)."""
         return PageGeometry(
             page=page,
-            score=score[kept].cpu().numpy(),
+            score=score.cpu().numpy(),
             label=all_queries.label[kept].cpu().numpy(),
             oks=oks[kept].cpu().numpy(),
             gt_label=gt_label.cpu().numpy(),
@@ -182,11 +185,44 @@ def page_geometry(
             all_oks=oks.cpu().numpy(),
         )
 
-    return (
-        geometry(cls_score, coarse_oks),
-        geometry(cls_score, raw_oks),
-        geometry(combined, raw_oks),
+    out = {
+        "coarse endpoints, cls": geometry(top, cls_score[top], coarse_oks),
+        "refined endpoints, cls": geometry(top, cls_score[top], raw_oks),
+    }
+    if head is not None:
+        with torch.no_grad():
+            quality = head(state).sigmoid()
+        combined = cls_score.pow(1 - cfg.alpha) * quality.pow(cfg.alpha)
+        out[f"refined endpoints, cls*quality (alpha {cfg.alpha:g})"] = geometry(
+            top, combined[top], raw_oks
+        )
+    # Analysis 007 post-processing: refine the candidates above the floor, NMS with
+    # noisy-OR merged scores, then keep the top lines by merged score.
+    candidates = (cls_score >= cfg.candidate_floor).nonzero().squeeze(1)
+    deduped = deduplicate_lines(
+        refined[candidates] * ps,
+        cls_score[candidates],
+        all_queries.label[candidates],
+        cfg.nms_radius,
+        merge=True,
     )
+    keep = deduped.keep[:max_lines]
+    out[nms_variant(cfg)] = geometry(candidates[keep], deduped.score[:max_lines], raw_oks)
+    return out
+
+
+def nms_variant(cfg: Config) -> str:
+    return (
+        f"refined endpoints, score >= {cfg.candidate_floor:g}, "
+        f"NMS {cfg.nms_radius:g}px + noisy-OR"
+    )
+
+
+def variant_names(cfg: Config, with_quality: bool) -> list[str]:
+    names = ["coarse endpoints, cls", "refined endpoints, cls"]
+    if with_quality:
+        names.append(f"refined endpoints, cls*quality (alpha {cfg.alpha:g})")
+    return names + [nms_variant(cfg)]
 
 
 def match_page(geo: PageGeometry, t: float, per_class: dict[int, ClassDetections]) -> None:
@@ -349,19 +385,20 @@ def run(cfg: Config) -> None:
     raw: list[dict[str, object]] = torch.load(cfg.phase_a_dir / "features.pt", weights_only=True)
     records = [PageRecord.from_dict(d) for d in raw]
     del raw
-    areas = line_areas(cfg.anno_path, cfg.phase_a_dir / "quality" / "line_areas.pt", records)
+    areas = line_areas(cfg.anno_path, cfg.line_areas, records)
     grid, _, pieces, token_offsets = build_tables(records, cfg.num_shapes, device)
     refiner = load_refiner(
         cfg.phase_a_dir / "refiner.pt", grid.tokens.shape[1], dataset.num_line_classes, device
     )
-    head = QualityHead(grid.tokens.shape[1]).to(device)
-    saved: dict[str, object] = torch.load(
-        cfg.phase_a_dir / "quality" / "quality_head.pt", map_location=device, weights_only=True
-    )
-    state = saved["quality_head"]
-    assert isinstance(state, dict)
-    head.load_state_dict(state)
-    head.eval()
+    head: QualityHead | None = None
+    head_path = cfg.phase_a_dir / "quality" / "quality_head.pt"
+    if head_path.exists():
+        head = QualityHead(grid.tokens.shape[1]).to(device)
+        saved: dict[str, object] = torch.load(head_path, map_location=device, weights_only=True)
+        state = saved["quality_head"]
+        assert isinstance(state, dict)
+        head.load_state_dict(state)
+        head.eval()
 
     max_lines = 100 + max(
         sum(1 for a in anns if isinstance(a, CocoLineAnnotation)) for anns in dataset.annotations.values()
@@ -371,20 +408,16 @@ def run(cfg: Config) -> None:
     names = {dataset.line_cat_id_to_idx[int(c["id"])]: str(c["name"]) for c in dataset.line_categories}
     common = {"barLine", "beam", "ledgerLines", "staff", "stem", "system"}
 
-    variants = (
-        ("coarse endpoints, cls", 0),
-        ("refined endpoints, cls", 1),
-        (f"refined endpoints, cls*quality (alpha {cfg.alpha:g})", 2),
-    )
+    variants = variant_names(cfg, with_quality=head is not None)
     # Matching is per page, so each page's (queries x GT) OKS tables are dropped right away.
     per_key: dict[str, dict[int, ClassDetections]] = {
-        f"{variant}, OKS {t:g}": {} for variant, _ in variants for t in cfg.thresholds
+        f"{variant}, OKS {t:g}": {} for variant in variants for t in cfg.thresholds
     }
     for p in test_pages:
         geo = page_geometry(cfg, records, areas, grid, token_offsets, refiner, head, p, max_lines, device)
-        for variant, pick in variants:
+        for variant in variants:
             for t in cfg.thresholds:
-                match_page(geo[pick], t, per_key[f"{variant}, OKS {t:g}"])
+                match_page(geo[variant], t, per_key[f"{variant}, OKS {t:g}"])
     summary: dict[str, dict[str, dict[str, float | int | dict[str, int]]]] = {}
     for key, per_class in per_key.items():
         rows = report(per_class, names, common)
@@ -408,6 +441,14 @@ def parse_args() -> Config:
     parser.add_argument("--sigma", type=float, default=0.1)
     parser.add_argument("--thresholds", type=float, nargs="+", default=[0.5, 0.75])
     parser.add_argument("--alpha", type=float, default=0.75)
+    parser.add_argument(
+        "--line_areas",
+        type=Path,
+        default=Path("experiments/035_endpoint_refiner/phase_a/quality/line_areas.pt"),
+        help="Cache of the GT line areas (read from the annotation JSON when missing).",
+    )
+    parser.add_argument("--candidate_floor", type=float, default=0.05)
+    parser.add_argument("--nms_radius", type=float, default=4.0)
     args = parser.parse_args()
     return Config(
         phase_a_dir=Path(args.phase_a_dir),
@@ -422,6 +463,9 @@ def parse_args() -> Config:
         sigma=float(args.sigma),
         thresholds=tuple(float(t) for t in args.thresholds),
         alpha=float(args.alpha),
+        line_areas=Path(args.line_areas),
+        candidate_floor=float(args.candidate_floor),
+        nms_radius=float(args.nms_radius),
     )
 
 
