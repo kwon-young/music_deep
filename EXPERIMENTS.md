@@ -818,3 +818,31 @@
   3. **Why**: after refinement, duplicates snap to the same endpoints, so the within-cluster re-ranking headroom of Analysis 003 (+0.028 staff AP for the coarse endpoints) is gone: the top-scored duplicate is "not the best" only by a negligible OKS. The remaining common-class errors are not localization-ranking errors.
   4. **The one-to-one class score is what removes duplicates**: quality alone ranks every duplicate high and collapses `staff` to 0.480 AP. Any quality term must multiply the class score, not replace it.
   * **Next steps**: (a) keep the quality branch as an optional, cheap add-on for Phase B (it helps the rare long classes) but do not count on it for the common ones; (b) the remaining staff/stem gap (AP50 0.94/0.99) needs the "missed vs under-scored vs duplicate" split on the cache before any change to the coarse head's confidence.
+
+## Analysis 006: Line Error Breakdown after the Phase A Refiner (TIDE-style, OKS)
+* **Experiment Name/ID**: `analysis/006_line_error_breakdown` (offline, Phase A cache; artifacts `experiments/035_endpoint_refiner/phase_a/diagnosis/`: `run.log`, `line_error_diagnosis.json`). Script: `scripts/diagnose_line_errors.py`.
+* **Hypothesis/Goal**: Before changing the coarse head's confidence, find where the remaining line AP goes on held-out pieces: missed lines, under-scored lines, duplicates, localization, class or background errors.
+* **Setup**:
+  * The 57 held-out pages of Phase A, refined endpoints, top 1,785 queries per page by class score (as inference); two rankings: class score, and cls^0.25 · quality^0.75 (Phase A+).
+  * The COCO matching is replayed per page and class (detections in score order take the free GT of highest OKS ≥ t), with t = 0.5 and 0.75. False positives are typed as in TIDE (Bolya et al., 2020) with OKS for IoU (background below OKS 0.1): `dupe`, `loc`, `cls`, `both`, `bkg`. Missed GTs (not covered by a cls/loc error) are split by refining **all** queries of the page (every slot of every patch): `below_cutoff` (a same-class query reaches OKS ≥ t but is not kept: under-scored), `taken`, `wrong_class`, `none`. Each type's cost is TIDE's dAP: AP after an oracle fixes only that type, minus AP.
+  * Validation: the replayed per-class AP equals the pycocotools numbers for both rankings (e.g. cls: staff AP50 0.941, ledgerLines 0.976, octave 0.230; mean AP75 0.825; combined: mean AP50 0.932, AP75 0.835).
+  * Command: `PYTHONPATH=src:scripts mamba run -n pytorch python scripts/diagnose_line_errors.py`.
+* **Results** (class score; dAP per error type, held-out GT counts as in Phase A+):
+
+  | class | AP50 | dupe | loc | missed | missed GT (below cutoff / none) | confident FP ≥ 0.3 (dupe / loc / bkg) | TP with score < 0.3 |
+  |---|---|---|---|---|---|---|---|
+  | staff | 0.941 | **+0.027** | **+0.021** | +0.003 | 41 / 27 of 14,460 | 199 / 155 / 9 | **2,761 (19%)** |
+  | ledgerLines | 0.976 | 0.000 | +0.014 | 0.000 | 3 / 19 of 7,846 | 41 / 89 / 16 | 148 |
+  | stem | 0.989 | 0.000 | +0.001 | 0.000 | 6 / 5 of 17,447 | 83 / 55 / 2 | 353 |
+  | barLine | 0.988 | +0.001 | +0.001 | 0.000 | 11 / 8 of 4,571 | 12 / 16 / 0 | 65 |
+  | beam | 0.990 | 0.000 | 0.000 | 0.000 | 1 / 1 of 10,251 | 59 / 10 / 1 | 215 |
+  | mean, 6 common classes | 0.976 | +0.005 | +0.010 | +0.001 | | | |
+
+  * At OKS 0.75 (mean over common classes, AP75 0.961): loc +0.025 (ledgerLines +0.056, stem +0.015, barLine +0.012, staff +0.022), dupe +0.005 (staff +0.028), missed +0.002.
+  * `cls`, `both` and `bkg` errors cost nothing on the common classes; `taken` and `wrong_class` misses are ~0. The rare classes are dominated by `bkg` (octave: dbkg +0.235 at 0.5) and `loc` (voltaBracket +0.062, system +0.024).
+  * With cls^0.25 · quality^0.75: staff dupe cost +0.032 (vs +0.027), loc +0.016; common-class mean unchanged (0.976). The quality term lifts the duplicates' scores too (31k staff duplicates above 0.3).
+* **Conclusion**:
+  1. **Missed lines are not the problem on these pages**: 123 of 54,856 common-class GT (0.2%) are missed, dAP +0.001. Caveat: the coarse head was trained on these pages (only the refiner is held-out), so recall is optimistic; it must be re-measured on pages the detector never saw.
+  2. **Staff loses to duplicates, not to misses**: the one-to-one score leaves 19% of staff true positives below 0.3 while ~200 duplicates score above it, so duplicates outrank true segments (+0.027–0.032 AP50 if removed). The quality branch cannot fix this: after refinement a duplicate is as well placed as the original.
+  3. **The rest is residual localization at strict thresholds** (ledgerLines, stem, barLine at OKS 0.75), i.e. the refiner's remaining error on short lines, not a scoring problem.
+  * **Next steps**: (a) dedup the refined lines: refined duplicates converge to the same endpoints, so an OKS-NMS at a high threshold should now remove them without the strict-threshold losses Analysis 003 saw with coarse endpoints; cheap to test on the cache. (b) For the coarse head, the target is duplicate suppression (one-to-one consistency), e.g. YOLOv10-style consistent dual assignment, rather than recall. (c) Measure recall on pages the detector never saw before drawing conclusions about misses. (d) Symbols are not covered (not in the cache).

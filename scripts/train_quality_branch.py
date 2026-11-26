@@ -83,10 +83,8 @@ class RankingStats:
     median_oks_gap: float
 
 
-def load_refiner(cfg: Config, dim: int, num_classes: int, device: torch.device) -> EndpointRefiner:
-    saved: dict[str, object] = torch.load(
-        cfg.phase_a_dir / "refiner.pt", map_location=device, weights_only=True
-    )
+def load_refiner(path: Path, dim: int, num_classes: int, device: torch.device) -> EndpointRefiner:
+    saved: dict[str, object] = torch.load(path, map_location=device, weights_only=True)
     config = saved["config"]
     state = saved["refiner"]
     assert isinstance(config, dict) and isinstance(state, dict)
@@ -102,18 +100,17 @@ def load_refiner(cfg: Config, dim: int, num_classes: int, device: torch.device) 
     return refiner
 
 
-def line_areas(cfg: Config, records: Sequence[PageRecord]) -> list[torch.Tensor]:
+def line_areas(anno_path: Path, cache: Path, records: Sequence[PageRecord]) -> list[torch.Tensor]:
     """COCO ``area`` of every line annotation of each page, in the order of ``gt_keypoints``.
 
     The parsed dataset cache drops ``area``, so it is read once from the annotation JSON with
     the same line filter as ``parse_coco``.
     """
-    cache = cfg.out_dir / "line_areas.pt"
     if cache.exists():
         by_image: dict[int, torch.Tensor] = torch.load(cache, weights_only=True)
     else:
-        print(f"Reading line areas from {cfg.anno_path} (one-off)...")
-        coco = json.loads(cfg.anno_path.read_text())
+        print(f"Reading line areas from {anno_path} (one-off)...")
+        coco = json.loads(anno_path.read_text())
         line_cats = {
             int(c["id"])
             for c in coco["categories"]
@@ -132,7 +129,7 @@ def line_areas(cfg: Config, records: Sequence[PageRecord]) -> list[torch.Tensor]
                 lists[image].append(float(ann["area"]))
         del coco
         by_image = {i: torch.tensor(a, dtype=torch.float32) for i, a in lists.items()}
-        cfg.out_dir.mkdir(parents=True, exist_ok=True)
+        cache.parent.mkdir(parents=True, exist_ok=True)
         torch.save(by_image, cache)
     areas = [by_image[r.image_id] for r in records]
     for r, a in zip(records, areas):
@@ -312,10 +309,12 @@ def run(cfg: Config) -> None:
     raw: list[dict[str, object]] = torch.load(cfg.phase_a_dir / "features.pt", weights_only=True)
     records = [PageRecord.from_dict(d) for d in raw]
     del raw
-    areas = line_areas(cfg, records)
+    areas = line_areas(cfg.anno_path, cfg.out_dir / "line_areas.pt", records)
 
     grid, _, pieces, token_offsets = build_tables(records, cfg.num_shapes, device)
-    refiner = load_refiner(cfg, grid.tokens.shape[1], dataset.num_line_classes, device)
+    refiner = load_refiner(
+        cfg.phase_a_dir / "refiner.pt", grid.tokens.shape[1], dataset.num_line_classes, device
+    )
     max_lines = 100 + max(
         sum(1 for a in anns if isinstance(a, CocoLineAnnotation)) for anns in dataset.annotations.values()
     )
