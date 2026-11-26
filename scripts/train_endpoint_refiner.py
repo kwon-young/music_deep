@@ -324,11 +324,11 @@ def load_or_extract(cfg: Config, dataset: CocoDataset, device: torch.device) -> 
     return records
 
 
-def held_out_pieces(pieces: Sequence[str], cfg: Config) -> set[str]:
+def held_out_pieces(pieces: Sequence[str], seed: int, fraction: float) -> set[str]:
     """Same split as Analysis 005: sorted pieces, shuffled with the seed, first fraction held out."""
     order = list(range(len(pieces)))
-    random.Random(cfg.seed).shuffle(order)
-    num_holdout = max(1, round(cfg.holdout_fraction * len(pieces)))
+    random.Random(seed).shuffle(order)
+    num_holdout = max(1, round(fraction * len(pieces)))
     return {pieces[k] for k in order[:num_holdout]}
 
 
@@ -614,7 +614,7 @@ def run(cfg: Config) -> None:
     records = load_or_extract(cfg, dataset, device)
 
     grid, table, pieces, token_offsets = build_tables(records, cfg.num_shapes, device)
-    holdout = held_out_pieces(pieces, cfg)
+    holdout = held_out_pieces(pieces, cfg.seed, cfg.holdout_fraction)
     holdout_ids = torch.tensor([k for k, p in enumerate(pieces) if p in holdout], device=device)
     is_test = torch.isin(table.piece, holdout_ids)
     train_table = table.map(lambda t: t[~is_test])

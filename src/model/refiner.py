@@ -145,11 +145,13 @@ class LineQueries:
 
 @dataclass(frozen=True)
 class RefinedEndpoints:
-    """Output of one refinement step; ``start`` is where the step read its window from."""
+    """Output of one refinement step; ``start`` is where the step read its window from and
+    ``state`` (N, 2, D) what the step knows about each endpoint after reading it."""
 
     endpoints: torch.Tensor
     start: torch.Tensor
     bin_logits: torch.Tensor
+    state: torch.Tensor
 
 
 class FourierOffsets(nn.Module):
@@ -275,9 +277,39 @@ class EndpointRefiner(nn.Module):
                     endpoints=points.reshape(num, 4),
                     start=start.reshape(num, 4),
                     bin_logits=logits.reshape(num, 4, -1),
+                    state=state.reshape(num, 2, -1),
                 )
             )
         return outputs
+
+
+class QualityHead(nn.Module):
+    """Predicts the localization quality (OKS logit) of a refined line from its two endpoint
+    states, so the final score can rank duplicates by how well they are placed."""
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(2 * dim),
+            nn.Linear(2 * dim, dim),
+            nn.GELU(),
+            nn.Linear(dim, 1),
+        )
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """``state`` (N, 2, D) -> (N,) logits."""
+        return self.net(state.flatten(1)).squeeze(-1)
+
+
+def line_oks(
+    pred: torch.Tensor, gt: torch.Tensor, area: torch.Tensor, sigma: float = 0.1
+) -> torch.Tensor:
+    """(Q, T) COCO keypoint OKS between lines (Q, 4) and (T, 4), as in ``evaluate_coco.py``:
+    per endpoint exp(-d^2 / (2 (2 sigma)^2 area)), averaged over the two endpoints.
+    Coordinates and ``area`` must be in the same (pixel) units."""
+    d2 = (pred.view(-1, 1, 2, 2) - gt.view(1, -1, 2, 2)).pow(2).sum(dim=-1)
+    e = d2 / (2 * sigma) ** 2 / (area.view(1, -1, 1) + torch.finfo(pred.dtype).eps) / 2
+    return torch.exp(-e).mean(dim=-1)
 
 
 def fgl_loss(

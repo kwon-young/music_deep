@@ -2,11 +2,15 @@ import unittest
 
 import torch
 
+import numpy as np
+
 from model.refiner import (
     EndpointRefiner,
     LineQueries,
+    QualityHead,
     TokenGrid,
     fgl_loss,
+    line_oks,
     refiner_loss,
 )
 
@@ -129,6 +133,26 @@ class TestRefiner(unittest.TestCase):
         with torch.no_grad():
             after = (refiner(grid, test_queries)[-1].endpoints - test_target).abs().mean()
         self.assertLess(float(after), 0.5 * float(before))
+
+
+class TestQuality(unittest.TestCase):
+    def test_line_oks_matches_evaluator_formula(self) -> None:
+        torch.manual_seed(0)
+        pred = torch.rand(5, 4, dtype=torch.float64) * 100
+        gt = torch.rand(3, 4, dtype=torch.float64) * 100
+        area = torch.rand(3, dtype=torch.float64) * 500 + 10
+        variance = (np.array([0.1, 0.1]) * 2) ** 2
+        p, g, a = pred.numpy(), gt.numpy(), area.numpy()
+        dx = p[:, None, 0::2] - g[None, :, 0::2]
+        dy = p[:, None, 1::2] - g[None, :, 1::2]
+        e = (dx**2 + dy**2) / variance / (a[None, :, None] + np.spacing(1)) / 2
+        expected = np.exp(-e).mean(axis=2)
+        np.testing.assert_allclose(line_oks(pred, gt, area).numpy(), expected, rtol=1e-6)
+
+    def test_quality_head_reads_both_endpoint_states(self) -> None:
+        head = QualityHead(dim=12)
+        state = torch.randn(7, 2, 12)
+        self.assertEqual(head(state).shape, (7,))
 
 
 if __name__ == "__main__":

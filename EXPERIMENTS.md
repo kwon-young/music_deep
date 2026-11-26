@@ -788,3 +788,33 @@
   2. **Line AP +0.061 on held-out pieces, without retraining the detector**, larger than the Analysis 002 oracle (+0.083 on all pages, but limited to ±0.5 scale of the nearest-geometry query). `staff` AP +0.111 (0.827 → 0.938) and `stem` +0.115 are the largest gains; AP50 and recall also rise (0.795 → 0.864), so part of the gain is near-misses (OKS < 0.5) turned into hits. `octave` AP50 0.003 → 0.230 and `voltaBracket` +0.10 are on few held-out instances.
   3. Caveats: the detector (backbone and coarse head) was trained on all 351 pages, held-out ones included; only the refiner is evaluated on unseen pieces. Phase A sees no augmentation (tokens at the native scale only). Scores are unchanged, so the ranking problems of Analysis 003 (duplicates, top-scored ≠ best-localized) remain.
   * **Next steps**: (a) Phase B on Kaggle: add the refiner to `train_detection.py` (real queries from the training matcher + denoising queries, same loss), fine-tune jointly from Exp 029 for 30–50 epochs, evaluate coarse vs refined on all pages and on this held-out split. (b) A quality branch on the refiner state (predicted OKS of the refined line, trained on all refined queries with a soft target against the best same-class GT, not only the matched one), score = cls^(1−α) · quality^α; testable on the Phase A cache. (c) Split the remaining line failures into "not predicted" vs "predicted but under-scored" on the cache before working on the coarse head's confidence.
+
+## Experiment 035 Phase A+: Localization-Quality Branch on the Phase A Refiner
+* **Experiment Name/ID**: `experiments/035_endpoint_refiner/phase_a/quality` (laptop; frozen Exp 029 detector and frozen Phase A refiner).
+* **Status**: ⚖️ Mixed. The quality prediction works, but it adds little AP on the common classes.
+* **Hypothesis/Goal**: The coarse score of the one-to-one head is not tied to localization (Analysis 003; Exp 032's quality target failed because only the matched query got a soft target). A head reading the refiner's final endpoint states, trained on **every** query kept at inference with the OKS of its refined line against the best same-class GT as a soft target, should rank lines by placement; final score = cls^(1−α) · quality^α.
+* **Setup**:
+  * `QualityHead` (`src/model/refiner.py`): LayerNorm → Linear(2·192, 192) → GELU → Linear(192, 1) on the two endpoint states after refinement step 2; `line_oks` reproduces the `evaluate_coco.py` OKS (σ = 0.1, GT `area`, read once from the annotation JSON because the parsed cache drops it; unit-tested against the evaluator's numpy formula).
+  * Queries: top 1,785 per page by coarse score, refined by the Phase A refiner (524,435 train, 101,745 held-out on the same 57 pages); 90.6% of the training queries have OKS > 0.5 (duplicates included).
+  * Training: BCE with the OKS as soft target, 4,000 steps, batch 8,192, AdamW lr 1e-3, cosine; seconds on the cached states.
+  * Command: `PYTHONPATH=src:scripts mamba run -n pytorch python scripts/train_quality_branch.py`, then `evaluate_coco.py --image_ids <phase_a>/held_out_image_ids.json --pred_dir <quality>/{cls,alpha_0.25,alpha_0.5,alpha_0.75,quality}` (`--pred_dir` now accepts several directories, one ground-truth load).
+* **Results** (held-out, all with refined endpoints):
+  * Correlation with the true OKS over held-out queries (Pearson / Spearman): coarse cls 0.303 / **−0.080**, quality **0.944 / 0.813**; staff queries (Spearman) cls 0.197, quality 0.561.
+  * "Top-scored is not the best-localized" among queries with OKS ≥ 0.5 to a GT: 16.7% (cls) → 16.5% (α = 0.75), with a median OKS gap ≈ 0 in both cases.
+  * COCO line AP:
+
+    | score | AP | AP50 | AP75 | staff AP | stem AP | ledgerLines AP | voltaBracket AP | octave AP50 |
+    |---|---|---|---|---|---|---|---|---|
+    | cls (Phase A) | 0.807 | 0.869 | 0.825 | 0.938 | 0.964 | 0.900 | 0.708 | 0.230 |
+    | α = 0.25 | 0.820 | 0.933 | 0.831 | 0.940 | 0.968 | 0.909 | 0.744 | — |
+    | α = 0.5 | 0.823 | 0.937 | 0.834 | 0.940 | 0.969 | 0.913 | 0.757 | — |
+    | α = 0.75 | **0.826** | 0.932 | **0.835** | 0.940 | 0.970 | 0.916 | 0.771 | 0.681 |
+    | quality only | 0.747 | 0.843 | 0.755 | **0.480** | 0.937 | 0.904 | 0.750 | 0.621 |
+
+  * Held-out GT counts: staff 14,460, stem 17,447, beam 10,251, ledgerLines 7,846, barLine 4,571, system 281, **voltaBracket 22, octave 3**. Mean AP over the six common classes: 0.954 (cls) → 0.959 (α = 0.75); mean AP50: 0.976 → 0.977.
+* **Conclusion**:
+  1. **The quality head predicts localization well, the coarse score does not at all** (Spearman 0.81 vs −0.08 over the kept queries).
+  2. **But it buys little AP where it matters.** The global +0.019 AP / +0.063 AP50 is almost entirely `octave` (3 held-out lines, AP50 0.230 → 0.681) and `voltaBracket` (22 lines); on the six common classes the gain is +0.005 AP. α was also selected on the held-out pages.
+  3. **Why**: after refinement, duplicates snap to the same endpoints, so the within-cluster re-ranking headroom of Analysis 003 (+0.028 staff AP for the coarse endpoints) is gone: the top-scored duplicate is "not the best" only by a negligible OKS. The remaining common-class errors are not localization-ranking errors.
+  4. **The one-to-one class score is what removes duplicates**: quality alone ranks every duplicate high and collapses `staff` to 0.480 AP. Any quality term must multiply the class score, not replace it.
+  * **Next steps**: (a) keep the quality branch as an optional, cheap add-on for Phase B (it helps the rare long classes) but do not count on it for the common ones; (b) the remaining staff/stem gap (AP50 0.94/0.99) needs the "missed vs under-scored vs duplicate" split on the cache before any change to the coarse head's confidence.

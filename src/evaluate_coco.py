@@ -285,14 +285,17 @@ def main():
     parser.add_argument(
         "--pred_dir",
         type=Path,
+        nargs="+",
         required=True,
-        help="Directory containing preds_symbols.json and preds_lines.json",
+        help="Directories containing preds_symbols.json and preds_lines.json; several "
+        "directories share one ground-truth load.",
     )
     parser.add_argument(
         "--out_dir",
         type=Path,
         default=None,
-        help="Directory to save detailed results. Defaults to pred_dir.",
+        help="Directory to save detailed results. Defaults to pred_dir "
+        "(only valid with a single pred_dir).",
     )
     parser.add_argument(
         "--image_ids",
@@ -301,9 +304,8 @@ def main():
         help="JSON list of image ids to restrict the evaluation to (e.g. a held-out split).",
     )
     args = parser.parse_args()
-
-    out_dir = args.out_dir if args.out_dir is not None else args.pred_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out_dir is not None and len(args.pred_dir) > 1:
+        parser.error("--out_dir requires a single --pred_dir")
 
     print("Loading ground truth...")
     coco_gt = COCO(str(args.anno_path))
@@ -325,30 +327,34 @@ def main():
         else:
             sym_cat_ids.append(cat["id"])
 
-    summary = {}
+    for pred_dir in args.pred_dir:
+        out_dir = args.out_dir if args.out_dir is not None else pred_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\n=== {pred_dir} ===")
+        summary = {}
 
-    # Evaluate Symbols
-    sym_pred_path = args.pred_dir / "preds_symbols.json"
-    summary["symbols"] = evaluate_modality(
-        coco_gt, sym_pred_path, "bbox", sym_cat_ids, out_dir, "symbols", img_ids
-    )
+        # Evaluate Symbols
+        sym_pred_path = pred_dir / "preds_symbols.json"
+        summary["symbols"] = evaluate_modality(
+            coco_gt, sym_pred_path, "bbox", sym_cat_ids, out_dir, "symbols", img_ids
+        )
 
-    # Evaluate Lines
-    line_pred_path = args.pred_dir / "preds_lines.json"
-    summary["lines"] = evaluate_modality(
-        coco_gt,
-        line_pred_path,
-        "keypoints",
-        line_cat_ids,
-        out_dir,
-        "lines",
-        img_ids,
-    )
+        # Evaluate Lines
+        line_pred_path = pred_dir / "preds_lines.json"
+        summary["lines"] = evaluate_modality(
+            coco_gt,
+            line_pred_path,
+            "keypoints",
+            line_cat_ids,
+            out_dir,
+            "lines",
+            img_ids,
+        )
 
-    out_json = out_dir / "coco_eval_summary.json"
-    print(f"\nSaving human-readable summary to {out_json}...")
-    with open(out_json, "w") as f:
-        json.dump(summary, f, indent=4)
+        out_json = out_dir / "coco_eval_summary.json"
+        print(f"\nSaving human-readable summary to {out_json}...")
+        with open(out_json, "w") as f:
+            json.dump(summary, f, indent=4)
 
     print("Done!")
 
