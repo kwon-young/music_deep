@@ -847,3 +847,27 @@
   2. **Staff loses to duplicates, not to misses**: the one-to-one score leaves 19% of staff true positives below 0.3 while ~200 duplicates score above it, so duplicates outrank true segments (+0.027–0.032 AP50 if removed). The quality branch cannot fix this: after refinement a duplicate is as well placed as the original.
   3. **The rest is residual localization at strict thresholds** (ledgerLines, stem, barLine at OKS 0.75), i.e. the refiner's remaining error on short lines, not a scoring problem.
   * **Next steps**: (a) dedup the refined lines: refined duplicates converge to the same endpoints, so an OKS-NMS at a high threshold should now remove them without the strict-threshold losses Analysis 003 saw with coarse endpoints; cheap to test on the cache. (b) For the coarse head, the target is duplicate suppression (one-to-one consistency), e.g. YOLOv10-style consistent dual assignment, rather than recall. (c) Measure recall on pages the detector never saw before drawing conclusions about misses. (d) Symbols are not covered (not in the cache).
+
+## Analysis 007: Duplicate Removal after Refinement (NMS, score merging, more candidates)
+* **Experiment Name/ID**: `analysis/007_nms_after_refinement` (offline, Phase A cache, 57 held-out pages; exploratory script kept in the session scratchpad, not committed).
+* **Hypothesis/Goal**: Analysis 006 found that staff loses AP to confident duplicates, and Analysis 003 found that OKS-NMS hurt on **coarse** endpoints. After refinement, duplicates converge to the same endpoints, so a simple geometric NMS should remove them without hurting distinct lines. Also measure what refining more candidates recovers.
+* **Setup**: refined endpoints (Phase A refiner), class score; greedy NMS per class in score order: a line suppresses lower-scored lines whose **both** endpoints lie within d px; optional noisy-OR merge of the suppressed scores into the kept line (1 − Π(1 − s)); candidates = top 1,785 by score, or all ~32k queries per page (kept top 1,785 after NMS). AP replayed with the validated Analysis 006 matcher.
+  * Score distribution (all 351 pages): ~32,400 line queries per page (median), 2,403 with score ≥ 0.05 (max 4,707), 11,963 ≥ 0.01. The training-matched query of a GT scores < 0.05 for 0.49% of GT (< 0.1: 1.5%).
+  * Refiner inference cost on the laptop (random tokens, no chunking): ~67 KiB GPU memory and ~27 µs per line, linear (1,785 lines: 56 ms / 123 MiB; 10,000: 271 ms / 651 MiB).
+* **Results**:
+
+  | variant | OKS | AP all | AP common | staff | stem | ledgerLines | staff confident dupes | staff missed |
+  |---|---|---|---|---|---|---|---|---|
+  | no NMS | 0.5 / 0.75 | 0.869 / 0.825 | 0.976 / 0.961 | 0.941 / 0.940 | 0.989 / 0.975 | 0.976 / 0.933 | 199 | 68 |
+  | NMS 2 px | 0.5 / 0.75 | 0.872 / 0.828 | 0.980 / 0.965 | 0.965 / 0.964 | = | = | 16 | 83 |
+  | NMS 4 px | 0.5 / 0.75 | 0.873 / 0.829 | 0.980 / 0.966 | 0.968 / 0.967 | = | 0.976 / 0.934 | 2 | 83 |
+  | NMS 8 px | 0.5 / 0.75 | 0.873 / 0.830 | 0.981 / 0.966 | 0.968 / 0.968 | = | 0.976 / 0.934 | 1 | 83 |
+  | NMS 4 px + noisy-OR | 0.5 / 0.75 | 0.877 / 0.836 | 0.981 / 0.967 | 0.970 / 0.969 | = | 0.976 / 0.934 | 10 | 83 |
+  | all queries, NMS 4 px + noisy-OR | 0.5 / 0.75 | 0.877 / 0.837 | 0.981 / 0.969 | **0.971 / 0.971** | = | 0.976 / 0.934 | 11 | **40** |
+
+* **Conclusion**:
+  1. **NMS after refinement works where NMS before it failed**: staff AP +0.027 (AP50) / +0.027 (AP75) at 4 px, i.e. the whole duplicate oracle of Analysis 006, insensitive to d in 2–8 px because refined duplicates coincide. Other classes are unchanged (their duplicates were already low-scored).
+  2. Merging the suppressed scores (noisy-OR) adds a little (staff +0.002; global +0.004–0.007, rare classes): duplicates are evidence that the line exists, which partly compensates the low one-to-one scores.
+  3. NMS costs 15 staff GT (missed 68 → 83): two true staff segments whose endpoints are both within a few px of each other; to inspect (annotation duplicates or very short segments).
+  4. Refining all queries halves the staff misses (83 → 40, the `below_cutoff` ones) but adds ≤ 0.002 AP on these (training) pages. A score floor of ~0.05 (≤ 4,700 lines/page, ~310 MB, ~130 ms here) should keep nearly all of that recall at a fraction of the cost; to verify.
+  * **Next steps**: (a) make refine → NMS → noisy-OR the inference post-processing (and use it in Phase B evaluation); (b) replace the top-1,785 cut by a score floor; (c) with late deduplication, consider training the coarse head one-to-many (an easier, better-posed task: "a line passes near me") and leave the one-to-one selection to NMS.
