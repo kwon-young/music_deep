@@ -747,3 +747,44 @@
   3. **The local tail is ambiguity.** p90 19.0 px over all line endpoints vs 7.1 px on unambiguous ones. A real second stage starts from a coarse estimate (class, approximate position), which resolves most of this ambiguity; the probe has no such input.
   4. **Symbols are not reach-limited.** Their reach is ≤ 1–2 patches, and the token that predicts the object beats the token at its corner (1.1 vs 3.4 px), since a corner is defined by the whole glyph. Endpoint sampling does not apply; the small-object headroom of Analysis 002 needs another explanation (sub-pixel precision on 5–30 px objects).
   * **Next steps**: Exp 035, lines first: after block 11, for each kept line query, bilinearly sample the final tokens at its two predicted endpoints (learned blank for dropped cells), cross-attend from the query, and predict an absolute residual (fixed bins over ±1 patch, not scaled by length). Train it with denoising from perturbed GT endpoints plus the detector's own detached predictions. Expected ceiling from this probe: far-endpoint median ~1.5 px instead of 2.6–8.8 px for the 25% of endpoints at reach ≥ 4. Evaluate on the held-out split by piece (Exp 037 next step (a)). Leave symbols to a separate study.
+
+## Experiment 035 Phase A: Endpoint Refiner on the Frozen Exp 029 Detector
+* **Experiment Name/ID**: `experiments/035_endpoint_refiner/phase_a` (laptop, Quadro M1200; branch `exp-036-synthetic-pretraining`).
+* **Status**: ✅ Positive. Phase B (joint fine-tuning on Kaggle) pending review.
+* **Hypothesis/Goal**: Analysis 005 showed that lines are limited by reach: the token whose patch contains an endpoint locates it to ~1.5 px, while the predicting token degrades with distance. A second stage that reads the tokens **around each predicted endpoint** and predicts an absolute correction should remove the far-endpoint error, and raise strict-threshold line AP, without touching the detector.
+* **Setup**:
+  * Model (`src/model/refiner.py`, `EndpointRefiner`, 1.01 M parameters): per line query and endpoint, a state = projected predicting token + class embedding + endpoint embedding + encoding of the vector to the other endpoint. Each of 2 steps (own weights) gathers the 3×3 window of kept final tokens around the current estimate (dense cell → token lookup, dropped / out-of-image cells masked, plus an always-valid learned null key), adds a Fourier encoding of each token's offset to the estimate, runs one cross-attention (3 heads, elementwise: SDPA kernels were 3× slower on 1-query × 10-key attention) and an FFN, and outputs 2×33 D-FINE bins scaled by a **fixed** 3 patches (correction ±1.5 patches, independent of line length). The window is re-centred at the next step; estimates are detached between steps.
+  * Phase A protocol (`scripts/train_endpoint_refiner.py`): one pass of the frozen Exp 029 checkpoint over the 351 trainval pages caches the final tokens (fp16), all line queries (logits, endpoints) and the training Hungarian assignment (cost_class 2, cost_bbox 5, radius 4, top_k 10) in `features.pt` (1.2 GB, extraction ~20 min). Split by piece as in Analysis 005 (seed 0, 20%): 46 pieces / 313,746 lines for training, 11 pieces / 57 pages / 54,881 lines held out.
+  * Training: 8,000 steps, 1,024 GT lines per step, each giving a **real** query (matched query's coarse endpoints and predicted class; endpoints off by > 1.5 patches masked from the loss, 0.0% in practice) and a **denoising** query (GT + noise: 60% Gaussian σ = 0.05 patch, 40% uniform ±1 patch; true class). Loss per step: L1 + 0.15 × FGL, deep-supervised. AdamW lr 5e-4, 300 warmup steps, cosine; 27 min (0.2 s/step).
+  * Evaluation: endpoint errors of the matched queries of the held-out pieces, and COCO line AP on the 57 held-out pages (`evaluate_coco.py --image_ids`, new option), top 1,785 queries per page by the unchanged coarse score, coarse vs refined endpoints.
+  * Command: `PYTHONPATH=src mamba run -n pytorch python scripts/train_endpoint_refiner.py --use_sdpa`, then `evaluate_coco.py --pred_dir <phase_a>/{coarse,refined} --image_ids <phase_a>/held_out_image_ids.json`.
+* **Results**:
+  * Training (`metrics.jsonl`, last 100 steps): real-query L1 0.72 px after step 1, 0.60 px after step 2.
+  * Held-out endpoint error, median / p90 px (matched queries with score ≥ 0.3; "worse" = refined error > coarse + 2 px):
+
+    | group | n | coarse head | step 1 | step 2 | worse |
+    |---|---|---|---|---|---|
+    | lines | 99,914 | 1.1 / 4.6 | 0.8 / 2.1 | **0.7 / 1.8** | 0.6% |
+    | ambiguous endpoints | 10,729 | 1.5 / 6.1 | 0.8 / 2.5 | 0.7 / 2.1 | 0.8% |
+    | `staff` | 21,156 | 1.5 / 7.0 | 0.5 / 1.1 | **0.5 / 0.9** | 0.1% |
+    | `stem` | 33,944 | 1.0 / 4.7 | 0.8 / 2.2 | 0.7 / 1.9 | 0.9% |
+    | `ledgerLines` | 15,342 | 1.2 / 3.4 | 1.1 / 2.9 | 0.9 / 2.5 | 1.0% |
+    | `beam` | 19,946 | 1.2 / 3.7 | 1.0 / 2.3 | 0.9 / 2.1 | 0.5% |
+    | reach 0–1 patch | 37,293 | 0.8 / 2.3 | 0.8 / 2.1 | 0.7 / 1.8 | 0.4% |
+    | reach 4–8 | 10,277 | 2.2 / 7.8 | 0.8 / 2.3 | 0.7 / 1.8 | 0.8% |
+    | reach 8–16 | 6,243 | 2.9 / 8.3 | 0.6 / 1.3 | 0.5 / 1.0 | 0.3% |
+    | reach ≥ 16 | 4,030 | 4.4 / 10.8 | 0.6 / 1.1 | **0.5 / 0.9** | 0.2% |
+
+  * Held-out COCO line AP (57 pages):
+
+    | | AP | AP50 | AP75 | AR | staff AP50 / AP | stem AP | ledgerLines AP | voltaBracket AP | octave AP50 |
+    |---|---|---|---|---|---|---|---|---|---|
+    | coarse (Exp 029) | 0.746 | 0.818 | 0.775 | 0.795 | 0.924 / 0.827 | 0.849 | 0.834 | 0.604 | 0.003 |
+    | refined | **0.807** | **0.869** | **0.825** | **0.864** | 0.941 / **0.938** | **0.964** | **0.900** | 0.708 | 0.230 |
+
+    Other classes, AP: barLine 0.963 → 0.980, beam 0.982 → 0.988, system 0.912 → 0.955.
+* **Conclusion**:
+  1. **The reach limit is removed.** The refined error no longer depends on distance (0.5–0.7 px median, ≤ 2.1 px p90 at every reach) and is below the Analysis 005 `local@12` probe (1.4–1.8 px), because the query carries the coarse position and the line direction, which also resolves the ambiguous endpoints (p90 6.1 → 2.1 px). Corrections almost never hurt (0.6% of endpoints worse by > 2 px).
+  2. **Line AP +0.061 on held-out pieces, without retraining the detector**, larger than the Analysis 002 oracle (+0.083 on all pages, but limited to ±0.5 scale of the nearest-geometry query). `staff` AP +0.111 (0.827 → 0.938) and `stem` +0.115 are the largest gains; AP50 and recall also rise (0.795 → 0.864), so part of the gain is near-misses (OKS < 0.5) turned into hits. `octave` AP50 0.003 → 0.230 and `voltaBracket` +0.10 are on few held-out instances.
+  3. Caveats: the detector (backbone and coarse head) was trained on all 351 pages, held-out ones included; only the refiner is evaluated on unseen pieces. Phase A sees no augmentation (tokens at the native scale only). Scores are unchanged, so the ranking problems of Analysis 003 (duplicates, top-scored ≠ best-localized) remain.
+  * **Next steps**: (a) Phase B on Kaggle: add the refiner to `train_detection.py` (real queries from the training matcher + denoising queries, same loss), fine-tune jointly from Exp 029 for 30–50 epochs, evaluate coarse vs refined on all pages and on this held-out split. (b) A quality branch on the refiner state (predicted OKS of the refined line, trained on all refined queries with a soft target against the best same-class GT, not only the matched one), score = cls^(1−α) · quality^α; testable on the Phase A cache. (c) Split the remaining line failures into "not predicted" vs "predicted but under-scored" on the cache before working on the coarse head's confidence.

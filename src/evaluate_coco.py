@@ -198,7 +198,9 @@ def fast_evaluateImg(self, imgId, catId, aRng, maxDet):
     }
 
 
-def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
+def evaluate_modality(
+    coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix, img_ids=None
+):
     print(f"\n--- Evaluating {prefix} ({iou_type}) ---")
     if not pred_path.exists():
         print(f"Prediction file {pred_path} not found. Skipping.")
@@ -215,6 +217,8 @@ def evaluate_modality(coco_gt, pred_path, iou_type, cat_ids, out_dir, prefix):
     coco_eval.evaluateImg = fast_evaluateImg.__get__(coco_eval, COCOeval)
 
     coco_eval.params.catIds = cat_ids
+    if img_ids is not None:
+        coco_eval.params.imgIds = img_ids
     # Lowered maxDets to 2000 to speed up evaluation, included 20 for summary
     coco_eval.params.maxDets = [20, 100, 2000]
 
@@ -290,6 +294,12 @@ def main():
         default=None,
         help="Directory to save detailed results. Defaults to pred_dir.",
     )
+    parser.add_argument(
+        "--image_ids",
+        type=Path,
+        default=None,
+        help="JSON list of image ids to restrict the evaluation to (e.g. a held-out split).",
+    )
     args = parser.parse_args()
 
     out_dir = args.out_dir if args.out_dir is not None else args.pred_dir
@@ -297,6 +307,9 @@ def main():
 
     print("Loading ground truth...")
     coco_gt = COCO(str(args.anno_path))
+    img_ids = (
+        None if args.image_ids is None else json.loads(args.image_ids.read_text())
+    )
 
     # Separate categories
     cats = coco_gt.loadCats(coco_gt.getCatIds())
@@ -317,13 +330,19 @@ def main():
     # Evaluate Symbols
     sym_pred_path = args.pred_dir / "preds_symbols.json"
     summary["symbols"] = evaluate_modality(
-        coco_gt, sym_pred_path, "bbox", sym_cat_ids, out_dir, "symbols"
+        coco_gt, sym_pred_path, "bbox", sym_cat_ids, out_dir, "symbols", img_ids
     )
 
     # Evaluate Lines
     line_pred_path = args.pred_dir / "preds_lines.json"
     summary["lines"] = evaluate_modality(
-        coco_gt, line_pred_path, "keypoints", line_cat_ids, out_dir, "lines"
+        coco_gt,
+        line_pred_path,
+        "keypoints",
+        line_cat_ids,
+        out_dir,
+        "lines",
+        img_ids,
     )
 
     out_json = out_dir / "coco_eval_summary.json"
