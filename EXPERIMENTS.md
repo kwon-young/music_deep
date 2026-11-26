@@ -872,3 +872,30 @@
   3. NMS costs 15 staff GT (missed 68 → 83): two true staff segments whose endpoints are both within a few px of each other; to inspect (annotation duplicates or very short segments).
   4. Refining all queries halves the staff misses (83 → 40, the `below_cutoff` ones) but adds ≤ 0.002 AP on these (training) pages. A score floor of ~0.05 (≤ 4,700 lines/page, ~310 MB, ~130 ms here) should keep nearly all of that recall at a fraction of the cost; to verify.
   * **Next steps**: (a) make refine → NMS → noisy-OR the inference post-processing (and use it in Phase B evaluation); (b) replace the top-1,785 cut by a score floor; (c) with late deduplication, consider training the coarse head one-to-many (an easier, better-posed task: "a line passes near me") and leave the one-to-one selection to NMS.
+
+## Experiment 035 Phase A on Exp 037: Refinement, NMS and Score Merging Recover the Line Gap
+* **Experiment Name/ID**: `experiments/037_029_recipe_from_023/refiner_phase_a` (laptop; frozen Exp 037 detector). Diagnostics in `diagnosis/` (OKS 0.5 / 0.75) and `diagnosis_all_thresholds/` (OKS 0.50:0.95); Exp 029 rediagnosed the same way in `experiments/035_endpoint_refiner/phase_a/diagnosis*/`.
+* **Hypothesis/Goal**: Exp 037 (Exp 029 recipe from the pre-bug Exp 023 checkpoint, with the patch-resize fix; one 100-epoch augmented cycle) lost a lot of line AP against Exp 029 (staff 0.837 → 0.523 on all pages). With the endpoint refiner, NMS and score merging, can most of the line loss be recovered, and the miss rate lowered?
+* **Setup**:
+  * Exp 037 is initialised from **Exp 023**, not Exp 025: the Kaggle log loads `.../train_detection/6/experiments/023_proportional_fgl_lines/.../latest_model.pt` ("Resuming from full detector checkpoint: /kaggle/temp/init_023.pt"); that checkpoint dates from 2026-06-28, before the variable patch size (`1ce9ed6`, 2026-07-02) that Exp 025 introduced.
+  * Phase A exactly as for Exp 029 (`scripts/train_endpoint_refiner.py --checkpoint <037> --out_dir <037>/refiner_phase_a --use_sdpa`): a new refiner trained on Exp 037's frozen tokens, same split (46 / 11 pieces, 54,881 held-out lines), 8,000 steps.
+  * Three pipelines compared on the 57 held-out pages with `scripts/diagnose_line_errors.py` (replayed COCO matching, validated against pycocotools: the coarse and refined rows equal the `evaluate_coco.py` numbers): coarse endpoints + class score (top 1,785); refined endpoints + class score (top 1,785); **refined candidates with score ≥ 0.05, NMS 4 px, noisy-OR merged scores, top 1,785** (Analysis 007).
+* **Results**:
+  * Refiner, held-out matched lines with score ≥ 0.3, median / p90 px: coarse 1.3 / 6.1 → 0.8 / 2.0 (Exp 029: 1.1 / 4.6 → 0.7 / 1.8); training real L1 0.78 vs 0.69 px at step 4,000. Coarse endpoints within the 1.5-patch window: 99.9%.
+  * Held-out line AP (OKS 0.50:0.95):
+
+    | pipeline | Exp 029 all / common | Exp 037 all / common | Exp 037 staff | stem | ledgerLines | system |
+    |---|---|---|---|---|---|---|
+    | coarse | 0.746 / 0.895 | 0.679 / 0.760 | 0.525 | 0.645 | 0.809 | 0.769 |
+    | refined | 0.807 / 0.954 | 0.784 / 0.883 | 0.718 | 0.940 | 0.902 | 0.813 |
+    | **refined + NMS + merging** | **0.817 / 0.960** | **0.836 / 0.936** | **0.963** | **0.954** | 0.905 | 0.834 |
+
+    Exp 029 with the full pipeline: staff 0.969, stem 0.965, ledgerLines 0.901, system 0.957. "All" includes `octave` (3 held-out lines: 029 0.024, 037 0.313) and `voltaBracket` (22: 0.754 vs 0.763), which dominate the all-class difference; "common" = barLine, beam, ledgerLines, staff, stem, system.
+  * AP50 / AP75, common classes: Exp 037 0.878 / 0.781 (coarse) → 0.959 / 0.944 (full); Exp 029 0.966 / 0.915 → 0.981 / 0.967. Staff AP50 / AP75: 037 0.687 / 0.542 → **0.968 / 0.962**; 029 0.924 / 0.863 → 0.970 / 0.969.
+  * Exp 037 staff at OKS 0.5 (14,460 GT): found 13,576 → 13,821 → 14,183; **found but scored < 0.3: 12,256 (90%)** → 12,459 → 423; missed 368 → 362 → **56** (Exp 029 full pipeline: 58); dAP of duplicates +0.182 → +0.203 → +0.001.
+* **Conclusion**:
+  1. **Most of Exp 037's line deficit was scoring, not detection or localization.** Its one-to-one head found the staff segments but spread its confidence over duplicates (90% of found segments below 0.3 vs 19% for Exp 029), so duplicates outranked true segments. Refinement makes duplicates coincide, NMS removes them and noisy-OR merging turns them back into confidence: staff 0.525 → 0.963, equal to Exp 029 (0.969). This revises the Exp 037 conclusion ("one cycle is not enough to fit long lines").
+  2. **The common-class gap shrinks from −0.135 to −0.024 AP**; the remainder is `system` (0.834 vs 0.957) and small stem/barLine differences. Misses fall to Exp 029's level (staff 56 vs 58) but not below.
+  3. **Comparing detectors on coarse AP is misleading**: their differences sit mostly in the one-to-one scores, which this pipeline neutralises. Any detector comparison (augmentation, recipes, Phase B) should be reported with the full pipeline.
+  4. Caveats: both detectors were trained on these pages (only the refiners are held-out); symbols are untouched by this pipeline (Exp 037 symbol AP 0.708 vs 0.768 on all pages).
+  * **Next steps**: (a) make refine → NMS → merging the standard line post-processing in `inference_coco.py` and in the Phase B evaluation; (b) revisit the scale-augmentation question with the full pipeline and a held-out split; (c) investigate `system` on Exp 037.
