@@ -955,7 +955,7 @@
 
 ## Experiment 038: Exp 035 Phase B, Exp 037 Continued with the Line Refiner in the Training Step
 * **Experiment Name/ID**: `experiments/038_phase_b_joint_refiner`
-* **Status**: 📝 Prepared, not run (branch `exp-038-phase-b-joint-refiner`, notebook `scripts/music_deep.ipynb`). Smoke-tested on the laptop only: DDP with gloo (NCCL and nvimgcodec do not run on its GPU), CPU `torch.compile` of the new forward, resume from a checkpoint that carries the refiner, `inference_coco.py` reading the refiner from the training checkpoint.
+* **Status**: 📝 Prepared, full run not launched (branch `exp-038-phase-b-joint-refiner`, notebook `scripts/music_deep.ipynb`, cell 5 set to 100 epochs). Smoke-tested on the laptop (DDP with gloo, CPU `torch.compile`, resume with a refiner, inference reading the refiner from the training checkpoint), then a **10-epoch Kaggle test run**, `experiments/038_phase_b_test_10ep` (below), ran every cell without error.
 * **Hypothesis/Goal**: The end goal is to fit the full Trompa trainval set as well as possible (no held-out split). The Phase A refiner was trained on frozen tokens of clean, unresized pages, while the detector trains on 54–74 px patches resized to 64. Training the refiner **inside the detector step**, on the step's own augmented tokens and line matching, (1) teaches it the scale and resampling variation the detector sees, and (2) lets the backbone adapt its tokens to the refiner (joint gradients). A second 100-epoch cosine cycle also gives the Exp 037 detector the extra training that Exp 029 had (Exp 037 conclusion 3). Expected: full-pipeline line AP above Exp 037 + Phase A (0.818 on all pages), symbol AP above Exp 037 (0.708).
 * **Setup**:
   * Init: Exp 037 final checkpoint (detector and its Adam state) + the Phase A refiner trained on Exp 037 (`037_029_recipe_from_023/refiner_phase_a/refiner.pt`, fresh Adam state, its own parameter group).
@@ -972,7 +972,7 @@
 
     The two backbone gradients are orthogonal on average (cosine −0.003, per-batch −0.31…+0.08): the refiner adds its own direction, about 15% of the squared gradient, without fighting the detector. Its loss value overstates its weight, because FGL has an irreducible floor (soft two-bin targets; Phase A converged at 0.23 total). Crops inflate the detector loss (cut objects): Exp 037 logged ~0.2 on full pages at the end.
   * Also measured: on these augmented crops, the Phase A refiner only improves the matched coarse endpoints from 10.9 to 9.1 px mean L1 (crops cut lines at their borders, which inflates both), far less than on clean pages. Augmented tokens are out of its training distribution, which is the premise of this experiment.
-  * Cost: the refiner's keys are now projected once per distinct token and its offset embedding folded into `to_kv` (same function and parameters, unit-tested against the per-cell formula): 154 → 113 ms forward+backward for 2,100 queries on 2,000 tokens (laptop). The step overhead is +18% on crops (~17 ms, mostly fixed cost) and is estimated at 10–18% on full pages. Exp 037 trained 100 epochs in ~10.2 h, so the run may hit `timeout 11h` around epoch 90–95; checkpoints are saved every epoch and the LR is already < 3e-6 after epoch 90.
+  * Cost: the refiner's keys are now projected once per distinct token and its offset embedding folded into `to_kv` (same function and parameters, unit-tested against the per-cell formula): 154 → 113 ms forward+backward for 2,100 queries on 2,000 tokens (laptop). The step overhead is +18% on crops (~17 ms, mostly fixed cost) and is estimated at 10–18% on full pages. Measured on Kaggle (test run): 1,524 vs 1,615 symbols/s for Exp 037, **+6%** (~390 s/epoch), so 100 epochs need ~10.9 h; the notebook uses `timeout 11.5h` (setup ~2 min, compile ~5 min, two inference cells ~7 min, all inside Kaggle's 12 h).
   * Command: `scripts/music_deep.ipynb` cell 6:
     ```bash
     torchrun --nproc_per_node=2 src/train_detection.py --exp_dir experiments/038_phase_b_joint_refiner \
@@ -982,7 +982,19 @@
         --detector_checkpoint <037>/latest_model.pt \
         --line_refiner --refiner_init <037>/refiner_phase_a/refiner.pt --refiner_lr_scale 1.0
     ```
-  * Kaggle inputs: a model version with `037_029_recipe_from_023/train_detection/checkpoints/latest_model.pt` and `037_029_recipe_from_023/refiner_phase_a/refiner.pt` (cell 5 asserts both).
+  * Kaggle inputs: the private dataset `kwonyoungchoi/music-deep-038-init` with `init_037.pt` (= `037_029_recipe_from_023/train_detection/checkpoints/latest_model.pt`) and `refiner_037_phase_a.pt` (= `037_029_recipe_from_023/refiner_phase_a/refiner.pt`), attached through `dataset_sources` (`kaggle kernels push` keeps dataset sources but drops model sources); cell 5 asserts both and links them into `/kaggle/temp`.
   * Evaluation plan (local): `evaluate_coco.py` on all pages, full pipeline (cell 7) and coarse (cell 8), against Exp 037 + Phase A (lines 0.818, symbols 0.708) and Exp 029 + Phase A (lines 0.823, symbols 0.768); symbols also per frequency group and on the three real small classes (Analysis 008). In `metrics.jsonl`, watch `refine_coarse_l1` vs `refine_l1`.
-* **Results**: pending.
+* **Test run** (`experiments/038_phase_b_test_10ep`, Kaggle version 48, same command with `--epochs 10`, `timeout 3h`): a 10-epoch cycle (1 warmup epoch to 1e-4, then cosine) from the same init, run to find bugs before the 12 h run. 1.3 h in total (setup 2 min, training 1.15 h, the two inference cells 7 min).
+  * In training: the refiner's matched endpoint error goes from 0.050 to 0.018 patch units (3.2 → 1.1 px) in the first logged step and the refiner loss from 0.31 to ~0.25 by epoch 5 (Phase A converged at 0.23 on clean tokens).
+  * Evaluation on all 351 pages (`eval.log`, `ap_breakdown.txt`), AP@[.5:.95] (AP50):
+
+    | | symbols | lines coarse | lines full pipeline |
+    |---|---|---|---|
+    | Exp 037 + Phase A | 0.708 (0.888) | 0.645 (0.765) | 0.818 (0.851) |
+    | 038 test, 10 epochs | 0.695 (0.875) | 0.628 (0.748) | 0.816 (0.843) |
+
+  * Per line class, full pipeline: stem 0.958 → **0.966**, ledgerLines 0.920 → **0.930**, voltaBracket 0.690 → **0.701**, beam 0.985 → 0.986, barLine =, staff 0.973 → 0.971, system 0.969 → 0.966, octave 0.071 → 0.032 (24 instances). Mean of the 7 classes without octave: 0.925 → **0.928**. The global line drop is octave alone (1/8 of the mean).
+  * Symbols lose 0.013, mostly on rare classes (0–9 instances: 0.482 → 0.444, 10–99: 0.628 → 0.624), and slur (0.392 → 0.363); the ≥ 1000-instance classes move 0.923 → 0.920. The coarse line drop is mostly staff (0.523 → 0.475), which the refiner corrects anyway (0.971).
+  * Reading: rewarming to LR 1e-4 for a 10-epoch cycle knocks Exp 037 out of the minimum it reached after 100 epochs, and the rare classes it had memorized go first; 10 epochs are too few to get them back. Despite that worse detector, the jointly trained refiner already beats the Phase A refiner on stem, ledgerLines and voltaBracket. This is not a measurement of Phase B, which needs the full 100-epoch cycle.
+* **Results**: pending (full run).
 * **Conclusion**: pending.
