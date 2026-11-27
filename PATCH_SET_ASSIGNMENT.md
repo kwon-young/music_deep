@@ -237,9 +237,10 @@ before anything else.
 
 ### Phase 1 — association on the current detector (Analysis 011, offline)
 
-The global one-to-one model already never matches two slots of one patch to the same GT,
-so its outputs satisfy the cannot-link assumption. That lets us test the inference half
-before training anything:
+The global one-to-one model never matches two slots of one patch to the same GT, so the plan
+assumed its outputs satisfy the cannot-link assumption and tested the inference half before
+training anything. **Outcome (Analysis 011): the assumption is false at inference**; see the
+outcome block at the end of this phase. Plan as run:
 
 * Exp 037 / 038 outputs, all queries above floor 0.05: NMS + noisy-OR (current) vs
   association + fusion + support ratio, for lines and symbols.
@@ -264,6 +265,29 @@ before training anything:
   and cannot-link code, not the presence/class split, which only Phase 2 can check.
 * Expected: small gains only (the current scores are one-to-one, so there are few
   confident voters); the value is validating the inference code and the metrics.
+
+**Phase 1 outcome (Analysis 011, all 351 pages)**:
+
+* Association **without** cannot-link equals NMS for lines (common AP 0.9638 vs 0.9636) and
+  slightly beats top-k for symbols (0.8851 vs 0.8730, confident duplicates halved): the
+  grouping and fusion code is sound.
+* **Cannot-link fails on the current model**: the unmatched slots of a patch copy its matched
+  slot at low score (14% of line slots ≥ 0.05 have an in-patch twin). Cannot-link keeps each
+  copy in its own cluster, and noisy-OR lifts it: 6,272 confident line duplicates vs 1,100.
+* **Coincident noteheads are merged** (pair recall 0.46 → 0.12, with or without cannot-link):
+  the two voices come from different patches, one slot each. Only Phase 2's target (both GT
+  assigned to every responsible patch) turns the pair into a cannot-link case.
+* **Spreads are 3–4× too wide** (97% of refined-line errors within 1 std, symbols 95%): the
+  std-normalised distance merges neighbours. Phase 2 must calibrate the FGL spread (a
+  calibration term, or a post-hoc temperature on the bin logits) before section 5's
+  certainty-aware distance is used.
+* **Cluster score**: noisy-OR inflates clusters of weak votes; best-member / support scoring
+  removes duplicates but loses AP because today's class score is not a presence probability.
+  Needs the presence logit.
+* Symbol association radius should scale with size (same-GT spread median 0.36 ×
+  sqrt(area)), not a fixed 8 px. The refiner stays mandatory (coarse endpoints: −0.14 AP).
+* Phase 2 acceptance on this script: cannot-link variant at least as good as no-cannot-link,
+  coincident-pair recall ≥ the top-k baseline (0.46), calibration within 1 std near 68%.
 
 ### Phase 2 — training implementation (laptop)
 

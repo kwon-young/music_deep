@@ -1063,3 +1063,44 @@
   2. One third (556) is **extent**: where does a staff segment end? Patches in the middle of a segment (median 19 staff spaces ≈ 16 patches) cannot see its ends, and the GT ends at engraving breaks that have no barline (mid-measure clef / key / time changes, courtesy signatures at system ends). The predictions end at the nearest barline instead, or overshoot. Duplicates with different far endpoints do not coincide after refinement, so they survive NMS as fragments, and the fragments then fill the top-1,785 (cause 1).
   3. For the patch-set plan: association must not require voters to agree on an endpoint they cannot see. Distance per endpoint normalised by the FGL spread, fusion weighted by certainty (added to `PATCH_SET_ASSIGNMENT.md` section 5), and a staff-recall-by-end-type metric in Phase 1 (now Analysis 011).
   * **Decision**: the staff breaks of the Verovio typesetting (mid-measure clef / key / time changes, courtesy signatures) are kept as targets: they are arbitrary but consistent, and with enough examples and context the model can learn them. The certainty-aware association lets the voters near a break decide where the segment ends.
+
+## Analysis 011: Association instead of NMS on the Current One-to-One Detector (Patch-Set Phase 1)
+* **Experiment Name/ID**: `experiments/analysis_011_association/` (offline; slot cache `experiments/037_029_recipe_from_023/slot_cache/` built by `scripts/build_slot_cache.py`, evaluation `scripts/diagnose_association.py`, association code `src/model/association.py`, regions `src/model/regions.py`, tests `tests/model/test_association.py`).
+* **Hypothesis/Goal**: test the inference half of `PATCH_SET_ASSIGNMENT.md` (section 5) before training anything: replace NMS by greedy association (cannot-link: two slots of one patch never share a cluster; fusion of the members; noisy-OR / best-member / support-ratio scoring) on the Exp 037 detector + Exp 035 refiner, and measure the crowding metrics the patch-set plan is meant to move. The plan assumed that the global one-to-one model already satisfies cannot-link.
+* **Setup**: frozen Exp 037 detector (nano, K = 5) and Exp 035 Phase A refiner on all 351 pages (held-out pieces reported separately). Every slot with best class probability ≥ 0.01 is cached with its class logits, geometry, the std of each coordinate (spread of its D-FINE edge distribution × scale; refined lines: the refiner's bin distribution × refiner scale) and, for lines, the refined endpoints. Lines: refined endpoints, floor 0.05; symbols: floor 0.01, no NMS today. Cap per page: GT count + 100. Distances: max over the two points of the Euclidean distance (plain, in px) or of the distance normalised by sqrt(var_member + var_cluster) (in std). Fusion: score-weighted (plain) or score / var weighted (normalised). Support = Σ presence (class score as stand-in) / expected voters (patches within cell distance 0.5 of the GT region). COCO evaluation with the patched OKS of `src/evaluate_coco.py`. Coincident pairs: the 505 identical same-class symbol GT pairs (Analysis 009, two voices sharing a notehead); crowded pairs: same-class GT within 64 px; staff ends: barline (both ends within 12 px of a barLine GT) vs other.
+* **Results** (all pages; "dupes" = predictions with score ≥ 0.3 matching an already-matched GT; held-out line AP in brackets):
+
+  | lines | AP | common AP | staff AP | dupes | crowded | staff recall bar / other |
+  |---|---|---|---|---|---|---|
+  | NMS 4 px + noisy-OR (Exp 037 pipeline) | 0.8178 (0.837) | 0.9636 | 0.9728 | 1,100 | 0.978 | 0.996 / 0.951 |
+  | assoc 4 px, cannot-link, noisy-OR | 0.8154 | 0.9604 | 0.9634 | 6,272 | 0.974 | 0.994 / 0.943 |
+  | assoc 4 px, **no** cannot-link, noisy-OR | **0.8180** (0.836) | **0.9638** | **0.9729** | 1,208 | 0.978 | 0.996 / 0.950 |
+  | assoc 3 std, noisy-OR | 0.8096 | 0.9599 | 0.9619 | 10,786 | 0.974 | 0.995 / 0.947 |
+  | assoc 1 std, noisy-OR | 0.8213 (0.851) | 0.9606 | 0.9632 | 8,645 | 0.975 | 0.994 / 0.945 |
+  | assoc 3 std, best-member score | 0.8042 | 0.9570 | — | 201 | 0.974 | 0.995 / 0.942 |
+  | assoc 3 std, support ratio | 0.8027 | 0.9575 | — | **0** | 0.969 | 0.992 / 0.929 |
+  | coarse endpoints (no refiner), assoc 3 std | 0.6810 | 0.8345 | — | 7,913 | 0.930 | 0.981 / 0.876 |
+
+  | symbols | AP | common AP | dupes | crowded | coincident pairs |
+  |---|---|---|---|---|---|
+  | top-k, no NMS (Exp 037) | 0.7083 (0.771) | 0.8730 | 1,476 | 0.977 | **0.461** |
+  | assoc 8 px, cannot-link, noisy-OR | 0.7117 (0.776) | 0.8828 | 734 | 0.977 | 0.121 |
+  | assoc 8 px, no cannot-link | **0.7121** | **0.8851** | 818 | 0.977 | 0.105 |
+  | assoc 3 std, noisy-OR | 0.7016 | 0.8560 | 17,477 | 0.977 | 0.147 |
+  | assoc 1 std, noisy-OR | 0.7081 | 0.8677 | 15,527 | 0.978 | 0.323 |
+  | assoc 3 std, best-member score | 0.7038 | 0.8721 | 128 | 0.977 | 0.188 |
+  | assoc 3 std, support ratio | 0.6966 | 0.8691 | 0 | 0.977 | 0.166 |
+
+  * The cache reproduces Exp 037 exactly (line AP 0.8178 vs 0.818, staff 0.9728 vs 0.973).
+  * The 1-std line AP gain (+0.004, held-out +0.014) is `octave` alone (held-out 0.31 → 0.43, a handful of GT); common AP and staff AP are lower.
+  * **Std calibration** (|error| / std of the slots ≥ 0.05 nearest to a same-class GT): symbols 94.6% within 1 std (median z 0.25), coarse lines 89.9% (0.26), refined lines 97.1% (0.22). A calibrated Gaussian has 68% within 1 std and median z 0.67: the spreads are **~3–4× too wide**. Errors: refined lines p50 / p90 / p99 0.38 / 1.4 / 8.8 px, coarse lines 0.93 / 12.4 / 28.6 px, symbols 0.54 / 7.2 / 25.5 px.
+  * **In-patch duplicates** (two slots of one patch, same class, within 4 px refined (lines) / 8 px (symbols)): lines 236k of 1.63M slots ≥ 0.05 (14%), but only 170 of 256k slots ≥ 0.3; symbols 6,960 of 526k ≥ 0.05, 69 of 211k ≥ 0.3.
+  * **Symbol duplicate spread** (corner distance between slots of different patches matched at IoU ≥ 0.5 to the same GT): p50 / p90 / p99 0.36 / 1.09 / 2.0 × sqrt(GT area), 113 / 503 / 1,267 px (pairs are dominated by large symbols, which have many voters).
+* **Conclusion**:
+  1. **Association without cannot-link equals NMS** for lines and slightly beats top-k for symbols (common AP +0.012, dupes halved). The fusion and grouping code works.
+  2. **The current model breaks the cannot-link assumption**, which the plan took for granted: one-to-one matching is per page, so the unmatched slots of a patch freely copy its matched slot at low score (14% of line slots ≥ 0.05 have an in-patch twin). Cannot-link then forces each copy into its own cluster, and noisy-OR over the other patches' low-score votes lifts it above 0.3: 6,272 confident line duplicates instead of 1,100.
+  3. **Coincident noteheads are not protected on this model**: association merges them (pair recall 0.46 → 0.12), with or without cannot-link (0.105 vs 0.121). The two voices of a shared notehead are mostly predicted by *different* patches, one slot each, so cannot-link has nothing to separate. Only a target that assigns both GT to every responsible patch (two slots per patch) makes the pair a cannot-link case: this is the strongest argument for Phase 2's within-patch one-to-one assignment.
+  4. **Cluster scoring matters as much as grouping**: noisy-OR turns clusters of weak votes into confident objects; best-member or support scoring removes the duplicates (201 / 0) but loses AP (the class score of today's model is not a presence probability: most voters are trained negatives). The support ratio also penalises staff segments at engraving breaks (other-end recall 0.929), where fewer patches vote than expected. Ranking can only be judged with a presence logit.
+  5. **Std-normalised distances need calibration first**: with spreads 3–4× too wide, a 3-std radius is ~10 true std and lets neighbours compete (10.8k / 17.5k dupes). Phase 2 should train the FGL spread to be calibrated (or calibrate post hoc with a per-head temperature on the bin logits) before the certainty-aware distance of section 5 is used. Symbol radius: a fixed 8 px works for noteheads but the spread scales with symbol size (median 0.36 × sqrt(area)), so the radius should be relative to size.
+  6. **The refiner is required**: coarse endpoints lose 0.14 line AP after association.
+  7. Next: Phase 2 (within-patch one-to-one targets, presence logit, calibrated spreads), then re-run this script on its output; the cannot-link, coincident-pair and support-ratio rows are the ones that must change.
