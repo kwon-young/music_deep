@@ -998,3 +998,68 @@
   * Reading: rewarming to LR 1e-4 for a 10-epoch cycle knocks Exp 037 out of the minimum it reached after 100 epochs, and the rare classes it had memorized go first; 10 epochs are too few to get them back. Despite that worse detector, the jointly trained refiner already beats the Phase A refiner on stem, ledgerLines and voltaBracket. This is not a measurement of Phase B, which needs the full 100-epoch cycle.
 * **Results**: pending (full run).
 * **Conclusion**: pending.
+
+## Analysis 009: Ground-Truth Statistics for the Patch-Set Assignment (Phase 0)
+* **Experiment Name/ID**: `analysis/009_patch_set_assignment` (offline, GT only, no model). Artifacts: `experiments/analysis_009_patch_set_assignment/` (`report.txt`, `assignment_stats.json`). Script: `scripts/assignment_stats.py`. Plan: `PATCH_SET_ASSIGNMENT.md`.
+* **Hypothesis/Goal**: Before changing the matcher to "one-to-one within a patch, one-to-many across patches", check from the GT alone whether the structure can work and choose its parameters: the responsibility margin m (a patch is responsible for the GT within m patch units of its cell), the slot count K, and whether the cannot-link rule (two predictions of one patch are never merged) actually separates crowded objects.
+* **Setup**:
+  * Kept patches exactly as in training: pyvips decode, replicate padding, grid from the page origin, `variance_patch_drop_indices` with threshold 0.001, at extraction sizes 54, 64 and 74 px. All 351 trainval pages, 223,819 symbols, 368,627 lines.
+  * Distances in patch units: cell-to-box, and cell-to-segment (0 when the segment crosses the cell, Liang–Barsky); both checked against brute-force sampling.
+  * Overflow (more than K responsible GT in a patch): the patch keeps the K with the fewest expected voters (ties: nearest to its centre), the others are ignored in that patch. K = ∞ gives the expected voters.
+  * Crowded pairs: same-class GT whose two endpoints (lines, either orientation) or two box corners are both within d px; "kept apart" = some kept patch holds both in non-overflowed slots.
+  * Sweep: m ∈ {0, 0.25, 0.5}, K ∈ {5, 8, ∞}, d ∈ {8, 16, 32, 64, 128} px. 37 min on the laptop (4 threads).
+  * Command: `PYTHONPATH=src mamba run -n pytorch python scripts/assignment_stats.py --out_dir experiments/analysis_009_patch_set_assignment`
+* **Results**:
+  * **Scale**: pages ~6,300 × 8,900 px, staff space 54 px, `noteheadBlack` 57 × 68 px; a 64 px patch is ~1.2 staff spaces; 8,213 / 6,178 / 4,804 kept patches per page at 54 / 64 / 74 px.
+  * **No GT is ever structurally missed**: 0 GT with zero voters in every configuration (no GT lies only in dropped patches, and overflow never removes all of a GT's voters).
+  * **Patch load** (GT per kept patch, p99 / max at 64 px): symbols 2 / 7 (m = 0), 4 / 11 (m = 0.5); lines 5 / 9 (m = 0), 8 / 14 (m = 0.5).
+  * **Overflow**, GT overflowed in at least one patch (64 px; 74 px in brackets):
+
+    | | m = 0 | m = 0.25 | m = 0.5 |
+    |---|---|---|---|
+    | symbols, K = 5 | 0.01% | 0.13% | 0.83% (1.39%; `tie` 7.3%, `noteheadHalf` 1.7%) |
+    | symbols, K = 8 | 0% | 0% | 0.02% (0.04%) |
+    | lines, K = 5 | 0.99% | 6.0% (`staff` 20%) | **20.2% (25.0%; `staff` 61%)** |
+    | lines, K = 8 | 0% | 0.05% | 1.8% (3.8%; `staff` 5.6%) |
+
+  * **Single-voter GT** (nothing to agree with), symbols at 64 px: 3.5% (m = 0; `articStaccatoAbove/Below` 46–47%, `dots` 44%), 0.49% (m = 0.25; staccato 7–8%, dots 4.7%), 0.02% (m = 0.5; staccato 0.3%). Lines: ≤ 0.07% everywhere.
+  * **Crowding lives at the staff-space scale, not below it.** Same-class pairs within 32 px: lines 904 (none within 16 px); symbols 510, of which **505 are coincident GT (< 1 px: 324 `noteheadBlack`, 85 accidentals, 36 dynamics, 16 `dots`, 16 `slur`, 13 `noteheadHalf`, 10 rests, 5 clef changes)**. These are legitimate: a notehead shared by two voices (stem up and stem down) is two overlapping notes, annotated with their own accidentals, dots, rests and dynamics. Within 64 px: 20,256 symbol pairs (chords) and 115,367 line pairs (79,536 adjacent `staff` lines, 21,457 `ledgerLines`, 11,901 `beam`).
+  * **Kept apart by cannot-link**, pairs within 64 px (128 px), 64 px extraction:
+
+    | | m = 0 | m = 0.25 | m = 0.5 |
+    |---|---|---|---|
+    | symbols | 96.6% (59.7%) | 99.99% (90.4%) | 100% (98.9%) |
+    | lines | 20.1% (23.3%) | 68.9% (49.9%) | **100% (77.5%)** |
+
+    Per line class at m = 0.25: `staff` 65.9%, `ledgerLines` 64.4%, `beam` 91.3%; at m = 0.5 all ≥ 99.97%. Within 32 px, lines are ≥ 99% kept apart for every m ≥ 0.25.
+  * Geometry of the line result: two parallel lines g patch units apart share a cell iff a cell centre falls in a window of width 1 + 2m − g, so a fraction 1 + 2m − g of them is kept apart. The staff space (54 px) is g = 0.84 at 64 px, which predicts 16% / 66% / 100% for m = 0 / 0.25 / 0.5 (measured `staff`: 15.9% / 65.9% / 100%). Over the 54–74 px extraction range, g goes up to 1.0, so **only m ≥ 0.5 keeps adjacent staff and ledger lines apart at every scale**.
+  * Expected voters per GT at m = 0.5, 64 px (p10 / p50): symbols 6 / 8, `staff` 21 / 33, `stem` 7 / 10, `ledgerLines` 4 / 6.
+* **Conclusion**:
+  1. **The structure is viable**: no GT is structurally unreachable, and with m = 0.5 the cannot-link rule separates every same-class pair closer than one staff space.
+  2. **Choice: m = 0.5 and K = 8 for both heads.** m = 0.5 is the only margin that protects adjacent staff/ledger lines at every extraction size and gives ≥ 2 voters to 99.7% of staccato dots. At m = 0.5, K = 5 overflows 20–25% of the lines (61% of staff segments), K = 8 brings it to 1.8–3.8%, and overflow only ignores a GT in some patches (no GT loses all its voters). The symbol head can stay at K = 5 (0.8% overflow), but one K for both heads keeps the code simple.
+  3. **For refined lines, crowding is not the risk**: no line pair is within 16 px, and refined duplicates coincide within 2–8 px (Analysis 007), so geometry alone separates them. The cannot-link rule matters when association uses coarse geometry or a wide radius, and for symbols, which have no refiner: their coarse duplicate spread has to be measured (Phase 1).
+  4. **Coincident GT stay in the training set** (correction of a first reading that called them annotation duplicates): the detector must output both notes of a shared notehead. The patch-set design supports it without special cases (two slots of one patch, both positive; at inference, cannot-link keeps the two predictions of one patch in two clusters), whereas any geometric NMS would merge them. Separately, no two staff segments are within 16 px, which refutes the guess of Analysis 007 that its 15 staff GT lost to NMS were near-identical segments.
+  * **Next steps**: (a) Phase 1 (association on the current detector), adding the coarse duplicate spread of symbols; (b) Phase 2 with m = 0.5, δ = 0.5, K = 8, coincident GT kept.
+
+## Analysis 010: Why Staff Segments Are Missed by the Full Line Pipeline (Exp 037)
+* **Experiment Name/ID**: `experiments/037_029_recipe_from_023/refiner_phase_a/staff_misses/` (offline, Exp 037 Phase A cache, all 351 pages; tracer `staff_misses.py`, crops `render_misses.py`, both copied there from the session scratchpad).
+* **Hypothesis/Goal**: Analysis 007 attributed 15 lost staff GT to NMS and guessed near-identical GT; Analysis 009 refuted that guess (no two staff segments within 16 px). Find out why staff segments are missed with the current pipeline (refine every query → floor 0.05 → NMS 4 px + noisy-OR → top 1,785 lines), to see which failures the patch-set assignment can address.
+* **Setup**: every staff GT left unmatched at OKS 0.5 by the replayed COCO matching is traced through the pipeline over **all** queries of its page: best refined same-class query (OKS, score, per-endpoint error), whether a query with OKS ≥ 0.5 exists and where it is lost (score floor, NMS owner, top-1,785 cut), the kept staff lines along it, its neighbouring segments, and the context of its worse endpoint (barLine GT, clef / timeSig symbol GT, end of the staff line in the system). Crops of 25 samples were inspected.
+* **Results**:
+  * Unmatched staff GT: **1,600 / 99,420 (1.6%)**, held-out pieces 277 / 14,460 (1.9%: 139 loc, 115 below floor, 23 cut).
+
+    | cause | GT | what the pipeline has |
+    |---|---|---|
+    | below the 0.05 floor | 623 | a query with OKS ≥ 0.5 (median 0.985, endpoint error 0.9 / 2.7 px) but class score 0.013–0.046; it is the training-matched query itself (median score 0.034) |
+    | cut by the top-1,785 | 420 | kept by NMS, OKS median 0.997, score ~0.06; outranked on dense pages, e.g. page 325: 4,879 lines survive NMS, the top 1,785 hold 231 staff fragments (OKS 0.1–0.5) and only 49 staff TP |
+    | localization (no query reaches 0.5) | 556 | best OKS ≈ 0.5 exactly: one endpoint within 0.3 px, the other 125 / 470 / 2,166 px off (p10/50/90): the line ends at another break point |
+    | absorbed by NMS | **1** | |
+
+  * Localization subtypes: 258 stop inside the GT, 112 run through the GT end to the neighbour's far end (pred end on a barline 85 / 112, GT end on a barline 3 / 112), 118 run past it elsewhere, 68 drift off the line (overshoot into the margin at system ends).
+  * **The missed ends are not at barlines**: 86% of all staff endpoints sit on a barline, but only ~37% of the worse endpoints of unmatched GT. The others: end of the staff line in the system, mostly with a courtesy clef or time signature after the last barline (~34%), mid-measure clef / key / time-signature changes, where the engraving breaks the staff line with no visible gap (most of the ~20% with no barline, clef or time signature nearby; key changes are only accidentals in the GT and were not tagged).
+  * By length (staff spaces of 54 px): unmatched 18% under 4, 5.8% for 4–8, 1.1–2.2% for 8–50, 5.9% for 50–100, **42% above 100** (whole unbarred systems; 141 of 180 are cut, i.e. found but ranked low).
+* **Conclusion**:
+  1. **NMS is not the cause** on the current pipeline (1 GT). Two thirds of the misses (1,043) are **scoring**: the geometry is right after refinement, but the one-to-one head gives the segment 0.03–0.06, so the floor or the per-page cut drops it. A staff segment has 16–33 responsible patches that all see the same uniform line, and one-to-one training makes all but one of them negatives: the class score cannot be confident. This is the failure the patch-set assignment targets (all voters positive, support aggregated over them).
+  2. One third (556) is **extent**: where does a staff segment end? Patches in the middle of a segment (median 19 staff spaces ≈ 16 patches) cannot see its ends, and the GT ends at engraving breaks that have no barline (mid-measure clef / key / time changes, courtesy signatures at system ends). The predictions end at the nearest barline instead, or overshoot. Duplicates with different far endpoints do not coincide after refinement, so they survive NMS as fragments, and the fragments then fill the top-1,785 (cause 1).
+  3. For the patch-set plan: association must not require voters to agree on an endpoint they cannot see. Distance per endpoint normalised by the FGL spread, fusion weighted by certainty (added to `PATCH_SET_ASSIGNMENT.md` section 5), and a staff-recall-by-end-type metric in Phase 1 (now Analysis 011).
+  * **Decision**: the staff breaks of the Verovio typesetting (mid-measure clef / key / time changes, courtesy signatures) are kept as targets: they are arbitrary but consistent, and with enough examples and context the model can learn them. The certainty-aware association lets the voters near a break decide where the segment ends.
