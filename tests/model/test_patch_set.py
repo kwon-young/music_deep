@@ -13,6 +13,7 @@ from model.assignment import (
     responsible_gt,
 )
 from model.criterion import PatchSetCriterion, quality_focal_loss, sigmoid_focal_loss, voter_weights
+from model.box_ops import generalized_box_iou, paired_generalized_box_iou
 from model.refiner import spread_voters
 from model.detector import OMRDetector, create_detector, heads_need_remap, load_detector_state
 from music_types import (
@@ -228,6 +229,14 @@ class TestPatchSetLosses(unittest.TestCase):
         q = criterion.line_quality(pred, gt)
         self.assertAlmostEqual(float(q[0]), 1.0, places=5)  # wrong far end, on the line
         self.assertAlmostEqual(float(q[1]), float(torch.exp(torch.tensor(-((7 / 64) ** 2) / 0.02))), places=5)
+
+    def test_paired_giou_is_the_diagonal_of_the_pairwise_matrix(self) -> None:
+        torch.manual_seed(5)
+        xy = torch.rand(50, 2)
+        b1 = torch.cat([xy, xy + torch.rand(50, 2) + 0.01], dim=-1)
+        xy = torch.rand(50, 2)
+        b2 = torch.cat([xy, xy + torch.rand(50, 2) + 0.01], dim=-1)
+        torch.testing.assert_close(paired_generalized_box_iou(b1, b2), generalized_box_iou(b1, b2).diag())
 
     def test_voter_weights_sum_to_one_per_gt(self) -> None:
         voters = torch.tensor([4, 4, 4, 4, 1])

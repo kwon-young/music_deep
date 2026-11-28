@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .box_ops import generalized_box_iou, box_xyxy_to_cxcywh
+from .box_ops import box_xyxy_to_cxcywh, paired_generalized_box_iou
 from typing import Literal
 
 from .assignment import PatchSetAssignment, SlotLabels, on_line_quality, pair_quality
@@ -169,9 +169,7 @@ class DFINECriterion(nn.Module):
         loss_bbox = (loss_bbox * w).sum() / num_boxes
 
         # 2. GIoU Loss
-        loss_giou = 1 - torch.diag(
-            generalized_box_iou(src_boxes, matched_boxes)
-        )
+        loss_giou = 1 - paired_generalized_box_iou(src_boxes, matched_boxes)
         loss_giou = (loss_giou * w).sum() / num_boxes
 
         return loss_bbox, loss_giou

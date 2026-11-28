@@ -55,3 +55,20 @@ def generalized_box_iou(
     area = wh[:, :, 0] * wh[:, :, 1]
 
     return iou - (area - union) / area
+
+
+def paired_generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """GIoU of boxes1[i] with boxes2[i], (N,): ``generalized_box_iou(b1, b2).diag()`` in O(N)
+    memory instead of O(N^2) (the patch-set criterion has one row per voter, tens of thousands
+    per batch: the pairwise matrix ran a T4 out of memory in Exp 043's test run)."""
+    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
+    assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
+    area1 = box_area(boxes1)
+    area2 = box_area(boxes2)
+    wh = (torch.min(boxes1[:, 2:], boxes2[:, 2:]) - torch.max(boxes1[:, :2], boxes2[:, :2])).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    union = area1 + area2 - inter
+    iou = inter / union
+    hull = (torch.max(boxes1[:, 2:], boxes2[:, 2:]) - torch.min(boxes1[:, :2], boxes2[:, :2])).clamp(min=0)
+    area = hull[:, 0] * hull[:, 1]
+    return iou - (area - union) / area
