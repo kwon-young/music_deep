@@ -33,7 +33,7 @@ import io
 import json
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -45,11 +45,12 @@ from pycocotools.cocoeval import COCOeval
 from dataset.coco import parse_coco
 from evaluate_coco import fast_computeOks, fast_evaluateImg, summarize_at_maxdet
 from model.association import AssociationConfig, Clusters, Detections, associate, support_ratio
+from model.line_association import LineAssociationConfig, associate_lines, chain_labels, endpoint_agreement
 from model.refiner import deduplicate_lines
 from model.regions import expected_voters
 
 type Modality = Literal["symbols", "lines"]
-type Ranking = Literal["noisy_or", "quality", "support_quality", "slot"]
+type Ranking = Literal["noisy_or", "quality", "support_quality", "slot", "support_cut"]
 type JsonValue = int | float | str | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 PS = 64.0
@@ -62,13 +63,15 @@ CONFIDENT = 0.3
 class Variant:
     name: str
     modality: Modality
-    method: Literal["topk", "nms", "associate"]
+    method: Literal["topk", "nms", "associate", "chains", "hybrid"]
     ranking: Ranking
     floor: float
     association: AssociationConfig | None = None
+    chains: LineAssociationConfig | None = None
     refined: bool = True
     presence: bool = False
     size_scale: bool = False
+    chain_labels: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,16 @@ def patch_set_variants() -> list[Variant]:
         Variant("ps_lines_assoc4px_score_support", "lines", "associate", "support_quality", 0.5, score_w, presence=True),
         Variant("ps_lines_assoc1sd_ivw_support", "lines", "associate", "support_quality", 0.5, ivw_1sd, presence=True),
         Variant("ps_lines_assoc4px_ivw_cl_support", "lines", "associate", "support_quality", 0.5, ivw_cl, presence=True),
+        Variant("ps_lines_chains_support_cut", "lines", "chains", "support_cut", 0.5, presence=True,
+                chains=LineAssociationConfig()),
+        Variant("ps_lines_chains_support_quality", "lines", "chains", "support_quality", 0.5, presence=True,
+                chains=LineAssociationConfig()),
+        Variant("ps_lines_chains_presence_support_cut", "lines", "chains", "support_cut", 0.5, presence=True,
+                chains=LineAssociationConfig(weighting="presence", certain_std=24 / 64, min_cut_weight=1.5)),
+        Variant("ps_lines_hybrid", "lines", "hybrid", "support_quality", 0.5, ivw, presence=True,
+                chains=LineAssociationConfig()),
+        Variant("ps_lines_hybrid_presence_cuts", "lines", "hybrid", "support_quality", 0.5, ivw, presence=True,
+                chains=LineAssociationConfig(weighting="presence", certain_std=24 / 64, min_cut_weight=1.5)),
         Variant("ps_symbols_topk", "symbols", "topk", "slot", 0.5, presence=True),
         Variant("ps_symbols_assocrel_support", "symbols", "associate", "support_quality", 0.5, rel,
                 presence=True, size_scale=True),
@@ -197,10 +210,40 @@ def cluster_score(page: Page, v: Variant, clusters: Clusters) -> torch.Tensor:
     return support_ratio(clusters, expected) * clusters.quality
 
 
+def subset(dets: Detections, keep: torch.Tensor) -> Detections:
+    return Detections(geometry=dets.geometry[keep], std=dets.std[keep], label=dets.label[keep],
+                      score=dets.score[keep], presence=dets.presence[keep], patch=dets.patch[keep])
+
+
+def chain_objects(page: Page, dets: Detections, cfg: LineAssociationConfig, by_agreement: bool
+                  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Chain-and-cut lines, scored by support x endpoint agreement (or x best class score)."""
+    objects = associate_lines(dets.geometry, dets.std, dets.label, dets.score, dets.presence,
+                              page.centers[dets.patch], cfg)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    expected = expected_voters(page.centers.to(device), objects.geometry.to(device), True, MARGIN, chunk=256).cpu()
+    support = (objects.evidence.cpu() / expected.clamp(min=1).float()).clamp(max=1.0)
+    agreement = endpoint_agreement(objects, cfg).cpu()
+    score = support * (agreement if by_agreement else objects.quality.cpu())
+    return objects.geometry.cpu(), objects.label.cpu(), score
+
+
 def run_variant(page: Page, v: Variant, cap: int) -> Kept:
     dets = candidates(page, v)
     if v.method == "topk":
         score, geometry, label = dets.score, dets.geometry, dets.label
+    elif v.method == "chains":
+        assert v.chains is not None
+        geometry, label, score = chain_objects(page, dets, v.chains, v.ranking == "support_cut")
+    elif v.method == "hybrid":
+        # chains for the long collinear classes, endpoint association for the others
+        assert v.chains is not None and v.association is not None
+        chained = torch.tensor([int(c) in v.chain_labels for c in dets.label.tolist()], dtype=torch.bool)
+        g1, l1, s1 = chain_objects(page, subset(dets, chained), v.chains, True)
+        rest = subset(dets, ~chained)
+        clusters = associate(rest, v.association)
+        g2, l2, s2 = clusters.geometry, clusters.label, cluster_score(page, v, clusters)
+        geometry, label, score = torch.cat([g1, g2]), torch.cat([l1, l2]), torch.cat([s1, s2])
     elif v.method == "nms":
         deduped = deduplicate_lines(dets.geometry * PS, dets.score, dets.label, 4.0, merge=True)
         score, geometry, label = deduped.score, dets.geometry[deduped.keep], dets.label[deduped.keep]
@@ -594,7 +637,8 @@ def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: s
     patch_set = "presence" in first.lines if variant_set == "auto" else variant_set == "patch_set"
     candidates_list = patch_set_variants() if patch_set else variants()
     print(f"{'patch-set' if patch_set else 'one-to-one'} cache, K = {first.num_shapes}", flush=True)
-    chosen = [v for v in candidates_list if only is None or v.name in only]
+    chain_idx = chain_labels([c for c in cats if int(c["id"]) in line_cats], cat_to_idx["lines"])
+    chosen = [replace(v, chain_labels=chain_idx) for v in candidates_list if only is None or v.name in only]
     seconds: dict[str, float] = {}
     calib: dict[str, list[np.ndarray]] = {}
     spread: list[np.ndarray] = []

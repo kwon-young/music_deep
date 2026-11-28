@@ -337,6 +337,13 @@ from the design, found by the smoke runs:
 * **Line class quality targets are off** (`--line_quality_targets` to enable): the coarse OKS of
   a far voter is ~0, which would push real positives' class score to 0.
 * Result: presence AUC symbols 0.945, lines 0.870 (linear-probe ceilings 0.95 / 0.87).
+* **Line association** (section 5 revised): refined line voters agree across the line but not on
+  its far end, so endpoint-distance association splits staff lines (37 clusters per GT) and an
+  endpoint mean mixes good votes with guesses. Long collinear classes (staff, voltaBracket,
+  system, octave) are associated by chains of voters lying on each other's line, cut at the
+  modes of their certain endpoint votes (refined spread ≤ 16 px), ranked by support × endpoint
+  agreement (`src/model/line_association.py`); the other line classes keep endpoint
+  association with spread-weighted fusion. Smoke cache: line AP 0.389 → 0.523.
 
 ### Phase 3 — Exp 043 on Kaggle (Exp 040 became an unrelated experiment)
 

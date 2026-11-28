@@ -6,7 +6,20 @@ import torch
 from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
-from model.association import AssociationConfig, ScoredDetections, associate_candidates, select_candidates
+from model.association import (
+    AssociationConfig,
+    Candidates,
+    ScoredDetections,
+    associate_candidates,
+    select_candidates,
+)
+from model.line_association import (
+    LineAssociationConfig,
+    associate_lines as associate_line_chains,
+    chain_labels,
+    endpoint_agreement,
+)
+from model.regions import expected_voters
 from model.detector import OMRDetector, create_detector, head_layout
 from model.refiner import (
     EndpointRefiner,
@@ -210,12 +223,19 @@ def associate_symbols(outputs: Outputs, args: argparse.Namespace, max_symbols: i
     )
 
 
+def subset_candidates(cands: Candidates, keep: torch.Tensor) -> Candidates:
+    return Candidates(index=cands.index[keep], label=cands.label[keep], score=cands.score[keep],
+                      presence=cands.presence[keep])
+
+
 def associate_lines(outputs: Outputs, args: argparse.Namespace, max_lines: int, refiner: EndpointRefiner | None,
-                    grid: TokenGrid | None) -> ScoredDetections:
+                    grid: TokenGrid | None, chained: frozenset[int] = frozenset()) -> ScoredDetections:
     """Patch-set inference for lines: occupied slots, refined when a refiner is given, then
-    associated by the larger endpoint distance (--line_assoc_radius pixels). Refined endpoints
-    are fused with weights score / var of the refiner's bins, so each endpoint comes from the
-    voters that see it (Exp 042: fused error 0.23 vs 0.69 patch for a plain mean)."""
+    associated. Classes in ``chained`` (staff, voltaBracket, ...; --line_association hybrid)
+    go through collinear chains cut at endpoint-vote modes (``model.line_association``), ranked
+    by support x endpoint agreement; the others by the larger endpoint distance
+    (--line_assoc_radius pixels), fused with weights score / var of the refiner's bins, ranked
+    by --cluster_score. Exp 042 smoke cache: line AP 0.389 greedy, 0.523 hybrid."""
     k = args.num_shapes
     ln = outputs.lines
     presence = ln.pred_presence
@@ -232,12 +252,31 @@ def associate_lines(outputs: Outputs, args: argparse.Namespace, max_lines: int, 
         )
         endpoints, std = refined.endpoints, refined.std
     weighted = std is not None and not args.line_score_fusion
-    return associate_candidates(
-        cands, endpoints, std if std is not None else torch.ones_like(endpoints) / args.patch_size, k,
-        ln.absolute_centers.data[0, ::k].float(), True,
+    centers = ln.absolute_centers.data[0, ::k].float()
+    spread = std if std is not None else torch.ones_like(endpoints) / args.patch_size
+    use_chains = args.line_association == "hybrid" and std is not None and len(chained) > 0
+    chain_mask = torch.tensor([int(c) in chained for c in cands.label.tolist()], dtype=torch.bool,
+                              device=endpoints.device) if use_chains else torch.zeros_like(cands.label, dtype=torch.bool)
+    rest = ~chain_mask
+    greedy = associate_candidates(
+        subset_candidates(cands, rest), endpoints[rest], spread[rest], k, centers, True,
         association_config(args, args.line_assoc_radius / args.patch_size, False, args.line_cannot_link, weighted),
         args.responsibility_margin, args.cluster_score, max_lines,
     )
+    if not use_chains:
+        return greedy
+    chain_cfg = LineAssociationConfig()
+    sel = cands.index[chain_mask]
+    objects = associate_line_chains(endpoints[chain_mask], spread[chain_mask], cands.label[chain_mask],
+                                    cands.score[chain_mask], cands.presence[chain_mask], centers[sel // k], chain_cfg)
+    expected = expected_voters(centers, objects.geometry, True, args.responsibility_margin, chunk=256)
+    support = (objects.evidence / expected.clamp(min=1).to(objects.evidence)).clamp(max=1.0)
+    chain_score = support * endpoint_agreement(objects, chain_cfg)
+    geometry = torch.cat([greedy.geometry, objects.geometry])
+    score = torch.cat([greedy.score, chain_score])
+    label = torch.cat([greedy.label, objects.label])
+    top = score.topk(min(max_lines, score.shape[0])).indices
+    return ScoredDetections(geometry=geometry[top], score=score[top], label=label[top])
 
 
 def process_single_image(
@@ -357,7 +396,8 @@ def process_single_image(
             _, height, width = patches.image_shape
             ph, pw = patches.patch_size
             grid = TokenGrid.from_batch(final[0].float(), patches.indices, height // ph, width // pw)
-        assoc = associate_lines(outputs, args, max_lines, refiner, grid)
+        assoc = associate_lines(outputs, args, max_lines, refiner, grid,
+                                chain_labels(dataset.line_categories, dataset.line_cat_id_to_idx))
         line_kps_kept, line_probs_kept, line_labels_kept = assoc.geometry.clone(), assoc.score, assoc.label
     elif refiner is not None:
         # Exp 035 pipeline: refine the candidates above the floor, NMS with merged
@@ -502,7 +542,8 @@ def run_inference(args):
         print(">>> ORACLE FGL MODE: replacing FGL residuals with GT-derived targets")
     if args.association:
         print(
-            f">>> Association: presence >= {args.presence_floor}, lines {args.line_assoc_radius} px"
+            f">>> Association: presence >= {args.presence_floor}, lines {args.line_association} "
+            f"(endpoint radius {args.line_assoc_radius} px)"
             f"{' (refined)' if args.refiner_checkpoint is not None else ''}, symbols "
             f"{args.symbol_assoc_radius} x size, cannot-link symbols {not args.no_cannot_link} / lines {args.line_cannot_link}, "
             f"score {args.cluster_score}"
@@ -713,6 +754,13 @@ if __name__ == "__main__":
         help="Without a presence logit: symbol slots scoring at least this much.",
     )
     assoc.add_argument("--line_assoc_radius", type=float, default=4.0, help="Pixels.")
+    assoc.add_argument(
+        "--line_association",
+        choices=["hybrid", "greedy"],
+        default="hybrid",
+        help="hybrid: staff / voltaBracket / system / octave by collinear chains cut at endpoint "
+        "modes, other classes by endpoint distance; greedy: endpoint distance for all.",
+    )
     assoc.add_argument(
         "--symbol_assoc_radius",
         type=float,
