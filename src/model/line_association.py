@@ -214,11 +214,12 @@ def associate_lines(
     )
 
 
-CHAIN_CLASSES = frozenset({"staff", "voltaBracket", "system", "octave"})
+CHAIN_CLASSES = frozenset({"staff", "voltaBracket", "octave"})
 """Long horizontal line classes that break into collinear abutting segments: associated by chains
 and cuts. Stems, barlines, beams and ledger lines have no collinear neighbour and their voters
 mostly agree on both ends, so endpoint association suits them (Exp 042: barLine 0.79 vs 0.60,
-stem 0.76 vs 0.70, staff 0.04 vs 0.69)."""
+stem 0.76 vs 0.70, staff 0.04 vs 0.69). ``system`` lines are vertical and line up across
+consecutive systems, so chains merge them (Exp 043 test: 0.999 with endpoints, 0.101 chained)."""
 
 
 def chain_labels(line_categories: list[dict[str, object]], cat_id_to_idx: dict[int, int],

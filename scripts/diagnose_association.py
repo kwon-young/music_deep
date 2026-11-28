@@ -50,7 +50,7 @@ from model.refiner import deduplicate_lines
 from model.regions import expected_voters
 
 type Modality = Literal["symbols", "lines"]
-type Ranking = Literal["noisy_or", "quality", "support_quality", "slot", "support_cut"]
+type Ranking = Literal["noisy_or", "quality", "support_quality", "slot", "support_cut", "support_presence_quality"]
 type JsonValue = int | float | str | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 PS = 64.0
@@ -72,6 +72,7 @@ class Variant:
     presence: bool = False
     size_scale: bool = False
     chain_labels: frozenset[int] = frozenset()
+    representative_geometry: bool = False
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,12 @@ def patch_set_variants() -> list[Variant]:
                 presence=True, size_scale=True),
         Variant("ps_symbols_assocrel_nocl_support", "symbols", "associate", "support_quality", 0.5, rel_nocl,
                 presence=True, size_scale=True),
+        Variant("ps_symbols_assocrel_presence", "symbols", "associate", "support_presence_quality", 0.5, rel,
+                presence=True, size_scale=True),
+        Variant("ps_symbols_assocrel_rep_support", "symbols", "associate", "support_quality", 0.5, rel,
+                presence=True, size_scale=True, representative_geometry=True),
+        Variant("ps_symbols_assocrel_rep_quality", "symbols", "associate", "quality", 0.5, rel,
+                presence=True, size_scale=True, representative_geometry=True),
     ]
 
 
@@ -207,7 +214,12 @@ def cluster_score(page: Page, v: Variant, clusters: Clusters) -> torch.Tensor:
     expected = expected_voters(
         page.centers.to(device), clusters.geometry.to(device), v.modality == "lines", MARGIN, chunk=256
     ).cpu()
-    return support_ratio(clusters, expected) * clusters.quality
+    score = support_ratio(clusters, expected) * clusters.quality
+    if v.ranking == "support_presence_quality":
+        # a class head trained on positives only says "which class, given an object": multiply in
+        # the cluster's mean presence as the objectness estimate
+        score = score * (clusters.evidence / clusters.size.clamp(min=1).to(clusters.evidence))
+    return score
 
 
 def subset(dets: Detections, keep: torch.Tensor) -> Detections:
@@ -250,7 +262,8 @@ def run_variant(page: Page, v: Variant, cap: int) -> Kept:
     else:
         assert v.association is not None
         clusters = associate(dets, v.association)
-        score, geometry, label = cluster_score(page, v, clusters), clusters.geometry, clusters.label
+        geometry = dets.geometry[clusters.representative] if v.representative_geometry else clusters.geometry
+        score, label = cluster_score(page, v, clusters), clusters.label
     top = score.topk(min(cap, score.shape[0])).indices
     return Kept(geometry[top] * PS, label[top], score[top])
 

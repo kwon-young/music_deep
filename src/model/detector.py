@@ -104,6 +104,55 @@ class DFINEWeightingFunction(nn.Module):
         return (edge_probs * self.w).sum(dim=-1)
 
 
+class BoxEmbedding(nn.Module):
+    """Features of boxes relative to their patch centre (patch units): centre offset and log
+    size, with sin/cos at geometric periods, plus the raw values."""
+
+    freqs: torch.Tensor
+
+    def __init__(self, num_freqs: int = 6, min_period: float = 0.25, max_period: float = 8.0) -> None:
+        super().__init__()
+        periods = torch.logspace(math.log10(min_period), math.log10(max_period), num_freqs)
+        self.register_buffer("freqs", 2 * math.pi / periods)
+        self.dim = 4 * (2 * num_freqs + 1)
+
+    def forward(self, boxes: torch.Tensor) -> torch.Tensor:
+        centre = (boxes[..., :2] + boxes[..., 2:]) / 2
+        size = (boxes[..., 2:] - boxes[..., :2]).clamp(min=1e-3).log()
+        x = torch.cat([centre, size], dim=-1)
+        angles = x.unsqueeze(-1) * self.freqs
+        return torch.cat([angles.sin().flatten(-2), angles.cos().flatten(-2), x], dim=-1)
+
+
+class SharedSlotClassifier(nn.Module):
+    """One class classifier for all the slots of a patch: the class of the object in the slot's
+    predicted box, from the patch's hidden vector and that box (detached), not from the slot
+    index. The patch-set matcher gives an object to whichever slot fits its box, so per-slot
+    class rows get contradictory targets and fall silent (Exp 043); a classifier shared across
+    slots answers the same question for the same box whichever slot carries it.
+
+    ``linear`` reads the hidden vector alone; ``inter_h`` / ``inter_box`` / ``out`` add the
+    box-dependent part (``out`` zero-initialised, so at init every slot gets ``linear``'s scores).
+    """
+
+    def __init__(self, dim: int, num_classes: int, hidden: int | None = None) -> None:
+        super().__init__()
+        hidden = hidden or dim
+        self.box = BoxEmbedding()
+        self.linear = nn.Linear(dim, num_classes)
+        self.inter_h = nn.Linear(dim, hidden)
+        self.inter_box = nn.Linear(self.box.dim, hidden)
+        self.out = nn.Linear(hidden, num_classes)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+        nn.init.constant_(self.linear.bias, -math.log((1 - 0.01) / 0.01))
+
+    def forward(self, hidden: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+        """``hidden`` (B, P, D), ``boxes`` (B, P, K, 4) relative to the patch centre -> (B, P, K, C)."""
+        z = F.gelu(self.inter_h(hidden).unsqueeze(2) + self.inter_box(self.box(boxes)))
+        return self.linear(hidden).unsqueeze(2) + self.out(z)
+
+
 class SymbolHead(nn.Module):
     def __init__(
         self,
@@ -114,6 +163,7 @@ class SymbolHead(nn.Module):
         base_anchor_size: float = 1.0,
         presence: bool = False,
         presence_prior: float = 0.01,
+        shared_class: bool = False,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -123,6 +173,8 @@ class SymbolHead(nn.Module):
         self.base_anchor_size = base_anchor_size
         self.presence = presence
         self.presence_prior = presence_prior
+        # the per-slot class columns stay in the output layer (same state layout) but are unused
+        self.classifier = SharedSlotClassifier(in_dim, num_classes) if shared_class else None
 
         # C (classes) + 4 (cx, cy, w, h) + 4*N (edge bins) [+ 1 presence, last]
         self.geometry_end = num_classes + 4 + (4 * self.num_bins)
@@ -158,7 +210,8 @@ class SymbolHead(nn.Module):
     ]:
         B, P, _ = patch_tokens.shape
 
-        raw_preds = self.mlp(patch_tokens)
+        hidden = self.mlp[2](self.mlp[1](self.mlp[0](patch_tokens)))
+        raw_preds = self.mlp[3](hidden)
         preds = raw_preds.reshape(B, P, self.num_shapes, self.preds_per_shape)
 
         classes = preds[..., : self.num_classes]
@@ -202,6 +255,8 @@ class SymbolHead(nn.Module):
         y2 = cy + B_edge
 
         boxes = torch.stack([x1, y1, x2, y2], dim=-1)
+        if self.classifier is not None:
+            classes = self.classifier(hidden, boxes.detach())
 
         presence = preds[..., -1] if self.presence else None
         return classes, center_offsets, shapes, boxes, edge_logits, presence
@@ -311,6 +366,7 @@ class OMRDetector(nn.Module):
         presence: bool = False,
         symbol_presence_prior: float = 0.08,
         line_presence_prior: float = 0.35,
+        symbol_shared_class: bool = False,
     ):
         super().__init__()
         self.backbone = vit_backbone
@@ -325,6 +381,7 @@ class OMRDetector(nn.Module):
             base_anchor_size=base_anchor_size,
             presence=presence,
             presence_prior=symbol_presence_prior,
+            shared_class=symbol_shared_class,
         )
 
         self.line_head = LineHead(
@@ -471,6 +528,7 @@ def create_detector(
     presence: bool = False,
     symbol_presence_prior: float = 0.08,
     line_presence_prior: float = 0.35,
+    symbol_shared_class: bool = False,
 ) -> OMRDetector:
     """
     Factory function to create an OMRDetector with the specified backbone size.
@@ -499,6 +557,7 @@ def create_detector(
         presence=presence,
         symbol_presence_prior=symbol_presence_prior,
         line_presence_prior=line_presence_prior,
+        symbol_shared_class=symbol_shared_class,
     )
 
 
@@ -513,7 +572,8 @@ def heads_need_remap(state: dict[str, torch.Tensor], model: OMRDetector) -> bool
     return any(state[f"{key}.weight"].shape != own[f"{key}.weight"].shape for key, _ in _head_layers(model))
 
 
-def remap_head_state(state: dict[str, torch.Tensor], model: OMRDetector) -> dict[str, torch.Tensor]:
+def remap_head_state(state: dict[str, torch.Tensor], model: OMRDetector,
+                     copy_class_rows: bool = False) -> dict[str, torch.Tensor]:
     """``state`` with its head output layers rebuilt for ``model``'s slot count and presence.
 
     Slot k < K_old keeps its rows (classes, geometry, edge bins and presence when the source
@@ -543,9 +603,11 @@ def remap_head_state(state: dict[str, torch.Tensor], model: OMRDetector) -> dict
             src = k % old_k
             new_w[k, c:end] = old_w[src, c:end]
             new_b[k, c:end] = old_b[src, c:end]
-            if k < old_k:
-                new_w[k, :c] = old_w[k, :c]
-                new_b[k, :c] = old_b[k, :c]
+            if k < old_k or copy_class_rows:
+                # copy_class_rows: a new slot inherits the class rows of its geometry source, so
+                # it starts as a second specialist of the same classes (slot roles, Exp 043)
+                new_w[k, :c] = old_w[src, :c]
+                new_b[k, :c] = old_b[src, :c]
             else:
                 new_b[k, :c] = prior
             if head.presence:
@@ -559,12 +621,49 @@ def remap_head_state(state: dict[str, torch.Tensor], model: OMRDetector) -> dict
     return out
 
 
-def load_detector_state(model: OMRDetector, state: dict[str, torch.Tensor]) -> bool:
-    """Load ``state`` strictly, remapping the head output layers first if their layout differs.
-    Returns True when a remap happened (the optimizer state of ``state`` then no longer fits)."""
+def shared_classifier_state(state: dict[str, torch.Tensor], model: OMRDetector,
+                            owners: dict[int, int] | None) -> dict[str, torch.Tensor]:
+    """Initial ``symbol_head.classifier`` weights for a ``state`` that has per-slot class rows
+    only: the class-c row of ``linear`` is the class-c row of class c's specialist slot in
+    ``state`` (``owners``: class index -> slot of the one-to-one model, Exp 043 slot roles), the
+    mean over the source's slots for classes without an owner; the box-dependent part keeps the
+    model's initialisation (zero output), so every slot starts with its specialist's scores."""
+    head = model.symbol_head
+    assert head.classifier is not None
+    weight, bias = state["symbol_head.mlp.3.weight"], state["symbol_head.mlp.3.bias"]
+    rows, dim = weight.shape
+    old_pps = head.geometry_end + int(rows % head.geometry_end != 0)
+    old_k = rows // old_pps
+    c = head.num_classes
+    w = weight.view(old_k, old_pps, dim)[:, :c]  # (K_old, C, D)
+    b = bias.view(old_k, old_pps)[:, :c]
+    lin_w, lin_b = w.mean(dim=0).clone(), b.mean(dim=0).clone()
+    for cls, slot in (owners or {}).items():
+        if 0 <= cls < c and 0 <= slot < old_k:
+            lin_w[cls], lin_b[cls] = w[slot, cls], b[slot, cls]
+    out = {f"symbol_head.classifier.{k}": v.detach().clone() for k, v in head.classifier.state_dict().items()}
+    out["symbol_head.classifier.linear.weight"] = lin_w
+    out["symbol_head.classifier.linear.bias"] = lin_b
+    return out
+
+
+def has_shared_class(state: dict[str, torch.Tensor]) -> bool:
+    return "symbol_head.classifier.linear.weight" in state
+
+
+def load_detector_state(model: OMRDetector, state: dict[str, torch.Tensor], copy_class_rows: bool = False,
+                        owners: dict[int, int] | None = None) -> bool:
+    """Load ``state`` strictly, remapping the head output layers first if their layout differs
+    and building the shared symbol classifier if ``model`` has one and ``state`` does not.
+    Returns True when the parameters changed shape or set (the optimizer state of ``state`` then
+    no longer fits)."""
     remap = heads_need_remap(state, model)
-    model.load_state_dict(remap_head_state(state, model) if remap else state, strict=True)
-    return remap
+    new_classifier = model.symbol_head.classifier is not None and not has_shared_class(state)
+    loaded = remap_head_state(state, model, copy_class_rows) if remap else dict(state)
+    if new_classifier:
+        loaded |= shared_classifier_state(state, model, owners)
+    model.load_state_dict(loaded, strict=True)
+    return remap or new_classifier
 
 
 def head_layout(state: dict[str, torch.Tensor], num_symbol_classes: int, reg_max: int = 32) -> tuple[int, bool]:

@@ -524,6 +524,9 @@ class PatchSetCriterion(DFINECriterion):
         presence_alpha: float = 0.5,
         voter_weighting: VoterWeighting = "inverse",
         presence_weighting: VoterWeighting = "none",
+        class_weighting: VoterWeighting = "inverse",
+        class_duplicates: Literal["negative", "ignore", "positive"] = "negative",
+        class_negatives: bool = True,
         symbol_quality_targets: bool = True,
         line_quality_targets: bool = True,
         line_thickness: float = 1 / 16,
@@ -536,10 +539,36 @@ class PatchSetCriterion(DFINECriterion):
         self.presence_alpha = presence_alpha
         self.voter_weighting: VoterWeighting = voter_weighting
         self.presence_weighting: VoterWeighting = presence_weighting
+        self.class_weighting: VoterWeighting = class_weighting
+        self.class_duplicates: Literal["negative", "ignore", "positive"] = class_duplicates
+        self.class_negatives = class_negatives
         self.symbol_quality_targets = symbol_quality_targets
         self.line_quality_targets = line_quality_targets
         self.line_thickness = line_thickness
         self.line_perp_sigma = line_perp_sigma
+
+    def duplicate_targets(
+        self, labels: list[SlotLabels], pred: torch.Tensor, gt: list[torch.Tensor], gt_labels: list[torch.Tensor],
+        is_line: bool,
+    ) -> tuple[FlattenedIndices, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Flat indices, GT class, class target (own quality, or 1 without quality targets) and
+        voter count of the GT of every in-patch duplicate."""
+        device = pred.device
+        flat = flatten_indices([s.duplicates for s in labels])
+        flat = FlattenedIndices(batch=flat.batch.to(device), src=flat.src.to(device))
+        idx = [s.duplicates.target_indices.to(device) for s in labels]
+        boxes = torch.cat([g.to(device)[i] for g, i in zip(gt, idx)])
+        classes = torch.cat([g.to(device)[i] for g, i in zip(gt_labels, idx)])
+        voters = torch.cat([s.voters.to(device)[i] for s, i in zip(labels, idx)])
+        own = pred[flat.batch, flat.src]
+        use_quality = self.line_quality_targets if is_line else self.symbol_quality_targets
+        if not use_quality:
+            quality = torch.ones_like(voters, dtype=torch.float32)
+        elif is_line:
+            quality = self.line_quality(own, boxes)
+        else:
+            quality = pair_quality(own.detach().float(), boxes.float(), False).clamp(min=0.01)
+        return flat, classes, quality, voters
 
     def line_quality(self, pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
         """Class target of a line positive: how well its prediction lies on its GT line
@@ -559,6 +588,7 @@ class PatchSetCriterion(DFINECriterion):
         voters: torch.Tensor,
         alpha: torch.Tensor,
         num_gt: float,
+        duplicates: tuple[FlattenedIndices, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """(class loss, presence loss) over all slots of one modality. The presence loss uses
         its own voter weighting: with "none" every voter is a full positive (presence is a
@@ -566,8 +596,11 @@ class PatchSetCriterion(DFINECriterion):
         otherwise by the number of GT like the other terms."""
         ignored = torch.stack([s.ignored for s in labels]).to(logits.device)
         base = (~ignored).to(logits.dtype)
-        row = base.clone()
-        row[flat.batch, flat.src] = weight.to(logits.dtype)
+        # without class negatives the class head answers "which class, given an object" on the
+        # positives (and duplicates) only; presence alone decides whether a slot holds an object
+        row = base.clone() if self.class_negatives else torch.zeros_like(base)
+        row[flat.batch, flat.src] = voter_weights(voters, self.class_weighting).to(logits.dtype)
+        class_norm = max(1.0, float(voters.numel())) if self.class_weighting == "none" else num_gt
         presence_row = base.clone()
         presence_row[flat.batch, flat.src] = voter_weights(voters, self.presence_weighting).to(logits.dtype)
         presence_norm = max(1.0, float(voters.numel())) if self.presence_weighting == "none" else num_gt
@@ -575,8 +608,18 @@ class PatchSetCriterion(DFINECriterion):
         positive = torch.zeros_like(logits, dtype=torch.bool)
         target[flat.batch, flat.src, classes] = quality.to(logits.dtype)
         positive[flat.batch, flat.src, classes] = True
+        if duplicates is not None and self.class_duplicates != "negative":
+            # in-patch duplicates: presence negatives (one voter per patch), but their class is
+            # right; "positive": class target = their own quality, "ignore": no class loss
+            d_flat, d_classes, d_quality, d_voters = duplicates
+            if self.class_duplicates == "ignore":
+                row[d_flat.batch, d_flat.src] = 0
+            else:
+                row[d_flat.batch, d_flat.src] = voter_weights(d_voters, self.class_weighting).to(logits.dtype)
+                target[d_flat.batch, d_flat.src, d_classes] = d_quality.to(logits.dtype)
+                positive[d_flat.batch, d_flat.src, d_classes] = True
         loss_cls = quality_focal_loss(logits, target, positive, alpha, self.gamma)
-        loss_cls = (loss_cls * row.unsqueeze(-1)).sum() / num_gt
+        loss_cls = (loss_cls * row.unsqueeze(-1)).sum() / class_norm
         is_voter = torch.zeros_like(presence, dtype=torch.bool)
         is_voter[flat.batch, flat.src] = True
         loss_presence = quality_focal_loss(
@@ -630,6 +673,8 @@ class PatchSetCriterion(DFINECriterion):
         loss_ce_sym, loss_pres_sym = self.score_losses(
             outputs.symbols.pred_logits.data, sym_presence.data, assignment.symbols, sym_flat,
             sym_cls, sym_q, sym_w, sym_voters, self.symbol_weights, num_symbols,
+            self.duplicate_targets(assignment.symbols, outputs.symbols.pred_boxes.data,
+                                   [t.boxes.data for t in targets], [t.box_labels.data for t in targets], False),
         )
         if sym_gt.shape[0] > 0:
             loss_bbox_sym, loss_giou_sym = self.loss_boxes(
@@ -656,6 +701,8 @@ class PatchSetCriterion(DFINECriterion):
         loss_ce_line, loss_pres_line = self.score_losses(
             outputs.lines.pred_logits.data, line_presence.data, assignment.lines, line_flat,
             line_cls, line_q, line_w, line_voters, self.line_weights, num_lines,
+            self.duplicate_targets(assignment.lines, outputs.lines.pred_keypoints.data,
+                                   [t.keypoints.data for t in targets], [t.keypoint_labels.data for t in targets], True),
         )
         if line_gt.shape[0] > 0:
             w_line = self.line_weights[line_cls] * line_w

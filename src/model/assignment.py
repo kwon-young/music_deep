@@ -71,13 +71,16 @@ class SlotLabels:
     ``match``: the positives, ``pred_indices`` (queries) and ``target_indices`` (GT, repeated
     across patches). ``ignored`` (Q,) bool. ``voters`` (G,): positives per GT. ``expected``
     (G,): kept patches responsible for the GT before overflow. ``overflowed``: number of
-    (patch, GT) responsibilities dropped by overflow."""
+    (patch, GT) responsibilities dropped by overflow. ``duplicates``: unmatched, unignored slots
+    whose prediction reaches quality 0.5 against a GT matched in their own patch (in-patch
+    duplicates: presence negatives; the class loss may treat them as class positives)."""
 
     match: MatchIndices
     ignored: torch.Tensor
     voters: torch.Tensor
     expected: torch.Tensor
     overflowed: int
+    duplicates: MatchIndices
 
 
 @dataclass(frozen=True)
@@ -187,6 +190,7 @@ def assign_image(
     num_slots: int,
     cfg: PatchSetConfig,
     presence: torch.Tensor | None = None,
+    role_cost: torch.Tensor | None = None,
 ) -> SlotLabels:
     """``centers`` (P, 2) kept patch centres, ``probs`` (P*K, C) class probabilities, ``pred``
     (P*K, 4) geometry, ``gt`` (G, 4) and ``gt_labels`` (G,), all in patch units; ``presence``
@@ -200,6 +204,7 @@ def assign_image(
             match=MatchIndices(pred_indices=empty, target_indices=empty),
             ignored=torch.zeros(num_q, dtype=torch.bool, device=device),
             voters=empty, expected=empty, overflowed=0,
+            duplicates=MatchIndices(pred_indices=empty, target_indices=empty),
         )
     distance = cell_distance(centers, gt, is_line)
     center_distance = point_segment_distance(centers, gt) if is_line else point_box_distance(centers, gt)
@@ -222,6 +227,9 @@ def assign_image(
         cost = cfg.cost_class * focal_cost(prob, cfg) + cfg.cost_bbox * l1 - cfg.cost_giou * broadcast_giou(a, b)
     if presence is not None and cfg.cost_presence:
         cost = cost + cfg.cost_presence * focal_cost(presence.view(num_p, k, 1), cfg)
+    if role_cost is not None:
+        # fixed (class, slot) prior: keep each class on the slots that specialised in it
+        cost = cost + role_cost.to(cost)[labels].transpose(1, 2)  # (P, R, K) -> (P, K, R)
     cost = torch.where(valid[:, None, :], cost, torch.inf)
     column = greedy_slot_assignment(cost)
 
@@ -247,21 +255,32 @@ def assign_image(
         hit = free & (q >= cfg.ignore_quality)
         hit_p, hit_k = hit.nonzero(as_tuple=True)
         ignored[pair_p[hit_p] * k + hit_k] = True
+    # in-patch duplicates: free slots predicting a GT matched by another slot of the patch
+    own_q = (on_line_quality(a, b, cfg.line_perp_sigma) if is_line
+             else pair_quality(a.expand(-1, -1, b.shape[2], -1), b.expand(-1, k, -1, -1), False))
+    own_q = torch.where(valid[:, None, :], own_q, 0.0)
+    best_own, best_r = own_q.max(dim=-1)
+    duplicate = (column < 0) & (best_own >= 0.5) & ~ignored.view(num_p, k)
+    dup_p, dup_k = duplicate.nonzero(as_tuple=True)
     return SlotLabels(
         match=MatchIndices(pred_indices=query, target_indices=target),
         ignored=ignored,
         voters=torch.bincount(target, minlength=num_g),
         expected=responsible.sum(dim=0),
         overflowed=int(overflow.sum().item()),
+        duplicates=MatchIndices(pred_indices=dup_p * k + dup_k, target_indices=kept[dup_p, best_r[dup_p, dup_k]]),
     )
 
 
 class PatchSetAssigner:
     """Labels every slot of a detector output (no gradients)."""
 
-    def __init__(self, cfg: PatchSetConfig, num_slots: int) -> None:
+    def __init__(self, cfg: PatchSetConfig, num_slots: int, symbol_role_cost: torch.Tensor | None = None) -> None:
+        """``symbol_role_cost`` (C, K): added to the in-patch cost of giving a class-c symbol to
+        slot k (``slot_role_cost``)."""
         self.cfg = cfg
         self.num_slots = num_slots
+        self.symbol_role_cost = symbol_role_cost
 
     @torch.no_grad()
     def __call__(
@@ -281,6 +300,7 @@ class PatchSetAssigner:
                 outputs.symbols.pred_boxes.data[b].float(), t.boxes.data.float(),
                 t.box_labels.data, False, k, self.cfg,
                 None if sym_presence is None else sym_presence.data[b].float().sigmoid(),
+                self.symbol_role_cost,
             ))
             lines.append(assign_image(
                 centers[b], outputs.lines.pred_logits.data[b].float().sigmoid(),
@@ -335,3 +355,16 @@ def slot_stats(presence: torch.Tensor, pred: torch.Tensor, labels: SlotLabels, g
         ignored=float(labels.ignored.float().mean().item()),
         voters=float(labels.voters.float().mean().item()) if labels.voters.numel() else 0.0,
     )
+
+
+def slot_role_cost(roles: dict[int, list[float]], old_slots: int, num_classes: int, num_slots: int,
+                   weight: float) -> torch.Tensor:
+    """(C, K) matching-cost prior from a one-to-one model's slot roles (per class, the share of
+    its objects predicted by each of ``old_slots`` slots): weight x (1 - r). A slot k >= old_slots
+    (copied from slot k mod old_slots by the head remap) gets half the share of its source, so it
+    is the second choice of the same classes; classes without roles get a uniform share."""
+    share = torch.full((num_classes, num_slots), 1.0 / num_slots)
+    for c, p in roles.items():
+        row = torch.tensor(p, dtype=torch.float32)
+        share[c] = torch.stack([row[k] if k < old_slots else 0.5 * row[k % old_slots] for k in range(num_slots)])
+    return weight * (1 - share)

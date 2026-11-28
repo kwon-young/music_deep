@@ -4,7 +4,7 @@ import time
 import math
 import random
 import os
-from typing import cast
+from typing import Literal, cast
 from pathlib import Path
 from typing import Generator, Iterable
 from dataclasses import dataclass, replace
@@ -16,7 +16,14 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model.assignment import PatchSetAssigner, PatchSetAssignment, PatchSetConfig, SlotStats, slot_stats
+from model.assignment import (
+    PatchSetAssigner,
+    PatchSetAssignment,
+    PatchSetConfig,
+    SlotStats,
+    slot_role_cost,
+    slot_stats,
+)
 from model.detector import DetectorWithTokens, OMRDetector, create_detector, load_detector_state
 from model.matcher import HungarianMatcher
 from model.criterion import DFINECriterion, PatchSetCriterion, VoterWeighting
@@ -146,9 +153,16 @@ class PatchSetParams:
     config: PatchSetConfig
     voter_weighting: VoterWeighting
     presence_weighting: VoterWeighting
+    class_weighting: VoterWeighting
+    class_duplicates: Literal["negative", "ignore", "positive"]
+    class_negatives: bool
     presence_alpha: float
     symbol_quality_targets: bool
     line_quality_targets: bool
+    slot_roles: Path | None
+    slot_role_cost: float
+    remap_copy_class: bool
+    symbol_shared_class: bool
     refiner_voters: int
 
 
@@ -617,6 +631,14 @@ def train_step_pipeline(
         )
 
 
+def slot_owners(path: Path | None) -> dict[int, int] | None:
+    """Class index -> specialist slot (largest share) of a slot-roles JSON."""
+    if path is None:
+        return None
+    spec = json.loads(path.read_text())
+    return {int(c): max(range(len(p)), key=lambda k: float(p[k])) for c, p in spec["roles"].items()}
+
+
 def patch_set_stats(
     result: TrainStepResult, assignment: PatchSetAssignment, assigner: PatchSetAssigner
 ) -> tuple[SlotStats, SlotStats]:
@@ -818,6 +840,7 @@ def train(params: TrainParams):
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
         presence=params.patch_set is not None,
+        symbol_shared_class=params.patch_set is not None and params.patch_set.symbol_shared_class,
     ).to(params.train_device)
 
     loaded_checkpoint = None
@@ -832,13 +855,16 @@ def train(params: TrainParams):
             map_location=params.train_device,
             weights_only=True,
         )
-        if load_detector_state(raw_model, loaded_checkpoint["model"]):
-            # Another slot count or presence layout (Exp 037 -> patch-set): the head was
-            # remapped, so the checkpoint's Adam moments no longer fit its parameters.
+        copy_class = params.patch_set is not None and params.patch_set.remap_copy_class
+        owners = slot_owners(params.patch_set.slot_roles) if params.patch_set is not None else None
+        if load_detector_state(raw_model, loaded_checkpoint["model"], copy_class, owners):
+            # Another slot count, presence layout or a new shared classifier (Exp 037 ->
+            # patch-set): the checkpoint's Adam moments no longer fit the parameters.
             if is_main_process:
                 print(
                     f"Remapped the head output layers to K={params.num_shapes}"
-                    f"{' with presence' if params.patch_set is not None else ''}; "
+                    f"{' with presence' if params.patch_set is not None else ''}"
+                    f"{' and a shared symbol classifier (from ' + str(len(owners or {})) + ' specialist slots)' if raw_model.symbol_head.classifier is not None else ''}; "
                     "the optimizer state is not loaded."
                 )
             loaded_checkpoint.pop("optimizer", None)
@@ -937,7 +963,14 @@ def train(params: TrainParams):
     matcher: HungarianMatcher | PatchSetAssigner
     criterion: DFINECriterion
     if params.patch_set is not None:
-        matcher = PatchSetAssigner(params.patch_set.config, params.num_shapes)
+        role_cost = None
+        if params.patch_set.slot_roles is not None:
+            spec = json.loads(params.patch_set.slot_roles.read_text())
+            role_cost = slot_role_cost(
+                {int(c): [float(x) for x in p] for c, p in spec["roles"].items()}, int(spec["num_slots"]),
+                params.num_symbol_classes, params.num_shapes, params.patch_set.slot_role_cost,
+            ).to(params.train_device)
+        matcher = PatchSetAssigner(params.patch_set.config, params.num_shapes, role_cost)
         criterion = PatchSetCriterion(
             num_symbol_classes=params.num_symbol_classes,
             num_line_classes=params.num_line_classes,
@@ -947,6 +980,9 @@ def train(params: TrainParams):
             base_anchor_size=params.base_anchor_size,
             voter_weighting=params.patch_set.voter_weighting,
             presence_weighting=params.patch_set.presence_weighting,
+            class_weighting=params.patch_set.class_weighting,
+            class_duplicates=params.patch_set.class_duplicates,
+            class_negatives=params.patch_set.class_negatives,
             presence_alpha=params.patch_set.presence_alpha,
             symbol_quality_targets=params.patch_set.symbol_quality_targets,
             line_quality_targets=params.patch_set.line_quality_targets,
@@ -978,9 +1014,10 @@ def train(params: TrainParams):
     if params.head_lr_scale != 1.0:
         # The head output layers in their own group (new presence rows and slots, which start
         # from zero weights: Adam moves a parameter by at most ~lr per step).
-        head_out = [
-            p for m in (raw_model.symbol_head.mlp[-1], raw_model.line_head.mlp[-1]) for p in m.parameters()
-        ]
+        head_modules: list[torch.nn.Module] = [raw_model.symbol_head.mlp[-1], raw_model.line_head.mlp[-1]]
+        if raw_model.symbol_head.classifier is not None:
+            head_modules.append(raw_model.symbol_head.classifier)
+        head_out = [p for m in head_modules for p in m.parameters()]
         head_ids = {id(p) for p in head_out}
         groups: list[dict[str, list[torch.nn.Parameter] | float]] = [
             {"params": [p for p in raw_model.parameters() if id(p) not in head_ids]},
@@ -1335,6 +1372,45 @@ if __name__ == "__main__":
         default="none",
         help="Weight of a voter in the presence loss ('none': every voter is a full positive, "
         "normalised by the number of voters).",
+    )
+    patch_set.add_argument(
+        "--class_weighting",
+        choices=["inverse", "inverse_sqrt", "none"],
+        default="inverse",
+        help="Weight of a voter in the class loss ('none': every voter is a full positive, "
+        "normalised by the number of voters).",
+    )
+    patch_set.add_argument(
+        "--slot_roles",
+        type=Path,
+        default=None,
+        help="JSON of a one-to-one model's symbol slot roles (experiments/043_slot_roles): adds "
+        "--slot_role_cost x (1 - share) to the in-patch matching cost of each (class, slot).",
+    )
+    patch_set.add_argument("--slot_role_cost", type=float, default=2.0)
+    patch_set.add_argument(
+        "--remap_copy_class",
+        action="store_true",
+        help="New slots copy the class rows of their geometry source slot instead of starting blank.",
+    )
+    patch_set.add_argument(
+        "--symbol_shared_class",
+        action="store_true",
+        help="One symbol classifier shared by the slots of a patch (hidden vector + the slot's "
+        "box), initialised from the specialist slots of --slot_roles, instead of per-slot rows.",
+    )
+    patch_set.add_argument(
+        "--no_class_negatives",
+        action="store_true",
+        help="Class loss on positives (and duplicates) only: the class score is 'which class, "
+        "given an object'; presence alone rejects background.",
+    )
+    patch_set.add_argument(
+        "--class_duplicates",
+        choices=["negative", "ignore", "positive"],
+        default="negative",
+        help="In-patch duplicates (presence negatives) in the class loss: negative (target 0), "
+        "ignore, or positive (class target = their own quality).",
     )
     patch_set.add_argument(
         "--presence_alpha",
@@ -1763,9 +1839,16 @@ if __name__ == "__main__":
             ),
             voter_weighting=args.voter_weighting,
             presence_weighting=args.presence_weighting,
+            class_weighting=args.class_weighting,
+            class_duplicates=args.class_duplicates,
+            class_negatives=not args.no_class_negatives,
             presence_alpha=args.presence_alpha,
             symbol_quality_targets=not args.no_symbol_quality_targets,
             line_quality_targets=not args.no_line_quality_targets,
+            slot_roles=args.slot_roles,
+            slot_role_cost=args.slot_role_cost,
+            remap_copy_class=args.remap_copy_class,
+            symbol_shared_class=args.symbol_shared_class,
             refiner_voters=args.refiner_voters,
         )
         if args.assignment == "patch_set"

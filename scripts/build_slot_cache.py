@@ -24,7 +24,7 @@ import torch
 import transform.det as det_tf
 from dataset.coco import CocoDataset, load_coco_sample, parse_coco
 from dataset.split import piece_name
-from model.detector import OMRDetector, create_detector, head_layout
+from model.detector import OMRDetector, create_detector, has_shared_class, head_layout
 from model.refiner import EndpointRefiner, LineQueries, TokenGrid, distribution_std, load_refiner
 from music_types import Patches
 from threaded_generator import ThreadedGenerator
@@ -88,6 +88,7 @@ def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> tuple
         num_shapes=cfg.num_shapes,
         base_anchor_size=cfg.base_anchor_size,
         presence=presence,
+        symbol_shared_class=has_shared_class(state),
     ).to(device)
     model.load_state_dict(state)
     model.eval()

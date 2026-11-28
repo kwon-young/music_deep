@@ -11,6 +11,7 @@ from model.assignment import (
     on_line_quality,
     pair_quality,
     responsible_gt,
+    slot_role_cost,
 )
 from model.criterion import PatchSetCriterion, quality_focal_loss, sigmoid_focal_loss, voter_weights
 from model.box_ops import generalized_box_iou, paired_generalized_box_iou
@@ -27,10 +28,11 @@ from music_types import (
 )
 
 
-def detector(num_shapes: int, presence: bool) -> OMRDetector:
+def detector(num_shapes: int, presence: bool, shared_class: bool = False) -> OMRDetector:
     model = create_detector(
         backbone_size="nano", patch_size=8, channels=3, use_sdpa=False,
         num_symbol_classes=3, num_line_classes=2, num_shapes=num_shapes, presence=presence,
+        symbol_shared_class=shared_class,
     )
     model.eval()
     return model
@@ -80,6 +82,59 @@ class TestHeadRemap(unittest.TestCase):
             assert presence is not None
             torch.testing.assert_close(presence.data.sigmoid(), torch.full_like(presence.data, prior))
         self.assertIsNone(a.symbols.pred_presence)
+
+    def test_copied_class_rows_make_new_slots_second_specialists(self) -> None:
+        torch.manual_seed(0)
+        old = detector(5, presence=False)
+        new = detector(8, presence=True)
+        load_detector_state(new, old.state_dict(), copy_class_rows=True)
+        x = patches()
+        with torch.no_grad():
+            a, b = old(x), new(x)
+        p = x.data.shape[1]
+        logits_new = b.symbols.pred_logits.data.view(1, p, 8, -1)
+        logits_old = a.symbols.pred_logits.data.view(1, p, 5, -1)
+        torch.testing.assert_close(logits_new[:, :, 5:], logits_old[:, :, :3])
+
+    def test_shared_classifier_starts_from_the_specialist_slots(self) -> None:
+        torch.manual_seed(0)
+        old = detector(5, presence=False)
+        new = detector(8, presence=True, shared_class=True)
+        owners = {0: 1, 1: 3, 2: 4}
+        self.assertTrue(load_detector_state(new, old.state_dict(), owners=owners))
+        x = patches()
+        with torch.no_grad():
+            a, b = old(x), new(x)
+        p = x.data.shape[1]
+        old_logits = a.symbols.pred_logits.data.view(1, p, 5, 3)
+        new_logits = b.symbols.pred_logits.data.view(1, p, 8, 3)
+        for cls, slot in owners.items():
+            for k in range(8):  # every slot gets the specialist's score at init
+                torch.testing.assert_close(new_logits[:, :, k, cls], old_logits[:, :, slot, cls])
+        # geometry is untouched: the five original slots still reproduce Exp 037's boxes
+        torch.testing.assert_close(b.symbols.pred_boxes.data.view(1, p, 8, 4)[:, :, :5],
+                                   a.symbols.pred_boxes.data.view(1, p, 5, 4))
+
+    def test_shared_classifier_depends_on_the_box_not_the_slot(self) -> None:
+        torch.manual_seed(1)
+        model = detector(8, presence=True, shared_class=True)
+        head = model.symbol_head
+        assert head.classifier is not None
+        torch.nn.init.normal_(head.classifier.out.weight, std=0.5)
+        hidden = torch.randn(1, 2, head.classifier.linear.in_features)
+        box = torch.tensor([0.1, -0.2, 0.4, 0.3])
+        boxes = torch.stack([box, box, box + 0.5] + [box] * 5).view(1, 1, 8, 4).expand(1, 2, 8, 4)
+        logits = head.classifier(hidden, boxes)
+        torch.testing.assert_close(logits[:, :, 0], logits[:, :, 1])
+        self.assertGreater(float((logits[:, :, 0] - logits[:, :, 2]).abs().max()), 1e-3)
+
+    def test_slot_role_cost(self) -> None:
+        cost = slot_role_cost({0: [0.0, 1.0, 0.0, 0.0, 0.0]}, 5, 2, 8, 2.0)
+        self.assertEqual(cost.shape, (2, 8))
+        self.assertAlmostEqual(float(cost[0, 1]), 0.0)  # owner slot
+        self.assertAlmostEqual(float(cost[0, 6]), 1.0)  # copy of slot 1: half share
+        self.assertAlmostEqual(float(cost[0, 0]), 2.0)
+        self.assertAlmostEqual(float(cost[1, 3]), 2.0 * (1 - 1 / 8))  # no roles: uniform
 
     def test_same_layout_is_not_remapped(self) -> None:
         model = detector(8, presence=True)
@@ -168,6 +223,10 @@ class TestAssignment(unittest.TestCase):
         # patch 1: one slot is A's voter, the other copies A -> negative, never ignored
         self.assertEqual(positive[1].tolist(), [True, False])
         self.assertFalse(bool(ignored[1].any()))
+        # ... and it is recorded as an in-patch duplicate of A (query 1 * 2 + 1); patch 3's second
+        # slot copies B, its voter in that patch (query 3 * 2 + 1)
+        self.assertEqual(labels.duplicates.pred_indices.tolist(), [3, 7])
+        self.assertEqual(labels.duplicates.target_indices.tolist(), [0, 1])
         # patch 0 predicts nothing useful in slot 1 -> negative
         self.assertEqual(ignored[0].tolist(), [False, False])
         # patch 2: B is in its band (cell distance 0.6) and A is out of reach; both slots
@@ -229,6 +288,37 @@ class TestPatchSetLosses(unittest.TestCase):
         q = criterion.line_quality(pred, gt)
         self.assertAlmostEqual(float(q[0]), 1.0, places=5)  # wrong far end, on the line
         self.assertAlmostEqual(float(q[1]), float(torch.exp(torch.tensor(-((7 / 64) ** 2) / 0.02))), places=5)
+
+    def test_positives_only_class_loss_leaves_negatives_to_presence(self) -> None:
+        torch.manual_seed(3)
+        model = detector(4, presence=True)
+        targets: list[DetectionTarget] = [DetectionTarget(
+            boxes=BoundingBoxes(torch.tensor([[0.2, 0.3, 0.9, 1.1], [2.2, 1.2, 2.8, 1.7]])),
+            box_labels=ClassLabels(torch.tensor([1, 2])),
+            keypoints=Keypoints(torch.tensor([[0.5, 0.5, 3.5, 0.6]])),
+            keypoint_labels=ClassLabels(torch.tensor([0])),
+        )]
+        outputs = model(patches())
+        assignment = PatchSetAssigner(PatchSetConfig(), num_slots=4)(outputs, targets)
+        criterion = PatchSetCriterion(
+            num_symbol_classes=3, num_line_classes=2, weights=DetectionLossWeights(),
+            symbol_weights=[0.3] * 3, line_weights=[0.3] * 2, class_negatives=False,
+        )
+        logits = outputs.symbols.pred_logits.data.detach().requires_grad_()
+        presence_data = outputs.symbols.pred_presence
+        assert presence_data is not None
+        presence = presence_data.data.detach().requires_grad_()
+        outputs.symbols.pred_logits.data = logits
+        presence_data.data = presence
+        losses = criterion(outputs, targets, assignment=assignment)
+        (losses.loss_ce + losses.loss_presence).backward()
+        assert logits.grad is not None and presence.grad is not None
+        positive = torch.zeros(logits.shape[1], dtype=torch.bool)
+        positive[assignment.symbols[0].match.pred_indices] = True
+        negative = ~positive & ~assignment.symbols[0].ignored
+        self.assertEqual(float(logits.grad[0, negative].abs().sum()), 0.0)
+        self.assertGreater(float(logits.grad[0, positive].abs().sum()), 0.0)
+        self.assertGreater(float(presence.grad[0, negative].abs().min()), 0.0)
 
     def test_paired_giou_is_the_diagonal_of_the_pairwise_matrix(self) -> None:
         torch.manual_seed(5)

@@ -337,6 +337,12 @@ from the design, found by the smoke runs:
 * **Line class quality targets are off** (`--line_quality_targets` to enable): the coarse OKS of
   a far voter is ~0, which would push real positives' class score to 0.
 * Result: presence AUC symbols 0.945, lines 0.870 (linear-probe ceilings 0.95 / 0.87).
+* **Symbol class head** (Exp 043): per-slot class rows depend on the slot specialisation of the
+  one-to-one init (each class on one slot); the patch-set matcher gives objects to whichever slot
+  fits the box, so the rows fall silent. Fix: one classifier shared by a patch's slots, reading
+  the hidden vector and the slot's box, initialised from the specialist slots, trained on
+  positives and in-patch duplicates only (open decision 3, factored score: presence rejects
+  background). Smoke: 9 of 11 classes back to the one-to-one control (Exp 044 tests it at scale).
 * **Line association** (section 5 revised): refined line voters agree across the line but not on
   its far end, so endpoint-distance association splits staff lines (37 clusters per GT) and an
   endpoint mean mixes good votes with guesses. Long collinear classes (staff, voltaBracket,

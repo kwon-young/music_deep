@@ -20,7 +20,7 @@ from model.line_association import (
     endpoint_agreement,
 )
 from model.regions import expected_voters
-from model.detector import OMRDetector, create_detector, head_layout
+from model.detector import OMRDetector, create_detector, has_shared_class, head_layout
 from model.refiner import (
     EndpointRefiner,
     LineQueries,
@@ -231,7 +231,7 @@ def subset_candidates(cands: Candidates, keep: torch.Tensor) -> Candidates:
 def associate_lines(outputs: Outputs, args: argparse.Namespace, max_lines: int, refiner: EndpointRefiner | None,
                     grid: TokenGrid | None, chained: frozenset[int] = frozenset()) -> ScoredDetections:
     """Patch-set inference for lines: occupied slots, refined when a refiner is given, then
-    associated. Classes in ``chained`` (staff, voltaBracket, ...; --line_association hybrid)
+    associated. Classes in ``chained`` (staff, voltaBracket, octave; --line_association hybrid)
     go through collinear chains cut at endpoint-vote modes (``model.line_association``), ranked
     by support x endpoint agreement; the others by the larger endpoint distance
     (--line_assoc_radius pixels), fused with weights score / var of the refiner's bins, ranked
@@ -501,6 +501,7 @@ def create_inference_iterator(
         num_shapes=args.num_shapes,
         base_anchor_size=args.base_anchor_size,
         presence=presence,
+        symbol_shared_class=has_shared_class(checkpoint["model"]),
     ).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
@@ -758,7 +759,7 @@ if __name__ == "__main__":
         "--line_association",
         choices=["hybrid", "greedy"],
         default="hybrid",
-        help="hybrid: staff / voltaBracket / system / octave by collinear chains cut at endpoint "
+        help="hybrid: staff / voltaBracket / octave by collinear chains cut at endpoint "
         "modes, other classes by endpoint distance; greedy: endpoint distance for all.",
     )
     assoc.add_argument(
