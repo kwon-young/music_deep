@@ -18,6 +18,7 @@ from music_types import (
     BoundingBoxes,
     Keypoints,
     EdgeLogits,
+    PresenceLogits,
     Coordinates,
     Dimensions,
     NumQueries,
@@ -111,6 +112,8 @@ class SymbolHead(nn.Module):
         num_shapes: int = 5,
         reg_max: int = 32,
         base_anchor_size: float = 1.0,
+        presence: bool = False,
+        presence_prior: float = 0.01,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -118,9 +121,12 @@ class SymbolHead(nn.Module):
         self.reg_max = reg_max
         self.num_bins = reg_max + 1
         self.base_anchor_size = base_anchor_size
+        self.presence = presence
+        self.presence_prior = presence_prior
 
-        # C (classes) + 4 (cx, cy, w, h) + 4*N (edge bins)
-        self.preds_per_shape = num_classes + 4 + (4 * self.num_bins)
+        # C (classes) + 4 (cx, cy, w, h) + 4*N (edge bins) [+ 1 presence, last]
+        self.geometry_end = num_classes + 4 + (4 * self.num_bins)
+        self.preds_per_shape = self.geometry_end + int(presence)
         self.out_dim = num_shapes * self.preds_per_shape
 
         # The Dense MLP applied to each patch token
@@ -137,6 +143,8 @@ class SymbolHead(nn.Module):
         prior_prob = 0.01
         cls_bias_init = -math.log((1 - prior_prob) / prior_prob)
         nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
+        if presence:
+            nn.init.constant_(bias_view[:, -1], math.log(presence_prior / (1 - presence_prior)))
 
         # Initialize the bias for the width/height predictions to 0.0 for log-space
         nn.init.constant_(bias_view[:, num_classes + 2 : num_classes + 4], 0.0)
@@ -146,7 +154,7 @@ class SymbolHead(nn.Module):
     def forward(
         self, patch_tokens: torch.Tensor
     ) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None
     ]:
         B, P, _ = patch_tokens.shape
 
@@ -163,7 +171,7 @@ class SymbolHead(nn.Module):
         w_k, h_k = shapes[..., 0], shapes[..., 1]
         # ---------------------------------------
 
-        edge_logits = preds[..., -4 * self.num_bins :]
+        edge_logits = preds[..., self.num_classes + 4 : self.geometry_end]
         edge_logits = edge_logits.reshape(
             B, P, self.num_shapes, 4, self.num_bins
         )
@@ -195,7 +203,8 @@ class SymbolHead(nn.Module):
 
         boxes = torch.stack([x1, y1, x2, y2], dim=-1)
 
-        return classes, center_offsets, shapes, boxes, edge_logits
+        presence = preds[..., -1] if self.presence else None
+        return classes, center_offsets, shapes, boxes, edge_logits, presence
 
 
 class LineHead(nn.Module):
@@ -206,6 +215,8 @@ class LineHead(nn.Module):
         num_shapes: int = 5,
         reg_max: int = 32,
         base_anchor_size: float = 1.0,
+        presence: bool = False,
+        presence_prior: float = 0.01,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -213,9 +224,12 @@ class LineHead(nn.Module):
         self.reg_max = reg_max
         self.num_bins = reg_max + 1
         self.base_anchor_size = base_anchor_size
+        self.presence = presence
+        self.presence_prior = presence_prior
 
-        # C (classes) + 4 (raw_dx1, raw_dy1, raw_dx2, raw_dy2) + 4*N (edge bins)
-        self.preds_per_shape = num_classes + 4 + (4 * self.num_bins)
+        # C (classes) + 4 (raw_dx1, raw_dy1, raw_dx2, raw_dy2) + 4*N (edge bins) [+ 1 presence]
+        self.geometry_end = num_classes + 4 + (4 * self.num_bins)
+        self.preds_per_shape = self.geometry_end + int(presence)
         self.out_dim = num_shapes * self.preds_per_shape
 
         self.mlp = nn.Sequential(
@@ -231,6 +245,8 @@ class LineHead(nn.Module):
         prior_prob = 0.01
         cls_bias_init = -math.log((1 - prior_prob) / prior_prob)
         nn.init.constant_(bias_view[:, :num_classes], cls_bias_init)
+        if presence:
+            nn.init.constant_(bias_view[:, -1], math.log(presence_prior / (1 - presence_prior)))
 
         # Initialize the bias for the raw_dirs to 0.0 (which maps to 0 distance)
         nn.init.constant_(bias_view[:, num_classes : num_classes + 4], 0.0)
@@ -239,7 +255,7 @@ class LineHead(nn.Module):
 
     def forward(
         self, patch_tokens: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         B, P, _ = patch_tokens.shape
 
         raw_preds = self.mlp(patch_tokens)
@@ -260,7 +276,7 @@ class LineHead(nn.Module):
         base_dirs = base_dirs * self.base_anchor_size
 
         # --- D-FINE Residuals ---
-        edge_logits = preds[..., -4 * self.num_bins :]
+        edge_logits = preds[..., self.num_classes + 4 : self.geometry_end]
         edge_logits = edge_logits.reshape(
             B, P, self.num_shapes, 4, self.num_bins
         )
@@ -280,7 +296,8 @@ class LineHead(nn.Module):
 
         keypoints = torch.stack([x1, y1, x2, y2], dim=-1)
 
-        return classes, base_dirs, keypoints, edge_logits
+        presence = preds[..., -1] if self.presence else None
+        return classes, base_dirs, keypoints, edge_logits, presence
 
 
 class OMRDetector(nn.Module):
@@ -291,6 +308,9 @@ class OMRDetector(nn.Module):
         num_line_classes: int,
         num_shapes: int = 5,
         base_anchor_size: float = 1.0,
+        presence: bool = False,
+        symbol_presence_prior: float = 0.08,
+        line_presence_prior: float = 0.35,
     ):
         super().__init__()
         self.backbone = vit_backbone
@@ -303,6 +323,8 @@ class OMRDetector(nn.Module):
             num_classes=num_symbol_classes,
             num_shapes=num_shapes,
             base_anchor_size=base_anchor_size,
+            presence=presence,
+            presence_prior=symbol_presence_prior,
         )
 
         self.line_head = LineHead(
@@ -310,6 +332,8 @@ class OMRDetector(nn.Module):
             num_classes=num_line_classes,
             num_shapes=num_shapes,
             base_anchor_size=base_anchor_size,
+            presence=presence,
+            presence_prior=line_presence_prior,
         )
 
     def forward[B: Batch](
@@ -343,12 +367,14 @@ class OMRDetector(nn.Module):
             sym_shapes,
             sym_boxes,
             sym_edge_logits,
+            sym_presence,
         ) = self.symbol_head(patch_tokens)
         (
             line_classes,
             line_base_dirs,
             line_keypoints,
             line_edge_logits,
+            line_presence,
         ) = self.line_head(patch_tokens)
 
         B, P, K, _ = sym_boxes.shape
@@ -388,6 +414,9 @@ class OMRDetector(nn.Module):
                 learnable_shapes=Dimensions(
                     sym_shapes.contiguous().flatten(1, 2)
                 ),
+                pred_presence=None
+                if sym_presence is None
+                else PresenceLogits(sym_presence.contiguous().flatten(1, 2)),
             ),
             lines=LineOutput(
                 pred_logits=ClassLogits(
@@ -405,6 +434,9 @@ class OMRDetector(nn.Module):
                 raw_directions=Coordinates(
                     line_base_dirs.contiguous().flatten(1, 2)
                 ),
+                pred_presence=None
+                if line_presence is None
+                else PresenceLogits(line_presence.contiguous().flatten(1, 2)),
             ),
         ), features
 
@@ -436,6 +468,9 @@ def create_detector(
     num_line_classes: int,
     num_shapes: int = 5,
     base_anchor_size: float = 1.0,
+    presence: bool = False,
+    symbol_presence_prior: float = 0.08,
+    line_presence_prior: float = 0.35,
 ) -> OMRDetector:
     """
     Factory function to create an OMRDetector with the specified backbone size.
@@ -461,4 +496,79 @@ def create_detector(
         num_line_classes=num_line_classes,
         num_shapes=num_shapes,
         base_anchor_size=base_anchor_size,
+        presence=presence,
+        symbol_presence_prior=symbol_presence_prior,
+        line_presence_prior=line_presence_prior,
     )
+
+
+def _head_layers(model: OMRDetector) -> tuple[tuple[str, SymbolHead | LineHead], ...]:
+    return (("symbol_head.mlp.3", model.symbol_head), ("line_head.mlp.3", model.line_head))
+
+
+def heads_need_remap(state: dict[str, torch.Tensor], model: OMRDetector) -> bool:
+    """Whether the head output layers of ``state`` have another slot count or presence layout
+    than ``model`` (e.g. the K = 5 Exp 037 checkpoint for a K = 8 patch-set detector)."""
+    own = model.state_dict()
+    return any(state[f"{key}.weight"].shape != own[f"{key}.weight"].shape for key, _ in _head_layers(model))
+
+
+def remap_head_state(state: dict[str, torch.Tensor], model: OMRDetector) -> dict[str, torch.Tensor]:
+    """``state`` with its head output layers rebuilt for ``model``'s slot count and presence.
+
+    Slot k < K_old keeps its rows (classes, geometry, edge bins and presence when the source
+    has one), so these slots reproduce the source outputs exactly. A new slot (k >= K_old)
+    copies the geometry and edge-bin rows of slot k mod K_old and starts empty: zero class
+    weights with the focal prior bias. Presence rows that the source lacks get zero weights
+    and the bias logit(head.presence_prior): every slot starts at the head's positive base rate
+    (patch-set smoke: lines ~35% of slots, symbols ~8%), so Adam does not spend the whole run
+    moving a bias by ~4 logits at <= lr per step.
+    """
+    prior = -math.log((1 - 0.01) / 0.01)
+    out = dict(state)
+    for key, head in _head_layers(model):
+        weight, bias = state[f"{key}.weight"], state[f"{key}.bias"]
+        rows, dim = weight.shape
+        old_presence = rows % head.geometry_end != 0
+        old_pps = head.geometry_end + int(old_presence)
+        if rows % old_pps != 0:
+            raise ValueError(f"{key}: {rows} rows do not split into slots of {old_pps}")
+        old_k = rows // old_pps
+        old_w = weight.view(old_k, old_pps, dim)
+        old_b = bias.view(old_k, old_pps)
+        new_k, c, end = head.num_shapes, head.num_classes, head.geometry_end
+        new_w = weight.new_zeros(new_k, head.preds_per_shape, dim)
+        new_b = bias.new_zeros(new_k, head.preds_per_shape)
+        for k in range(new_k):
+            src = k % old_k
+            new_w[k, c:end] = old_w[src, c:end]
+            new_b[k, c:end] = old_b[src, c:end]
+            if k < old_k:
+                new_w[k, :c] = old_w[k, :c]
+                new_b[k, :c] = old_b[k, :c]
+            else:
+                new_b[k, :c] = prior
+            if head.presence:
+                if old_presence and k < old_k:
+                    new_w[k, -1] = old_w[k, -1]
+                    new_b[k, -1] = old_b[k, -1]
+                else:
+                    new_b[k, -1] = math.log(head.presence_prior / (1 - head.presence_prior))
+        out[f"{key}.weight"] = new_w.reshape(-1, dim)
+        out[f"{key}.bias"] = new_b.reshape(-1)
+    return out
+
+
+def load_detector_state(model: OMRDetector, state: dict[str, torch.Tensor]) -> bool:
+    """Load ``state`` strictly, remapping the head output layers first if their layout differs.
+    Returns True when a remap happened (the optimizer state of ``state`` then no longer fits)."""
+    remap = heads_need_remap(state, model)
+    model.load_state_dict(remap_head_state(state, model) if remap else state, strict=True)
+    return remap
+
+
+def head_layout(state: dict[str, torch.Tensor], num_symbol_classes: int, reg_max: int = 32) -> tuple[int, bool]:
+    """(slots per patch, presence) of a detector state dict, read from its symbol head."""
+    end = num_symbol_classes + 4 + 4 * (reg_max + 1)
+    rows = state["symbol_head.mlp.3.weight"].shape[0]
+    return (rows // end, False) if rows % end == 0 else (rows // (end + 1), True)

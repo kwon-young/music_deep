@@ -6,8 +6,16 @@ import torch
 from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
-from model.detector import OMRDetector, create_detector
-from model.refiner import EndpointRefiner, TokenGrid, load_refiner, postprocess_lines
+from model.association import AssociationConfig, ScoredDetections, associate_candidates, select_candidates
+from model.detector import OMRDetector, create_detector, head_layout
+from model.refiner import (
+    EndpointRefiner,
+    LineQueries,
+    TokenGrid,
+    load_refiner,
+    postprocess_lines,
+    refine_queries,
+)
 from dataset.coco import (
     parse_coco,
     load_coco_sample,
@@ -15,6 +23,7 @@ from dataset.coco import (
     CocoLineAnnotation,
 )
 import transform.det as det_tf
+from music_types import Batch, BoxDim, CoordDim, DetectionOutput, KeypointDim, NumQueries
 from threaded_generator import (
     ParallelGenerator,
     partial_generator,
@@ -173,6 +182,64 @@ def apply_oracle_fgl(outputs, item, patch_size, base_anchor_size):
             line_kps[pred_idx, 3] = cy + base[:, 3] + res_y2 * scale[:, 3]
 
 
+type Outputs = DetectionOutput[Batch, NumQueries, BoxDim, KeypointDim, CoordDim]
+
+
+def association_config(args: argparse.Namespace, radius: float, normalized: bool,
+                       cannot_link: bool, variance_weights: bool = False) -> AssociationConfig:
+    return AssociationConfig(radius=radius, normalized=normalized, cannot_link=cannot_link,
+                             variance_weights=variance_weights)
+
+
+def associate_symbols(outputs: Outputs, args: argparse.Namespace, max_symbols: int) -> ScoredDetections:
+    """Patch-set inference for symbols: occupied slots (presence >= floor) are associated, the
+    distance between two boxes measured relative to their size (corner distance over
+    sqrt(2) x width / height), and the clusters ranked by --cluster_score."""
+    k = args.num_shapes
+    sym = outputs.symbols
+    presence = sym.pred_presence
+    floor = args.presence_floor if presence is not None else args.symbol_candidate_floor
+    cands = select_candidates(sym.pred_logits.data[0], None if presence is None else presence.data[0], floor)
+    boxes = sym.pred_boxes.data[0][cands.index].float()
+    size = (boxes[:, 2:] - boxes[:, :2]).clamp(min=1 / args.patch_size)
+    return associate_candidates(
+        cands, boxes, torch.cat([size, size], dim=-1), k,
+        outputs.lines.absolute_centers.data[0, ::k].float(), False,
+        association_config(args, args.symbol_assoc_radius, True, not args.no_cannot_link),
+        args.responsibility_margin, args.cluster_score, max_symbols,
+    )
+
+
+def associate_lines(outputs: Outputs, args: argparse.Namespace, max_lines: int, refiner: EndpointRefiner | None,
+                    grid: TokenGrid | None) -> ScoredDetections:
+    """Patch-set inference for lines: occupied slots, refined when a refiner is given, then
+    associated by the larger endpoint distance (--line_assoc_radius pixels). Refined endpoints
+    are fused with weights score / var of the refiner's bins, so each endpoint comes from the
+    voters that see it (Exp 042: fused error 0.23 vs 0.69 patch for a plain mean)."""
+    k = args.num_shapes
+    ln = outputs.lines
+    presence = ln.pred_presence
+    floor = args.presence_floor if presence is not None else args.line_candidate_floor
+    cands = select_candidates(ln.pred_logits.data[0], None if presence is None else presence.data[0], floor)
+    endpoints = ln.pred_keypoints.data[0][cands.index].float()
+    std: torch.Tensor | None = None
+    if refiner is not None and grid is not None:
+        refined = refine_queries(
+            refiner, grid,
+            LineQueries(image=torch.zeros_like(cands.index), source=cands.index // k,
+                        label=cands.label, endpoints=endpoints),
+            args.refine_steps,
+        )
+        endpoints, std = refined.endpoints, refined.std
+    weighted = std is not None and not args.line_score_fusion
+    return associate_candidates(
+        cands, endpoints, std if std is not None else torch.ones_like(endpoints) / args.patch_size, k,
+        ln.absolute_centers.data[0, ::k].float(), True,
+        association_config(args, args.line_assoc_radius / args.patch_size, False, args.line_cannot_link, weighted),
+        args.responsibility_margin, args.cluster_score, max_lines,
+    )
+
+
 def process_single_image(
     i,
     dataset,
@@ -243,13 +310,17 @@ def process_single_image(
     sym_logits = outputs.symbols.pred_logits.data[0]
     sym_boxes = outputs.symbols.pred_boxes.data[0]
 
-    sym_probs = torch.sigmoid(sym_logits)
-    sym_max_probs, sym_labels = sym_probs.max(dim=-1)
+    if args.association:
+        assoc = associate_symbols(outputs, args, max_symbols)
+        sym_boxes_kept, sym_probs_kept, sym_labels_kept = assoc.geometry, assoc.score, assoc.label
+    else:
+        sym_probs = torch.sigmoid(sym_logits)
+        sym_max_probs, sym_labels = sym_probs.max(dim=-1)
 
-    k_sym = min(max_symbols, sym_max_probs.shape[0])
-    sym_probs_kept, sym_keep = torch.topk(sym_max_probs, k_sym)
-    sym_boxes_kept = sym_boxes[sym_keep]
-    sym_labels_kept = sym_labels[sym_keep]
+        k_sym = min(max_symbols, sym_max_probs.shape[0])
+        sym_probs_kept, sym_keep = torch.topk(sym_max_probs, k_sym)
+        sym_boxes_kept = sym_boxes[sym_keep]
+        sym_labels_kept = sym_labels[sym_keep]
 
     sym_boxes_kept[:, [0, 1, 2, 3]] *= args.patch_size
 
@@ -279,7 +350,16 @@ def process_single_image(
     line_logits = outputs.lines.pred_logits.data[0]
     line_kps = outputs.lines.pred_keypoints.data[0]
 
-    if refiner is not None:
+    if args.association:
+        grid = None
+        if refiner is not None:
+            patches = dropped_item.sample.image
+            _, height, width = patches.image_shape
+            ph, pw = patches.patch_size
+            grid = TokenGrid.from_batch(final[0].float(), patches.indices, height // ph, width // pw)
+        assoc = associate_lines(outputs, args, max_lines, refiner, grid)
+        line_kps_kept, line_probs_kept, line_labels_kept = assoc.geometry.clone(), assoc.score, assoc.label
+    elif refiner is not None:
         # Exp 035 pipeline: refine the candidates above the floor, NMS with merged
         # scores, then keep the top lines by final score.
         patches = dropped_item.sample.image
@@ -362,6 +442,14 @@ def create_inference_iterator(
     else:
         device = torch.device(args.device)
 
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=True
+    )
+    num_shapes, presence = head_layout(checkpoint["model"], dataset.num_symbol_classes)
+    if num_shapes != args.num_shapes:
+        print(f"The checkpoint has {num_shapes} slots per patch (--num_shapes {args.num_shapes} ignored)")
+        args.num_shapes = num_shapes
+
     # Each worker instantiates its own model here
     model = create_detector(
         backbone_size=args.backbone_size,
@@ -372,11 +460,8 @@ def create_inference_iterator(
         num_line_classes=dataset.num_line_classes,
         num_shapes=args.num_shapes,
         base_anchor_size=args.base_anchor_size,
+        presence=presence,
     ).to(device)
-
-    checkpoint = torch.load(
-        checkpoint_path, map_location=device, weights_only=True
-    )
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -415,7 +500,14 @@ def run_inference(args):
     print(f"Using device: {device}")
     if args.oracle_fgl:
         print(">>> ORACLE FGL MODE: replacing FGL residuals with GT-derived targets")
-    if args.refiner_checkpoint is not None:
+    if args.association:
+        print(
+            f">>> Association: presence >= {args.presence_floor}, lines {args.line_assoc_radius} px"
+            f"{' (refined)' if args.refiner_checkpoint is not None else ''}, symbols "
+            f"{args.symbol_assoc_radius} x size, cannot-link symbols {not args.no_cannot_link} / lines {args.line_cannot_link}, "
+            f"score {args.cluster_score}"
+        )
+    elif args.refiner_checkpoint is not None:
         print(
             f">>> Line pipeline: refiner {args.refiner_checkpoint}, candidates >= "
             f"{args.line_candidate_floor}, NMS {args.line_nms_radius} px, "
@@ -603,6 +695,44 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="With a refiner: number of refinement steps (default: the trained number).",
+    )
+
+    assoc = parser.add_argument_group(
+        "association",
+        "Patch-set inference (PATCH_SET_ASSIGNMENT.md section 5): occupied slots are grouped "
+        "into clusters (two slots of one patch never share a cluster) instead of top-k / NMS.",
+    )
+    assoc.add_argument("--association", action="store_true")
+    assoc.add_argument(
+        "--presence_floor", type=float, default=0.5, help="Occupied slot: presence >= this."
+    )
+    assoc.add_argument(
+        "--symbol_candidate_floor",
+        type=float,
+        default=0.01,
+        help="Without a presence logit: symbol slots scoring at least this much.",
+    )
+    assoc.add_argument("--line_assoc_radius", type=float, default=4.0, help="Pixels.")
+    assoc.add_argument(
+        "--symbol_assoc_radius",
+        type=float,
+        default=0.35,
+        help="Relative to symbol size (corner distance / (sqrt(2) x width or height)).",
+    )
+    assoc.add_argument(
+        "--cluster_score", choices=["support_quality", "quality", "noisy_or"], default="support_quality"
+    )
+    assoc.add_argument("--responsibility_margin", type=float, default=0.5)
+    assoc.add_argument("--no_cannot_link", action="store_true", help="Symbols without cannot-link.")
+    assoc.add_argument(
+        "--line_score_fusion",
+        action="store_true",
+        help="Fuse refined line endpoints by score only (default: score / variance of the refiner bins).",
+    )
+    assoc.add_argument(
+        "--line_cannot_link",
+        action="store_true",
+        help="Lines with cannot-link (off: patch-set lines train several on-line slots per patch).",
     )
 
     args = parser.parse_args()

@@ -277,17 +277,17 @@ outcome block at the end of this phase. Plan as run:
 * **Coincident noteheads are merged** (pair recall 0.46 → 0.12, with or without cannot-link):
   the two voices come from different patches, one slot each. Only Phase 2's target (both GT
   assigned to every responsible patch) turns the pair into a cannot-link case.
-* **Spreads are 3–4× too wide** (97% of refined-line errors within 1 std, symbols 95%): the
-  std-normalised distance merges neighbours. Phase 2 must calibrate the FGL spread (a
-  calibration term, or a post-hoc temperature on the bin logits) before section 5's
-  certainty-aware distance is used.
+* **Spreads are 3–4× too wide** (97% of refined-line errors within 1 std, symbols 95%), so a
+  "3 std" radius is ~10 true std and merges neighbours. A global calibration would not help by
+  itself: scaling all stds by c equals dividing the radius by c, so this is a radius choice
+  (~1 current std ≈ 3.5 true σ). Calibration matters only if the relative spreads are wrong.
 * **Cluster score**: noisy-OR inflates clusters of weak votes; best-member / support scoring
   removes duplicates but loses AP because today's class score is not a presence probability.
   Needs the presence logit.
 * Symbol association radius should scale with size (same-GT spread median 0.36 ×
   sqrt(area)), not a fixed 8 px. The refiner stays mandatory (coarse endpoints: −0.14 AP).
 * Phase 2 acceptance on this script: cannot-link variant at least as good as no-cannot-link,
-  coincident-pair recall ≥ the top-k baseline (0.46), calibration within 1 std near 68%.
+  coincident-pair recall ≥ the top-k baseline (0.46), presence close to 0 / 1.
 
 ### Phase 2 — training implementation (laptop)
 
@@ -320,7 +320,25 @@ outcome block at the end of this phase. Plan as run:
   histogram, (d) the loss balance is close to Exp 038's (measure as in the Exp 038
   loss-balance table).
 
-### Phase 3 — Exp 040 on Kaggle
+**Phase 2 outcome (Exp 042 smoke runs, 4 pages)** — implemented as above, with these changes
+from the design, found by the smoke runs:
+
+* **Presence init and optimisation**: presence bias at logit(base rate) (lines 0.35, symbols
+  0.08), not 0.01; head output layers in a 10× LR group (`--head_lr_scale 10`); presence focal
+  α = 0.5; every voter is a full presence positive, normalised by the number of voters
+  (`--presence_weighting none`), not 1 / N_voters. Presence in the matching cost did not help
+  (`--cost_presence 0`).
+* **Lines are not strictly one-to-one inside a patch**: coarse line endpoints are off by
+  patches along the line, so which slot wins the match is arbitrary and presence could not
+  learn it. Each responsible line keeps its matched slot, and every other slot lying on a
+  responsible line (perpendicular quality ≥ 0.5, σ 0.1 patch, extent ignored) is a positive too
+  (`--line_on_line`). Lines associate without cannot-link (`--line_cannot_link` off); symbols
+  keep strict in-patch one-to-one and cannot-link.
+* **Line class quality targets are off** (`--line_quality_targets` to enable): the coarse OKS of
+  a far voter is ~0, which would push real positives' class score to 0.
+* Result: presence AUC symbols 0.945, lines 0.870 (linear-probe ceilings 0.95 / 0.87).
+
+### Phase 3 — Exp 043 on Kaggle (Exp 040 became an unrelated experiment)
 
 * **Same recipe and init as Exp 038**: Exp 037 checkpoint + Phase A refiner, 100 epochs,
   LR 1e-4, 1 warmup epoch, cosine, 54–74 px, size-difficulty weights 0.5 / 8.0, refiner in
@@ -340,7 +358,7 @@ outcome block at the end of this phase. Plan as run:
   more than global AP.
 * Staff miss rate per length bin (Analysis 003), far-endpoint error, recall ceiling
   reached vs Phase 0's theoretical one.
-* Log in `EXPERIMENTS.md` (Analyses 009/010, Exp 040).
+* Log in `EXPERIMENTS.md` (Analyses 009/010, Exp 043).
 
 ### Later (only if Phase 4 is positive)
 
@@ -374,7 +392,7 @@ outcome block at the end of this phase. Plan as run:
    imbalance and background imbalance handled separately), but two of its three factors
    would be trained only on positives, so presence alone would have to reject every
    background slot (the GFL caveat in section 3), and the class logits would change
-   meaning (warm-start risk, Exps 032/034). Only worth trying if Exp 040 shows that
+   meaning (warm-start risk, Exps 032/034). Only worth trying if Exp 043 shows that
    presence is reliably close to 0/1 on hard negatives.
 4. **Symbol fusion without a symbol refiner**: symbol duplicates will not coincide the way
    refined lines do, so the association radius and certainty weights matter more for them.

@@ -13,8 +13,12 @@ pycocotools setup of ``evaluate_coco.py``. Besides AP it reports, from the same 
   normalised association distance relies on;
 * the spread of the duplicates of one symbol across patches (sets the symbol radius).
 
-The current detector has no presence logit, so presence is its class score (support =
-summed class score / expected voters).
+On a one-to-one detector (no presence logit) presence is the class score (support = summed
+class score / expected voters). On a patch-set detector (Exp 042+: the cache has ``presence``)
+the patch-set variants run instead: candidates by presence floor, lines fused with weights
+score / variance of the refiner bins and associated without cannot-link, symbols with
+cannot-link at a size-relative radius, clusters ranked by support x quality. The summary also
+counts confident unmatched staff predictions per page (fragments) and the association time.
 
 Usage:
     PYTHONPATH=src:scripts mamba run -n pytorch python scripts/diagnose_association.py \
@@ -63,6 +67,8 @@ class Variant:
     floor: float
     association: AssociationConfig | None = None
     refined: bool = True
+    presence: bool = False
+    size_scale: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,8 +95,8 @@ class Kept:
 def variants() -> list[Variant]:
     plain_line = AssociationConfig(radius=4 / PS, normalized=False)
     plain_sym = AssociationConfig(radius=8 / PS, normalized=False)
-    norm = AssociationConfig(radius=3.0, normalized=True)
-    norm1 = AssociationConfig(radius=1.0, normalized=True)
+    norm = AssociationConfig(radius=3.0, normalized=True, variance_weights=True)
+    norm1 = AssociationConfig(radius=1.0, normalized=True, variance_weights=True)
     no_cl_line = AssociationConfig(radius=4 / PS, normalized=False, cannot_link=False)
     no_cl_sym = AssociationConfig(radius=8 / PS, normalized=False, cannot_link=False)
     return [
@@ -109,6 +115,31 @@ def variants() -> list[Variant]:
         Variant("symbols_assoc1sd_noisyor", "symbols", "associate", "noisy_or", 0.01, norm1),
         Variant("symbols_assoc3sd_quality", "symbols", "associate", "quality", 0.01, norm),
         Variant("symbols_assoc3sd_support", "symbols", "associate", "support_quality", 0.01, norm),
+    ]
+
+
+def patch_set_variants() -> list[Variant]:
+    """Variants for a patch-set detector (presence floor 0.5)."""
+    ivw = AssociationConfig(radius=4 / PS, normalized=False, cannot_link=False, variance_weights=True)
+    score_w = AssociationConfig(radius=4 / PS, normalized=False, cannot_link=False)
+    ivw_1sd = AssociationConfig(radius=1.0, normalized=True, cannot_link=False, variance_weights=True)
+    ivw_cl = AssociationConfig(radius=4 / PS, normalized=False, cannot_link=True, variance_weights=True)
+    rel = AssociationConfig(radius=0.35, normalized=True)
+    rel_nocl = AssociationConfig(radius=0.35, normalized=True, cannot_link=False)
+    return [
+        Variant("ps_lines_nms4_noisyor", "lines", "nms", "noisy_or", 0.5, presence=True),
+        Variant("ps_lines_assoc4px_ivw_support", "lines", "associate", "support_quality", 0.5, ivw, presence=True),
+        Variant("ps_lines_assoc4px_ivw_quality", "lines", "associate", "quality", 0.5, ivw, presence=True),
+        Variant("ps_lines_assoc4px_score_support", "lines", "associate", "support_quality", 0.5, score_w, presence=True),
+        Variant("ps_lines_assoc1sd_ivw_support", "lines", "associate", "support_quality", 0.5, ivw_1sd, presence=True),
+        Variant("ps_lines_assoc4px_ivw_cl_support", "lines", "associate", "support_quality", 0.5, ivw_cl, presence=True),
+        Variant("ps_symbols_topk", "symbols", "topk", "slot", 0.5, presence=True),
+        Variant("ps_symbols_assocrel_support", "symbols", "associate", "support_quality", 0.5, rel,
+                presence=True, size_scale=True),
+        Variant("ps_symbols_assocrel_quality", "symbols", "associate", "quality", 0.5, rel,
+                presence=True, size_scale=True),
+        Variant("ps_symbols_assocrel_nocl_support", "symbols", "associate", "support_quality", 0.5, rel_nocl,
+                presence=True, size_scale=True),
     ]
 
 
@@ -135,16 +166,21 @@ def candidates(page: Page, v: Variant) -> Detections:
     slots = page.lines if v.modality == "lines" else page.symbols
     prob = slots["logits"].float().sigmoid()
     score, label = prob.max(dim=-1)
-    keep = score >= v.floor
+    presence = slots["presence"].float().sigmoid() if v.presence else score
+    keep = presence >= v.floor
     use_refined = v.modality == "lines" and v.refined
     geometry = slots["refined" if use_refined else "geometry"].float()
     std = slots["refined_std" if use_refined else "std"].float()
+    if v.size_scale:
+        # distance relative to the box size: corner offsets over sqrt(2) x width / height
+        size = (geometry[:, 2:] - geometry[:, :2]).clamp(min=1 / PS)
+        std = torch.cat([size, size], dim=-1)
     return Detections(
         geometry=geometry[keep],
         std=std[keep],
         label=label[keep],
         score=score[keep],
-        presence=score[keep],
+        presence=presence[keep],
         patch=slots["query"][keep].long() // page.num_shapes,
     )
 
@@ -208,6 +244,18 @@ def evaluate(coco_gt: COCO, results: str, modality: Modality, cat_ids: list[int]
         coco_eval.evaluate()
         coco_eval.accumulate()
     return coco_eval
+
+
+def confident_unmatched(coco_eval: COCOeval, cat_id: int) -> int:
+    """Detections of ``cat_id`` scoring >= CONFIDENT left unmatched at the first threshold
+    (staff: fragments with a wrong extent, or false positives)."""
+    count = 0
+    for e in coco_eval.evalImgs:
+        if e is None or e["aRng"] != coco_eval.params.areaRng[0] or e["category_id"] != cat_id:
+            continue
+        dtm = e["dtMatches"][0]
+        count += sum(1 for m, s in zip(dtm, e["dtScores"]) if m == 0 and s >= CONFIDENT)
+    return count
 
 
 def matched_gt(coco_eval: COCOeval) -> tuple[set[int], int]:
@@ -451,12 +499,13 @@ class PagePart:
     calib: dict[str, list[torch.Tensor]]
     spread: list[torch.Tensor]
     inpatch: dict[str, int]
+    seconds: dict[str, float] | None = None
 
 
 def save_part(path: Path, part: PagePart) -> None:
     tmp = path.with_suffix(".tmp")
     torch.save({"results": json.dumps(part.results), "calib": part.calib, "spread": part.spread,
-                "inpatch": part.inpatch}, tmp)
+                "inpatch": part.inpatch, "seconds": json.dumps(part.seconds or {})}, tmp)
     tmp.replace(path)
 
 
@@ -469,7 +518,11 @@ def load_part(path: Path) -> PagePart | None:
     assert isinstance(spread, list) and isinstance(inpatch, dict)
     parsed = json.loads(results)
     assert isinstance(parsed, dict)
+    raw_seconds = d.get("seconds")
+    seconds = json.loads(raw_seconds) if isinstance(raw_seconds, str) else {}
+    assert isinstance(seconds, dict)
     return PagePart(
+        seconds={str(k): float(v) for k, v in seconds.items()},
         results={str(k): v for k, v in parsed.items() if isinstance(v, list)},
         calib={str(k): [t for t in v if isinstance(t, torch.Tensor)] for k, v in calib.items() if isinstance(v, list)},
         spread=[t for t in spread if isinstance(t, torch.Tensor)],
@@ -504,7 +557,7 @@ def write_predictions(part_paths: list[Path], names: list[str], preds_dir: Path)
 
 
 def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: set[str] | None,
-        max_pages: int | None) -> None:
+        max_pages: int | None, variant_set: Literal["auto", "one_to_one", "patch_set"] = "auto") -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         coco_gt = COCO(str(anno_path))
@@ -537,7 +590,12 @@ def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: s
                     if sum(1 for a in coco_gt.loadAnns(coco_gt.getAnnIds(catIds=[c]))) >= 1000},
     }
     sets = gt_sets(coco_gt, img_ids, line_cats, names)
-    chosen = [v for v in variants() if only is None or v.name in only]
+    first = load_page(paths[0])
+    patch_set = "presence" in first.lines if variant_set == "auto" else variant_set == "patch_set"
+    candidates_list = patch_set_variants() if patch_set else variants()
+    print(f"{'patch-set' if patch_set else 'one-to-one'} cache, K = {first.num_shapes}", flush=True)
+    chosen = [v for v in candidates_list if only is None or v.name in only]
+    seconds: dict[str, float] = {}
     calib: dict[str, list[np.ndarray]] = {}
     spread: list[np.ndarray] = []
     inpatch: dict[str, int] = {}
@@ -549,9 +607,12 @@ def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: s
         part = load_part(part_path)
         if part is None or not all(v.name in part.results for v in chosen):
             page = load_page(path)
-            part = PagePart({}, {}, [], {})
+            part = PagePart({}, {}, [], {}, {})
+            assert part.seconds is not None
             for v in chosen:
+                start = time.monotonic()
                 kept = run_variant(page, v, caps[v.modality])
+                part.seconds[v.name] = time.monotonic() - start
                 part.results[v.name] = coco_results(page, kept, v.modality, idx_to_cat[v.modality])
             acc: dict[str, list[np.ndarray]] = {}
             calibration(page, coco_gt, cat_to_idx, line_cats, acc)
@@ -566,6 +627,8 @@ def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: s
         spread.extend(t.numpy() for t in part.spread)
         for k, c in part.inpatch.items():
             inpatch[k] = inpatch.get(k, 0) + c
+        for k, t in (part.seconds or {}).items():
+            seconds[k] = seconds.get(k, 0.0) + t
         if n % 25 == 0 or n == len(paths):
             print(f"{n}/{len(paths)} pages, {(time.monotonic() - t0) / n:.1f} s/page", flush=True)
 
@@ -607,6 +670,12 @@ def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: s
             }
             if v.modality == "symbols" and split == "all":
                 entry["coincident_pair_recall"] = round(pair_recall(sets.coincident, hit), 4)
+            entry["seconds_per_page"] = round(seconds.get(v.name, 0.0) / max(1, len(paths)), 4)
+            if v.modality == "lines":
+                staff = [c for c in cat_ids["lines"] if names[c] == "staff"]
+                entry["staff_confident_unmatched_per_page"] = round(
+                    sum(confident_unmatched(ev, c) for c in staff) / max(1, len(ids)), 2
+                )
             if v.modality == "lines" and split == "all":
                 entry["staff_recall_barline_ends"] = round(len(sets.staff_barline & hit) / max(1, len(sets.staff_barline)), 4)
                 entry["staff_recall_other_ends"] = round(len(sets.staff_other & hit) / max(1, len(sets.staff_other)), 4)
@@ -621,7 +690,9 @@ def run(cache_dir: Path, out_dir: Path, anno_path: Path, held_out: Path, only: s
               f"common {a['AP_common']:.4f} dupes {a['confident_dupes']} crowd {a['crowded_pair_recall']}"
               + (f" coincident {a['coincident_pair_recall']}" if "coincident_pair_recall" in a else "")
               + (f" staff bar/other {a['staff_recall_barline_ends']}/{a['staff_recall_other_ends']}"
-                 if "staff_recall_barline_ends" in a else ""), flush=True)
+                 if "staff_recall_barline_ends" in a else "")
+              + (f" staff fragments/page {a['staff_confident_unmatched_per_page']}"
+                 if "staff_confident_unmatched_per_page" in a else ""), flush=True)
     (out_dir / "association_summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps({k: summary[k] for k in ("calibration", "error_px", "symbol_duplicate_spread_px",
                                       "symbol_duplicate_spread_rel_size", "in_patch_duplicates", "gt_sets")}, indent=2))
@@ -636,9 +707,12 @@ def main() -> None:
                         default=Path("experiments/037_029_recipe_from_023/refiner_phase_a/held_out_image_ids.json"))
     parser.add_argument("--only", nargs="+", default=None, help="Variant names to run.")
     parser.add_argument("--max_pages", type=int, default=None)
+    parser.add_argument("--variant_set", choices=["auto", "one_to_one", "patch_set"], default="auto",
+                        help="auto: patch-set variants when the cache has presence.")
     args = parser.parse_args()
+    variant_set: Literal["auto", "one_to_one", "patch_set"] = args.variant_set
     run(Path(args.cache_dir), Path(args.out_dir), Path(args.anno_path), Path(args.held_out),
-        None if args.only is None else set(args.only), args.max_pages)
+        None if args.only is None else set(args.only), args.max_pages, variant_set)
 
 
 if __name__ == "__main__":

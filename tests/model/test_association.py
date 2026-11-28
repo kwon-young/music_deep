@@ -2,7 +2,14 @@ import unittest
 
 import torch
 
-from model.association import AssociationConfig, Detections, associate, support_ratio
+from model.association import (
+    AssociationConfig,
+    Detections,
+    associate,
+    associate_candidates,
+    select_candidates,
+    support_ratio,
+)
 from model.regions import cell_segment_distance, expected_voters
 
 
@@ -72,7 +79,7 @@ class TestAssociate(unittest.TestCase):
         stds = [[0.02] * 4, [0.02, 0.02, 1.5, 0.02]]
         plain = associate(dets([sure, guess], [0, 1], [0.9, 0.9], std=stds), PLAIN)
         self.assertEqual(plain.geometry.shape[0], 2)
-        cfg = AssociationConfig(radius=3.0, normalized=True)
+        cfg = AssociationConfig(radius=3.0, normalized=True, variance_weights=True)
         c = associate(dets([sure, guess], [0, 1], [0.9, 0.9], std=stds), cfg)
         self.assertEqual(c.geometry.shape[0], 1)
         self.assertGreater(float(c.geometry[0, 2]), 9.99)
@@ -103,6 +110,27 @@ class TestAssociate(unittest.TestCase):
         c = associate(dets([[0, 0, 4, 0], [0, 0, 4, 0]], [0, 1], [0.5, 0.5]), PLAIN)
         ratio = support_ratio(c, torch.tensor([4]))
         self.assertAlmostEqual(float(ratio[0]), 0.25, places=5)
+
+
+class TestInferenceGlue(unittest.TestCase):
+    def test_presence_floor_and_support_quality_ranking(self) -> None:
+        # 2 patches x 2 slots; patch centres (0.5, 0.5) and (1.5, 0.5)
+        logits = torch.logit(torch.tensor([[0.9, 0.1], [0.2, 0.1], [0.8, 0.1], [0.1, 0.7]]))
+        presence = torch.logit(torch.tensor([0.95, 0.1, 0.9, 0.6]))
+        cands = select_candidates(logits, presence, 0.5)
+        self.assertEqual(cands.index.tolist(), [0, 2, 3])
+        box = [0.8, 0.3, 1.2, 0.7]  # straddles both cells: 2 expected voters
+        geometry = torch.tensor([box, box, [1.3, 0.2, 1.7, 0.4]])
+        centers = torch.tensor([[0.5, 0.5], [1.5, 0.5]])
+        out = associate_candidates(
+            cands, geometry, torch.full((3, 4), 0.05), 2, centers, False,
+            AssociationConfig(radius=0.1, normalized=False), 0.0, "support_quality", 10,
+        )
+        self.assertEqual(out.label.tolist(), [0, 1])
+        # cluster 0: presence 0.95 + 0.9 over 2 voters, quality 0.9
+        self.assertAlmostEqual(float(out.score[0]), (0.95 + 0.9) / 2 * 0.9, places=5)
+        # cluster 1: one voter out of 1 expected, presence 0.6, quality 0.7
+        self.assertAlmostEqual(float(out.score[1]), 0.6 * 0.7, places=5)
 
 
 class TestRegions(unittest.TestCase):

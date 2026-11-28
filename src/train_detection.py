@@ -16,9 +16,10 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model.detector import DetectorWithTokens, OMRDetector, create_detector
+from model.assignment import PatchSetAssigner, PatchSetAssignment, PatchSetConfig, SlotStats, slot_stats
+from model.detector import DetectorWithTokens, OMRDetector, create_detector, load_detector_state
 from model.matcher import HungarianMatcher
-from model.criterion import DFINECriterion
+from model.criterion import DFINECriterion, PatchSetCriterion, VoterWeighting
 from model.refiner import (
     DenoisingNoise,
     EndpointRefiner,
@@ -87,9 +88,20 @@ class DetectionMetrics(BaseMetrics):
     loss_fgl: float
     loss_line_l1: float
     loss_line_fgl: float
+    loss_presence: float
     loss_refine: float
     refine_coarse_l1: float
     refine_l1: float
+    refine_masked: float
+    sym_presence_pos_high: float
+    sym_presence_neg_high: float
+    sym_inpatch_dupes: float
+    sym_ignored: float
+    sym_voters: float
+    line_presence_pos_high: float
+    line_presence_neg_high: float
+    line_ignored: float
+    line_voters: float
     map50: float
     miou: float
     line_error: float
@@ -120,9 +132,27 @@ class RefineStats:
     loss: float
     coarse_l1: float
     refined_l1: float
+    masked: float
 
 
-NO_REFINE = RefineStats(loss=0.0, coarse_l1=0.0, refined_l1=0.0)
+NO_REFINE = RefineStats(loss=0.0, coarse_l1=0.0, refined_l1=0.0, masked=0.0)
+
+
+@dataclass(frozen=True)
+class PatchSetParams:
+    """Patch-set assignment (PATCH_SET_ASSIGNMENT.md): one-to-one per patch, one-to-many
+    across patches, presence logit, quality focal class loss, 1 / N_voters weights."""
+
+    config: PatchSetConfig
+    voter_weighting: VoterWeighting
+    presence_weighting: VoterWeighting
+    presence_alpha: float
+    symbol_quality_targets: bool
+    line_quality_targets: bool
+    refiner_voters: int
+
+
+NO_SLOT_STATS = SlotStats(positive_high=0.0, negative_high=0.0, duplicates=0.0, ignored=0.0, voters=0.0)
 
 
 @dataclass
@@ -191,6 +221,9 @@ class TrainParams:
     verovio_root: Path
     refiner: RefinerParams | None
     held_out_image_ids: list[int]
+    patch_set: PatchSetParams | None = None
+    loss_presence: float = 2.0
+    head_lr_scale: float = 1.0
 
 
 @dataclass
@@ -394,6 +427,7 @@ def refinement_loss(
     targets: list[DetectionTarget],
     num_shapes: int,
     cfg: RefinerParams,
+    max_voters: int | None = None,
 ) -> tuple[torch.Tensor, RefineStats]:
     """Refiner loss on the step's own (augmented, resized) tokens and line matching.
 
@@ -416,6 +450,8 @@ def refinement_loss(
         num_shapes=num_shapes,
         max_coarse_error=cfg.max_coarse_error,
         noise=cfg.noise,
+        centers=outputs.lines.absolute_centers.data,
+        max_voters=max_voters,
     )
     refined = refiner(grid, batch.queries)
     loss, _ = refiner_loss(raw_refiner, refined, batch.target, batch.mask, cfg.fgl_weight)
@@ -427,7 +463,8 @@ def refinement_loss(
         coarse_l1 = ((batch.queries.endpoints[:n] - target).abs() * mask).sum() / denom
         refined_l1 = ((refined[-1].endpoints[:n] - target).abs() * mask).sum() / denom
     return loss, RefineStats(
-        loss=loss.item(), coarse_l1=coarse_l1.item(), refined_l1=refined_l1.item()
+        loss=loss.item(), coarse_l1=coarse_l1.item(), refined_l1=refined_l1.item(),
+        masked=1.0 - mask.mean().item() if n else 0.0,
     )
 
 
@@ -445,7 +482,7 @@ def train_step_pipeline(
         ]
     ],
     model: DetectorWithTokens | DDP,
-    matcher: HungarianMatcher,
+    matcher: HungarianMatcher | PatchSetAssigner,
     criterion: DFINECriterion,
     refiner: EndpointRefiner | DDP | None,
     raw_refiner: EndpointRefiner | None,
@@ -498,16 +535,15 @@ def train_step_pipeline(
             ):
                 outputs, features = model(batch.sample.image)
                 # One matching, shared by the detector losses and the refiner queries.
-                indices = matcher(outputs, targets)
-                losses = criterion(outputs, targets, indices)
-                total_loss = (
-                    losses.loss_ce
-                    + losses.loss_bbox
-                    + losses.loss_giou
-                    + losses.loss_fgl
-                    + losses.loss_line_l1
-                    + losses.loss_line_fgl
-                )
+                if isinstance(matcher, PatchSetAssigner):
+                    assignment = matcher(outputs, targets)
+                    losses = criterion(outputs, targets, assignment=assignment)
+                    line_matches = assignment.matches()[1]
+                else:
+                    indices = matcher(outputs, targets)
+                    losses = criterion(outputs, targets, indices)
+                    line_matches = indices[1]
+                total_loss = losses.total()
                 if refiner is not None:
                     assert raw_refiner is not None and params.refiner is not None
                     refine_loss, refine_stats = refinement_loss(
@@ -515,10 +551,11 @@ def train_step_pipeline(
                         raw_refiner,
                         features,
                         outputs,
-                        indices[1],
+                        line_matches,
                         targets,
                         params.num_shapes,
                         params.refiner,
+                        None if params.patch_set is None else params.patch_set.refiner_voters,
                     )
                     total_loss = total_loss + params.refiner.loss_weight * refine_loss
 
@@ -580,10 +617,27 @@ def train_step_pipeline(
         )
 
 
+def patch_set_stats(
+    result: TrainStepResult, assignment: PatchSetAssignment, assigner: PatchSetAssigner
+) -> tuple[SlotStats, SlotStats]:
+    """Presence and in-patch duplicate diagnostics of the logged step's first image."""
+    sym, line = result.outputs.symbols, result.outputs.lines
+    if sym.pred_presence is None or line.pred_presence is None:
+        return NO_SLOT_STATS, NO_SLOT_STATS
+    t = result.targets[0]
+    k, cfg = assigner.num_slots, assigner.cfg
+    return (
+        slot_stats(sym.pred_presence.data[0], sym.pred_boxes.data[0], assignment.symbols[0],
+                   t.boxes.data, False, k, cfg),
+        slot_stats(line.pred_presence.data[0], line.pred_keypoints.data[0], assignment.lines[0],
+                   t.keypoints.data, True, k, cfg),
+    )
+
+
 def log_and_save_checkpoint(
     result: TrainStepResult,
     params: TrainParams,
-    matcher: HungarianMatcher,
+    matcher: HungarianMatcher | PatchSetAssigner,
     logger: ExperimentLogger,
     model: OMRDetector,
     refiner: EndpointRefiner | None,
@@ -596,8 +650,14 @@ def log_and_save_checkpoint(
 ):
     """Handles metrics computation, visualization, and saving the model state."""
     # 1. Compute Metrics
+    sym_stats = line_stats = NO_SLOT_STATS
     with torch.no_grad():
-        sym_indices, line_indices = matcher(result.outputs, result.targets)
+        if isinstance(matcher, PatchSetAssigner):
+            assignment = matcher(result.outputs, result.targets)
+            sym_indices, line_indices = assignment.matches()
+            sym_stats, line_stats = patch_set_stats(result, assignment, matcher)
+        else:
+            sym_indices, line_indices = matcher(result.outputs, result.targets)
         map50 = compute_map_50(
             result.outputs, result.targets, params.num_symbol_classes
         )
@@ -617,9 +677,20 @@ def log_and_save_checkpoint(
         loss_fgl=result.losses.loss_fgl.item(),
         loss_line_l1=result.losses.loss_line_l1.item(),
         loss_line_fgl=result.losses.loss_line_fgl.item(),
+        loss_presence=result.losses.loss_presence.item(),
         loss_refine=result.refine.loss,
         refine_coarse_l1=result.refine.coarse_l1,
         refine_l1=result.refine.refined_l1,
+        refine_masked=result.refine.masked,
+        sym_presence_pos_high=sym_stats.positive_high,
+        sym_presence_neg_high=sym_stats.negative_high,
+        sym_inpatch_dupes=sym_stats.duplicates,
+        sym_ignored=sym_stats.ignored,
+        sym_voters=sym_stats.voters,
+        line_presence_pos_high=line_stats.positive_high,
+        line_presence_neg_high=line_stats.negative_high,
+        line_ignored=line_stats.ignored,
+        line_voters=line_stats.voters,
         map50=map50,
         miou=miou,
         line_error=line_error,
@@ -634,10 +705,18 @@ def log_and_save_checkpoint(
         f"CE: {result.losses.loss_ce.item():.4f} | BBox: {result.losses.loss_bbox.item():.4f} | "
         f"GIoU: {result.losses.loss_giou.item():.4f} | FGL: {result.losses.loss_fgl.item():.4f} | "
         f"LineL1: {result.losses.loss_line_l1.item():.4f} | LineFGL: {result.losses.loss_line_fgl.item():.4f} | "
-        f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | LineErr: {line_error:.4f} | "
+        + (
+            f"Presence: {result.losses.loss_presence.item():.4f} (pos>0.5 {sym_stats.positive_high:.2f}/"
+            f"{line_stats.positive_high:.2f}, neg>0.5 {sym_stats.negative_high:.4f}/{line_stats.negative_high:.4f}, "
+            f"symbol dupes {sym_stats.duplicates:.3f}, voters {sym_stats.voters:.1f}/"
+            f"{line_stats.voters:.1f}) | "
+            if params.patch_set is not None
+            else ""
+        )
+        + f"mAP@0.5: {map50:.4f} | mIoU: {miou:.4f} | LineErr: {line_error:.4f} | "
         + (
             f"Refine: {result.refine.loss:.4f} (L1 coarse {result.refine.coarse_l1:.4f} -> "
-            f"{result.refine.refined_l1:.4f}) | "
+            f"{result.refine.refined_l1:.4f}, masked {result.refine.masked:.2f}) | "
             if refiner is not None
             else ""
         )
@@ -738,6 +817,7 @@ def train(params: TrainParams):
         num_line_classes=params.num_line_classes,
         num_shapes=params.num_shapes,
         base_anchor_size=params.base_anchor_size,
+        presence=params.patch_set is not None,
     ).to(params.train_device)
 
     loaded_checkpoint = None
@@ -752,7 +832,16 @@ def train(params: TrainParams):
             map_location=params.train_device,
             weights_only=True,
         )
-        raw_model.load_state_dict(loaded_checkpoint["model"], strict=True)
+        if load_detector_state(raw_model, loaded_checkpoint["model"]):
+            # Another slot count or presence layout (Exp 037 -> patch-set): the head was
+            # remapped, so the checkpoint's Adam moments no longer fit its parameters.
+            if is_main_process:
+                print(
+                    f"Remapped the head output layers to K={params.num_shapes}"
+                    f"{' with presence' if params.patch_set is not None else ''}; "
+                    "the optimizer state is not loaded."
+                )
+            loaded_checkpoint.pop("optimizer", None)
     elif params.backbone_checkpoint and params.backbone_checkpoint.exists():
         if is_main_process:
             print(f"Loading backbone weights from {params.backbone_checkpoint}")
@@ -837,33 +926,73 @@ def train(params: TrainParams):
         )
 
     # 2. Setup Matcher and Criterion
-    matcher = HungarianMatcher(
-        cost_class=params.cost_class,
-        cost_bbox=params.cost_bbox,
-        cost_giou=params.cost_giou,
-        calc_device=params.match_device,
-        radius_patches=params.radius_patches,
-        top_k=params.top_k,
-        matcher_type=params.matcher_type,
-    )
     weights = DetectionLossWeights(
         loss_ce=params.loss_ce,
         loss_bbox=params.loss_bbox,
         loss_giou=params.loss_giou,
         loss_fgl=params.loss_fgl,
         loss_line_l1=params.loss_line_l1,
+        loss_presence=params.loss_presence,
     )
-    criterion = DFINECriterion(
-        matcher,
-        num_symbol_classes=params.num_symbol_classes,
-        num_line_classes=params.num_line_classes,
-        weights=weights,
-        symbol_weights=params.dataset.symbol_weights,
-        line_weights=params.dataset.line_weights,
-        base_anchor_size=params.base_anchor_size,
-    ).to(params.train_device)
+    matcher: HungarianMatcher | PatchSetAssigner
+    criterion: DFINECriterion
+    if params.patch_set is not None:
+        matcher = PatchSetAssigner(params.patch_set.config, params.num_shapes)
+        criterion = PatchSetCriterion(
+            num_symbol_classes=params.num_symbol_classes,
+            num_line_classes=params.num_line_classes,
+            weights=weights,
+            symbol_weights=params.dataset.symbol_weights,
+            line_weights=params.dataset.line_weights,
+            base_anchor_size=params.base_anchor_size,
+            voter_weighting=params.patch_set.voter_weighting,
+            presence_weighting=params.patch_set.presence_weighting,
+            presence_alpha=params.patch_set.presence_alpha,
+            symbol_quality_targets=params.patch_set.symbol_quality_targets,
+            line_quality_targets=params.patch_set.line_quality_targets,
+            line_perp_sigma=params.patch_set.config.line_perp_sigma,
+            line_thickness=params.patch_set.config.line_thickness,
+        ).to(params.train_device)
+        if is_main_process:
+            print(f"Patch-set assignment: {params.patch_set}")
+    else:
+        matcher = HungarianMatcher(
+            cost_class=params.cost_class,
+            cost_bbox=params.cost_bbox,
+            cost_giou=params.cost_giou,
+            calc_device=params.match_device,
+            radius_patches=params.radius_patches,
+            top_k=params.top_k,
+            matcher_type=params.matcher_type,
+        )
+        criterion = DFINECriterion(
+            matcher,
+            num_symbol_classes=params.num_symbol_classes,
+            num_line_classes=params.num_line_classes,
+            weights=weights,
+            symbol_weights=params.dataset.symbol_weights,
+            line_weights=params.dataset.line_weights,
+            base_anchor_size=params.base_anchor_size,
+        ).to(params.train_device)
 
-    optimizer = optim.AdamW(raw_model.parameters(), lr=params.lr)
+    if params.head_lr_scale != 1.0:
+        # The head output layers in their own group (new presence rows and slots, which start
+        # from zero weights: Adam moves a parameter by at most ~lr per step).
+        head_out = [
+            p for m in (raw_model.symbol_head.mlp[-1], raw_model.line_head.mlp[-1]) for p in m.parameters()
+        ]
+        head_ids = {id(p) for p in head_out}
+        groups: list[dict[str, list[torch.nn.Parameter] | float]] = [
+            {"params": [p for p in raw_model.parameters() if id(p) not in head_ids]},
+            {
+                "params": head_out,
+                "lr": params.lr * params.head_lr_scale,
+                "lr_scale": params.head_lr_scale,
+            },
+        ]
+        optimizer = optim.AdamW(groups, lr=params.lr)
+    else:
+        optimizer = optim.AdamW(raw_model.parameters(), lr=params.lr)
 
     def add_refiner_group() -> None:
         if raw_refiner is not None and params.refiner is not None:
@@ -1159,6 +1288,79 @@ if __name__ == "__main__":
     parser.add_argument("--loss_giou", type=float, default=2.0)
     parser.add_argument("--loss_fgl", type=float, default=0.05)
     parser.add_argument("--loss_line_l1", type=float, default=5.0)
+    parser.add_argument("--loss_presence", type=float, default=2.0)
+
+    patch_set = parser.add_argument_group(
+        "patch-set assignment",
+        "PATCH_SET_ASSIGNMENT.md: every patch within --responsibility_margin of a GT predicts "
+        "it (one-to-one inside the patch), with a presence logit per slot. Loading a K=5 "
+        "checkpoint with --num_shapes 8 remaps the head.",
+    )
+    patch_set.add_argument(
+        "--assignment", choices=["global_one_to_one", "patch_set"], default="global_one_to_one"
+    )
+    patch_set.add_argument("--responsibility_margin", type=float, default=0.5)
+    patch_set.add_argument("--ignore_band", type=float, default=0.5)
+    patch_set.add_argument(
+        "--ignore_quality",
+        type=float,
+        default=0.5,
+        help="IoU / OKS from which an unmatched slot predicting a band or overflowed GT is ignored.",
+    )
+    patch_set.add_argument(
+        "--voter_weighting", choices=["inverse", "inverse_sqrt", "none"], default="inverse"
+    )
+    patch_set.add_argument(
+        "--cost_presence",
+        type=float,
+        default=0.0,
+        help="Weight of the presence focal cost in the in-patch matching (stable slot roles).",
+    )
+    patch_set.add_argument(
+        "--line_on_line",
+        type=float,
+        default=0.5,
+        help="Lines: unmatched slots whose prediction lies on a responsible line (perpendicular "
+        "quality >= this, extent ignored) are positives too; 0 = strict in-patch one-to-one.",
+    )
+    patch_set.add_argument(
+        "--line_perp_sigma",
+        type=float,
+        default=0.1,
+        help="Patch units: perpendicular scale of the on-line quality (0.1: within ~7 px).",
+    )
+    patch_set.add_argument(
+        "--presence_weighting",
+        choices=["inverse", "inverse_sqrt", "none"],
+        default="none",
+        help="Weight of a voter in the presence loss ('none': every voter is a full positive, "
+        "normalised by the number of voters).",
+    )
+    patch_set.add_argument(
+        "--presence_alpha",
+        type=float,
+        default=0.5,
+        help="Focal alpha of the presence loss (0.5: ~35%% of line slots are positives).",
+    )
+    patch_set.add_argument(
+        "--no_symbol_quality_targets",
+        action="store_true",
+        help="Symbol class target 1 on positives instead of their IoU (Exp 032 risk).",
+    )
+    patch_set.add_argument(
+        "--no_line_quality_targets",
+        action="store_true",
+        help="Line class target 1 on positives instead of their on-line quality.",
+    )
+    patch_set.add_argument(
+        "--head_lr_scale",
+        type=float,
+        default=1.0,
+        help="LR multiple for the head output layers (new presence rows and slots).",
+    )
+    patch_set.add_argument(
+        "--refiner_voters", type=int, default=4, help="Refiner queries per GT, spread along it."
+    )
 
     # Training params
     parser.add_argument(
@@ -1547,6 +1749,29 @@ if __name__ == "__main__":
         verovio_root=args.verovio_root,
         refiner=refiner_params,
         held_out_image_ids=held_out_image_ids,
+        patch_set=PatchSetParams(
+            config=PatchSetConfig(
+                margin=args.responsibility_margin,
+                ignore_band=args.ignore_band,
+                ignore_quality=args.ignore_quality,
+                cost_class=args.cost_class,
+                cost_bbox=args.cost_bbox,
+                cost_giou=args.cost_giou,
+                cost_presence=args.cost_presence,
+                line_on_line=args.line_on_line,
+                line_perp_sigma=args.line_perp_sigma,
+            ),
+            voter_weighting=args.voter_weighting,
+            presence_weighting=args.presence_weighting,
+            presence_alpha=args.presence_alpha,
+            symbol_quality_targets=not args.no_symbol_quality_targets,
+            line_quality_targets=not args.no_line_quality_targets,
+            refiner_voters=args.refiner_voters,
+        )
+        if args.assignment == "patch_set"
+        else None,
+        loss_presence=args.loss_presence,
+        head_lr_scale=args.head_lr_scale,
     )
 
     train(params)

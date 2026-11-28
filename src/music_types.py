@@ -200,6 +200,7 @@ class DetectionLossWeights:
     loss_giou: float = 2.0
     loss_fgl: float = 0.05
     loss_line_l1: float = 5.0
+    loss_presence: float = 2.0
 
 
 @dataclass
@@ -212,6 +213,13 @@ class DetectionLosses(DetachMixin):
     loss_fgl: torch.Tensor
     loss_line_l1: torch.Tensor
     loss_line_fgl: torch.Tensor
+    loss_presence: torch.Tensor
+
+    def total(self) -> torch.Tensor:
+        return (
+            self.loss_ce + self.loss_bbox + self.loss_giou + self.loss_fgl
+            + self.loss_line_l1 + self.loss_line_fgl + self.loss_presence
+        )
 
 
 @dataclass
@@ -327,6 +335,17 @@ class ClassLogits[L: AnyLogitsShape](TensorData[L]):
     pass
 
 
+type PresenceShape = tuple[NumQueries]
+type BatchedPresenceShape = tuple[Batch, NumQueries]
+type AnyPresenceShape = PresenceShape | BatchedPresenceShape
+
+
+@dataclass
+class PresenceLogits[L: AnyPresenceShape](TensorData[L]):
+    """One class-agnostic logit per slot: does this slot predict an object (patch-set
+    assignment, PATCH_SET_ASSIGNMENT.md section 3)."""
+
+
 type EdgeLogitsShape = tuple[NumQueries, BoxDim, NumBins]
 type BatchedEdgeLogitsShape = tuple[Batch, NumQueries, BoxDim, NumBins]
 type AnyEdgeLogitsShape = EdgeLogitsShape | BatchedEdgeLogitsShape
@@ -363,6 +382,7 @@ class SymbolOutput[B: Batch, Q: NumQueries, BD: BoxDim, CD: CoordDim](
     pred_edge_logits: EdgeLogits[tuple[B, Q, BD, NumBins]]
     absolute_centers: Coordinates[tuple[B, Q, CD], PatchUnit]
     learnable_shapes: Dimensions[tuple[B, Q, CD], PatchUnit]
+    pred_presence: PresenceLogits[tuple[B, Q]] | None = None
 
 
 @dataclass
@@ -374,6 +394,7 @@ class LineOutput[B: Batch, Q: NumQueries, KD: KeypointDim, CD: CoordDim](
     pred_endpoint_logits: EdgeLogits[tuple[B, Q, KD, NumBins]]
     absolute_centers: Coordinates[tuple[B, Q, CD], PatchUnit]
     raw_directions: Coordinates[tuple[B, Q, KD], PatchUnit]
+    pred_presence: PresenceLogits[tuple[B, Q]] | None = None
 
 
 @dataclass

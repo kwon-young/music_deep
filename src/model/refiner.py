@@ -461,6 +461,48 @@ class LinePredictions:
     group_size: torch.Tensor
 
 
+def distribution_std(logits: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """Standard deviation of the offset ``sum_n p_n w_n`` with p = softmax(logits) over bins
+    (D-FINE edge or refiner bins); multiply by the bins' scale to get coordinates."""
+    probs = logits.float().softmax(dim=-1)
+    mean = (probs * weights).sum(dim=-1, keepdim=True)
+    return ((probs * (weights - mean).square()).sum(dim=-1)).sqrt()
+
+
+@dataclass(frozen=True)
+class RefinedLines:
+    """Refined endpoints (N, 4) and the std of each refined coordinate (N, 4), patch units;
+    ``std`` is None when no refinement step ran."""
+
+    endpoints: torch.Tensor
+    std: torch.Tensor | None
+
+
+def refine_queries(refiner: EndpointRefiner, grid: TokenGrid, queries: LineQueries,
+                   num_steps: int | None = None, chunk: int = 8192) -> RefinedLines:
+    """Refine ``queries`` by chunks, without gradients. The std of the last step's bins is
+    the certainty that weights line fusion (Exp 042: AUC 0.91 for endpoints > 0.5 patch off)."""
+    parts: list[torch.Tensor] = []
+    stds: list[torch.Tensor] = []
+    with torch.no_grad():
+        for start in range(0, queries.endpoints.shape[0], chunk):
+            part = LineQueries(
+                image=queries.image[start : start + chunk],
+                source=queries.source[start : start + chunk],
+                label=queries.label[start : start + chunk],
+                endpoints=queries.endpoints[start : start + chunk],
+            )
+            outputs: list[RefinedEndpoints] = refiner(grid, part, num_steps=num_steps)
+            if outputs:
+                parts.append(outputs[-1].endpoints)
+                stds.append(distribution_std(outputs[-1].bin_logits, refiner.weighting.w) * refiner.scale)
+            else:
+                parts.append(part.endpoints)
+    if not parts:
+        return RefinedLines(endpoints=queries.endpoints, std=None)
+    return RefinedLines(endpoints=torch.cat(parts), std=torch.cat(stds) if stds else None)
+
+
 def postprocess_lines(
     refiner: EndpointRefiner,
     grid: TokenGrid,
@@ -490,18 +532,7 @@ def postprocess_lines(
         label=labels[picked],
         endpoints=keypoints[picked].float(),
     )
-    parts: list[torch.Tensor] = []
-    with torch.no_grad():
-        for start in range(0, picked.shape[0], chunk):
-            part = LineQueries(
-                image=queries.image[start : start + chunk],
-                source=queries.source[start : start + chunk],
-                label=queries.label[start : start + chunk],
-                endpoints=queries.endpoints[start : start + chunk],
-            )
-            outputs: list[RefinedEndpoints] = refiner(grid, part, num_steps=num_steps)
-            parts.append(outputs[-1].endpoints if outputs else part.endpoints)
-    endpoints = torch.cat(parts) if parts else queries.endpoints
+    endpoints = refine_queries(refiner, grid, queries, num_steps, chunk).endpoints
     scores = best[picked]
     index = torch.arange(picked.shape[0], device=endpoints.device)
     sizes = torch.ones_like(index)
@@ -582,12 +613,29 @@ class DenoisingNoise:
 @dataclass(frozen=True)
 class RefinerBatch:
     """Training queries of one detector step: the ``num_real`` matched coarse lines first, then
-    as many denoising queries; ``target`` and ``mask`` are (N, 4)."""
+    the denoising queries (one per matched line, or one per GT with voter subsampling);
+    ``target`` and ``mask`` are (N, 4)."""
 
     queries: LineQueries
     target: torch.Tensor
     mask: torch.Tensor
     num_real: int
+
+
+def spread_voters(truth: torch.Tensor, position: torch.Tensor, max_voters: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Up to ``max_voters`` matches per GT, evenly spaced in ``position`` (the voter's place
+    along its GT segment, in [0, 1]). Returns the kept match indices and, for each GT with a
+    voter, the index of its first kept match (the one nearest the start)."""
+    order = torch.argsort(truth.double() * 2 + position.double().clamp(0, 1), stable=True)
+    _, counts = torch.unique_consecutive(truth[order], return_counts=True)
+    starts = torch.cumsum(counts, dim=0) - counts
+    picks = counts.clamp(max=max_voters)
+    group = torch.repeat_interleave(torch.arange(counts.shape[0], device=truth.device), picks)
+    j = torch.arange(group.shape[0], device=truth.device) - torch.repeat_interleave(torch.cumsum(picks, 0) - picks, picks)
+    rank = ((2 * j + 1) * counts[group]) // (2 * picks[group])
+    kept = order[starts[group] + rank]
+    first = order[starts]
+    return kept, first
 
 
 def refiner_batch(
@@ -600,6 +648,8 @@ def refiner_batch(
     num_shapes: int,
     max_coarse_error: float,
     noise: DenoisingNoise,
+    centers: torch.Tensor | None = None,
+    max_voters: int | None = None,
 ) -> RefinerBatch:
     """Refiner queries from the line matching of a detector step (Exp 038, Phase B).
 
@@ -608,6 +658,10 @@ def refiner_batch(
     ``TokenGrid``. As in Phase A, each matched line gives a real query (coarse endpoints,
     predicted class; endpoints off by more than ``max_coarse_error`` patches are masked, the
     window cannot reach them) and a denoising query (ground truth + ``noise``, true class).
+
+    Patch-set assignment (many voters per GT): with ``max_voters`` and ``centers`` (B, Q, 2),
+    the patch centres of the queries, each GT keeps at most ``max_voters`` voters spread along
+    the segment (by the projection of their patch centre) and gets one denoising query.
     """
     device = keypoints.device
     images: list[torch.Tensor] = []
@@ -616,30 +670,54 @@ def refiner_batch(
     coarse: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
     labels: list[torch.Tensor] = []
+    dn_images: list[torch.Tensor] = []
+    dn_sources: list[torch.Tensor] = []
+    dn_targets: list[torch.Tensor] = []
+    dn_labels: list[torch.Tensor] = []
     for b, match in enumerate(matches):
         query = match.pred_indices.to(device)
         truth = match.target_indices.to(device)
+        gt = gt_keypoints[b].to(device).float()
+        gt_label = gt_labels[b].to(device)
+        if max_voters is not None and centers is not None and query.numel():
+            seg = gt[truth]
+            ab = seg[:, 2:] - seg[:, :2]
+            ap = centers[b, query].float() - seg[:, :2]
+            position = (ap * ab).sum(-1) / (ab * ab).sum(-1).clamp(min=1e-9)
+            kept, first = spread_voters(truth, position, max_voters)
+            dn_query, dn_truth = query[first], truth[first]
+            query, truth = query[kept], truth[kept]
+        else:
+            dn_query, dn_truth = query, truth
         images.append(torch.full_like(query, b))
         sources.append(b * num_kept + query // num_shapes)
         predicted.append(logits[b, query].argmax(dim=-1))
         coarse.append(keypoints[b, query].detach().float())
-        targets.append(gt_keypoints[b].to(device)[truth].float())
-        labels.append(gt_labels[b].to(device)[truth])
+        targets.append(gt[truth])
+        labels.append(gt_label[truth])
+        dn_images.append(torch.full_like(dn_query, b))
+        dn_sources.append(b * num_kept + dn_query // num_shapes)
+        dn_targets.append(gt[dn_truth])
+        dn_labels.append(gt_label[dn_truth])
     image = torch.cat(images)
     source = torch.cat(sources)
     start = torch.cat(coarse)
     target = torch.cat(targets)
     num = target.shape[0]
+    dn_target = torch.cat(dn_targets)
     within = (start - target).view(num, 2, 2).abs().amax(dim=-1) <= max_coarse_error
     queries = LineQueries.concat(
         [
             LineQueries(image, source, torch.cat(predicted), start),
-            LineQueries(image, source, torch.cat(labels), target + noise.sample(num, device)),
+            LineQueries(
+                torch.cat(dn_images), torch.cat(dn_sources), torch.cat(dn_labels),
+                dn_target + noise.sample(dn_target.shape[0], device),
+            ),
         ]
     )
     return RefinerBatch(
         queries=queries,
-        target=torch.cat([target, target]),
-        mask=torch.cat([within.float().repeat_interleave(2, dim=1), torch.ones_like(target)]),
+        target=torch.cat([target, dn_target]),
+        mask=torch.cat([within.float().repeat_interleave(2, dim=1), torch.ones_like(dn_target)]),
         num_real=num,
     )

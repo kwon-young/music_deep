@@ -1101,6 +1101,56 @@
   2. **The current model breaks the cannot-link assumption**, which the plan took for granted: one-to-one matching is per page, so the unmatched slots of a patch freely copy its matched slot at low score (14% of line slots ≥ 0.05 have an in-patch twin). Cannot-link then forces each copy into its own cluster, and noisy-OR over the other patches' low-score votes lifts it above 0.3: 6,272 confident line duplicates instead of 1,100.
   3. **Coincident noteheads are not protected on this model**: association merges them (pair recall 0.46 → 0.12), with or without cannot-link (0.105 vs 0.121). The two voices of a shared notehead are mostly predicted by *different* patches, one slot each, so cannot-link has nothing to separate. Only a target that assigns both GT to every responsible patch (two slots per patch) makes the pair a cannot-link case: this is the strongest argument for Phase 2's within-patch one-to-one assignment.
   4. **Cluster scoring matters as much as grouping**: noisy-OR turns clusters of weak votes into confident objects; best-member or support scoring removes the duplicates (201 / 0) but loses AP (the class score of today's model is not a presence probability: most voters are trained negatives). The support ratio also penalises staff segments at engraving breaks (other-end recall 0.929), where fewer patches vote than expected. Ranking can only be judged with a presence logit.
-  5. **Std-normalised distances need calibration first**: with spreads 3–4× too wide, a 3-std radius is ~10 true std and lets neighbours compete (10.8k / 17.5k dupes). Phase 2 should train the FGL spread to be calibrated (or calibrate post hoc with a per-head temperature on the bin logits) before the certainty-aware distance of section 5 is used. Symbol radius: a fixed 8 px works for noteheads but the spread scales with symbol size (median 0.36 × sqrt(area)), so the radius should be relative to size.
+  5. **Std-normalised distances: the radius, not calibration, is the knob** (corrected after the entry was first written): with spreads 3–4× too wide, a 3-std radius is ~10 true std and lets neighbours compete (10.8k / 17.5k dupes). A global calibration factor would not change the association, though: scaling every std by c is the same as dividing the radius by c (and leaves the normalised fusion weights unchanged), so the 1-std variant already is a ~3.5σ calibrated radius. Calibration only matters if the *relative* spreads (which coordinate, which slot is surer) are wrong, or where an absolute probability is read from the std; neither is needed for Phase 2. The std-normalised rows also ran with cannot-link on, so their duplicates mix both effects. Symbol radius: a fixed 8 px works for noteheads but the spread scales with symbol size (median 0.36 × sqrt(area)), so the radius should be relative to size.
   6. **The refiner is required**: coarse endpoints lose 0.14 line AP after association.
-  7. Next: Phase 2 (within-patch one-to-one targets, presence logit, calibrated spreads), then re-run this script on its output; the cannot-link, coincident-pair and support-ratio rows are the ones that must change.
+  7. Next: Phase 2 (within-patch one-to-one targets, presence logit), then re-run this script on its output; the cannot-link, coincident-pair and support-ratio rows are the ones that must change.
+
+## Experiment 042: Patch-Set Assignment Phase 2 — Implementation and Smoke Runs (4 pages)
+* **Experiment Name/ID**: `experiments/042_patch_set_smoke`, `042_patch_set_smoke_presence_full`, `042_patch_set_smoke_presence_cost`, `042_patch_set_smoke_fixed`, `042_patch_set_smoke_online` (diagnostics: `042_patch_set_smoke/check_ignored.py`, `presence_values.py`).
+* **Hypothesis/Goal**: implement Phase 2 of `PATCH_SET_ASSIGNMENT.md` (one-to-one inside a patch, one-to-many across patches, presence logit, association at inference) and check on a short overfit that it trains: presence close to 0 / 1, separating voters from other slots, no confident in-patch duplicates, a sane loss balance.
+* **Setup**:
+  * Code: `src/model/assignment.py` (regions, overflow priority, batched greedy in-patch assignment, ignore rule, diagnostics), `PatchSetCriterion` in `src/model/criterion.py` (presence focal loss, quality focal loss on the class sigmoids, which equals the old focal loss at hard targets, regression weighted 1 / N_voters), presence channel and K = 5 → 8 remap in `src/model/detector.py` (the remapped slots 0–4 reproduce Exp 037 exactly), refiner voter subsampling (`spread_voters`, 4 per GT along the segment + 1 denoising query per GT), `--assignment patch_set` in `src/train_detection.py`, `--association` in `src/inference_coco.py` (presence floor, cannot-link clusters, support × quality ranking). Tests: `tests/model/test_patch_set.py`, `tests/model/test_association.py`.
+  * Smoke recipe: Exp 037 checkpoint remapped to K = 8 + presence, Phase A refiner in the step, 4 training pages, 1536 px random crops, 54–74 px extraction, LR 1e-4 (1 warmup epoch, cosine over 40 epochs), `timeout 900` (≈ 20 epochs, ~1,400 steps), laptop GPU. Presence evaluated on a full training page (64 px patches): AUC of voters vs other slots, quantiles.
+* **Results**:
+
+  | run | change | line presence AUC | symbol presence AUC | line voters > 0.5 |
+  |---|---|---|---|---|
+  | 1 | as planned (presence voters weighted 1/N, α 0.25, bias logit 0.01) | – | – | 0% |
+  | 2 | presence voters full weight | 0.775 | 0.907 | ~2% |
+  | 3 | + presence in the in-patch matching cost | (flat, as run 2) | – | ~0% |
+  | 4 | presence bias at logit(base rate) (lines 0.35, symbols 0.08), head output layers 10× LR, presence α 0.5, line quality targets off | 0.786 (0.777 on run-5 targets) | **0.949** | 64% (13–18% of negatives too) |
+  | 5 | + lines: unmatched slots lying on a responsible line are positives too | **0.870** | 0.945 | 84% (28% of negatives) |
+
+  * Linear-probe ceiling on the frozen head features (second-opinion analysis): lines 0.87, symbols 0.95; an MLP probe reaches 0.905 for lines.
+  * Run 2 checkpoint: presence bias still −4.57 on every slot after 1,400 steps; the shift to the base rate was carried by the zero-initialised weight rows.
+  * Lines in run 4: matched slots' worse endpoint is off by 2.9 / 7.0 patches (median / p90; better end 0.45 / 1.4), and the confident negatives predict lines as well as the matched slots (only 10 of 4,694 are near-copies of an in-patch positive).
+  * Line ignore band: never fires (free slots' best OKS against band / overflow GT ≤ 0.48); symbols ~0.1% of slots ignored.
+  * Run 5 inference (`--association`, one page, CPU) produces symbols and lines (1,268 / 1,785, the caps); run 1's produced 0 lines.
+  * **Per-endpoint certainty** (`042_patch_set_smoke/spread_check.py`, run 5, pages 0–3, 179,684 voter endpoints of 6,910 GT endpoints):
+
+    | signal | AUC for error > 0.5 patch | pairwise concordance among the voters of a GT endpoint | weighted mean member error per GT endpoint (median, patch) |
+    |---|---|---|---|
+    | coarse spread | 0.755 | 0.62 | 0.695 (uniform 0.954) |
+    | coarse distance patch → endpoint | 0.734 | 0.62 | 0.615 |
+    | **refined spread** | **0.913** | **0.72** | **0.230** (× presence 0.221; uniform 0.690) |
+    | refined distance patch → endpoint | 0.692 | 0.59 | 0.332 |
+
+    Refined errors: median 0.13 patch, 44% of endpoints > 0.5 patch (far ends beyond the refiner's ±1.5 patch reach). The refiner's spread is the certainty signal: refine every candidate first, then fuse each endpoint with weights score / variance (`AssociationConfig.variance_weights`, now independent of the distance mode; `inference_coco.py` fuses refined lines this way by default). Before refinement no signal is good enough to skip refining "unreachable" endpoints.
+  * **Run 6** (line class target = on-line quality, extent ignored): line presence AUC 0.868 (run 5: 0.870), Spearman(line class score, on-line quality) 0.40 (run 5 with target 1: 0.36), no collapse; line positives' class score stays low in both (median 0.10–0.14, from Exp 037's one-to-one staff scores of 0.03–0.06).
+  * **End-to-end evaluation on run 6** (4-page patch-set slot cache, `scripts/diagnose_association.py` patch-set variants, `042_patch_set_smoke/eval_breakdown.py`): full-page AP is far below Exp 037 on the same pages (best line AP 0.389 vs 0.957, symbol AP 0.18 vs 0.889). Breakdown:
+
+    | | symbols | lines |
+    |---|---|---|
+    | GT with a matching candidate (presence ≥ 0.5) | 0.91 | 0.82 (refined OKS ≥ 0.5), 0.97 (on the GT line) |
+    | after association: one cluster / missed / split | **0.87** / 0.10 / 0.03 | 0.39 / 0.18 / **0.42** |
+    | clusters per GT | 3.0 | **17.8** |
+    | cluster score, matched vs unmatched (median) | 0.34 vs 0.006 | 0.015 vs 0.004 |
+
+    Symbols: association and ranking work (a GT's best cluster ranks where a perfect ranking puts it); AP is lost to the 9% of GT without a candidate and to box precision at high IoU (`noteheadBlack` 0.73 vs 0.99). Lines: association splits each GT into many clusters: the voters' refined far endpoints differ (44% of refined endpoints > 0.5 patch off), so neither the 4 px nor the 1-std endpoint distance groups them; line class scores are also ~0.
+* **Conclusion**:
+  1. **Presence is learnable, but the planned initialisation could not reach it**: a bias starting at logit(0.01) cannot move ~4 logits when Adam moves a parameter by at most ~lr per step, and focal α = 0.25 on a 35 % positive rate makes the 0.5 floor need a posterior of 0.75. Bias at logit(base rate), a 10× LR group for the head output layers and α = 0.5 fixed symbols (AUC at the linear ceiling). Presence-in-the-matching-cost (run 3) did not help and is off by default (`--cost_presence 0`).
+  2. **Strict in-patch one-to-one is wrong for lines with coarse geometry**: with endpoints off by patches along the line, which of several slots predicting the same line wins the match carries no learnable meaning, so line presence stayed at its base rate. Lines now keep their matched slot (coverage) and add every slot lying on a responsible line (perpendicular quality, extent ignored); line presence reaches the linear ceiling (0.870). Lines never crowd after refinement (Analysis 009) and associate without cannot-link (`--line_cannot_link` off by default); symbols keep strict in-patch one-to-one and cannot-link (coincident noteheads).
+  3. **Line quality targets (coarse OKS) are off by default**: the OKS of a far voter's coarse endpoints is ~0 (median 0.006 on a full page), which would train real positives' class score toward 0 — the plan's premise that a far voter keeps a low but non-zero class score does not hold with coarse geometry. A perpendicular or refined-endpoint quality is the follow-up.
+  4. **Line association needs another distance**: endpoint distances cannot group voters whose far endpoints are guesses (17.8 clusters per line GT). Open.
+  5. Open: the line presence threshold (28% of negatives above 0.5 at ~55% positive slots) after a full run; a duplicate metric for lines that does not rely on coarse OKS; symbol presence plateau vs the cosine decay.
+  6. Next: the full run (Exp 038 recipe and init, `--assignment patch_set --num_shapes 8 --head_lr_scale 10`), then the Analysis 011 script on its output with association (coincident-pair recall ≥ 0.46, cannot-link ≥ no-cannot-link for symbols).

@@ -17,10 +17,13 @@ overhead would dominate.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
 import torch
+
+from model.regions import expected_voters
 
 type FloatArray = npt.NDArray[np.float64]
 type IntArray = npt.NDArray[np.int64]
@@ -47,12 +50,15 @@ class Detections:
 class AssociationConfig:
     """``radius``: largest distance at which a candidate joins a cluster, in patch units when
     ``normalized`` is False, otherwise in combined standard deviations (per point, the larger of
-    the two points counts). ``min_std`` (patch units) floors every std."""
+    the two points counts). ``min_std`` (patch units) floors every std. ``variance_weights``:
+    fuse each coordinate with weights score / var (certainty-weighted, independent of how the
+    distance is measured), otherwise with the score alone."""
 
     radius: float
     normalized: bool
     min_std: float = 1 / 64
     cannot_link: bool = True
+    variance_weights: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,7 +134,7 @@ def associate(dets: Detections, cfg: AssociationConfig) -> Clusters:
     score = dets.score.detach().double().cpu().numpy()
     presence = dets.presence.detach().double().cpu().numpy()
     patch = dets.patch.detach().cpu().numpy().astype(np.int64)
-    weight = score[:, None] / var if cfg.normalized else np.repeat(score[:, None], 4, axis=1)
+    weight = score[:, None] / var if cfg.variance_weights else np.repeat(score[:, None], 4, axis=1)
     weight = np.maximum(weight, 1e-12)
 
     member = np.full(label.shape[0], -1, dtype=np.int64)
@@ -207,3 +213,74 @@ def support_ratio(clusters: Clusters, expected: torch.Tensor) -> torch.Tensor:
     """Summed presence over the number of patches expected to vote for the cluster, in [0, 1]
     when presence is a probability and every voter is an expected one."""
     return (clusters.evidence / expected.clamp(min=1).to(clusters.evidence)).clamp(max=1.0)
+
+
+type ClusterScore = Literal["support_quality", "quality", "noisy_or"]
+
+
+@dataclass(frozen=True)
+class Candidates:
+    """Occupied slots of one modality of one image: query indices, argmax class, its class
+    probability and the presence probability (the class probability when the detector has no
+    presence logit)."""
+
+    index: torch.Tensor
+    label: torch.Tensor
+    score: torch.Tensor
+    presence: torch.Tensor
+
+
+@dataclass(frozen=True)
+class ScoredDetections:
+    """Final detections, geometry (N, 4) in patch units, ranked by ``score``."""
+
+    geometry: torch.Tensor
+    score: torch.Tensor
+    label: torch.Tensor
+
+
+def select_candidates(logits: torch.Tensor, presence_logits: torch.Tensor | None, floor: float) -> Candidates:
+    """Slots whose presence (or class score, without presence) is at least ``floor``."""
+    score, label = logits.float().sigmoid().max(dim=-1)
+    presence = score if presence_logits is None else presence_logits.float().sigmoid()
+    index = (presence >= floor).nonzero().squeeze(1)
+    return Candidates(index=index, label=label[index], score=score[index], presence=presence[index])
+
+
+def score_clusters(clusters: Clusters, centers: torch.Tensor, is_line: bool, margin: float,
+                   mode: ClusterScore) -> torch.Tensor:
+    """Ranking score of each cluster: support ratio x best member class score (section 5),
+    the best member class score alone, or the noisy-OR of the members."""
+    if mode == "quality":
+        return clusters.quality
+    if mode == "noisy_or":
+        return clusters.noisy_or
+    expected = expected_voters(centers, clusters.geometry, is_line, margin, chunk=256)
+    return support_ratio(clusters, expected) * clusters.quality
+
+
+def associate_candidates(
+    candidates: Candidates,
+    geometry: torch.Tensor,
+    std: torch.Tensor,
+    num_shapes: int,
+    centers: torch.Tensor,
+    is_line: bool,
+    cfg: AssociationConfig,
+    margin: float,
+    mode: ClusterScore,
+    max_out: int,
+) -> ScoredDetections:
+    """Associate the candidates (``geometry`` / ``std`` (N, 4) aligned with them, patch units;
+    query q comes from kept patch q // ``num_shapes``, centred at ``centers[q // K]``) and keep
+    the top ``max_out`` clusters."""
+    clusters = associate(
+        Detections(
+            geometry=geometry, std=std, label=candidates.label, score=candidates.score,
+            presence=candidates.presence, patch=candidates.index // num_shapes,
+        ),
+        cfg,
+    )
+    score = score_clusters(clusters, centers, is_line, margin, mode)
+    top = score.topk(min(max_out, score.shape[0])).indices
+    return ScoredDetections(geometry=clusters.geometry[top], score=score[top], label=clusters.label[top])

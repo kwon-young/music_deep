@@ -24,8 +24,8 @@ import torch
 import transform.det as det_tf
 from dataset.coco import CocoDataset, load_coco_sample, parse_coco
 from dataset.split import piece_name
-from model.detector import OMRDetector, create_detector
-from model.refiner import EndpointRefiner, LineQueries, TokenGrid, load_refiner
+from model.detector import OMRDetector, create_detector, head_layout
+from model.refiner import EndpointRefiner, LineQueries, TokenGrid, distribution_std, load_refiner
 from music_types import Patches
 from threaded_generator import ThreadedGenerator
 
@@ -45,6 +45,7 @@ class Config:
     base_anchor_size: float
     var_threshold: float
     floor: float
+    presence_floor: float
     use_sdpa: bool
     max_pages: int | None
 
@@ -66,16 +67,17 @@ class SlotSet:
     logits: torch.Tensor
     geometry: torch.Tensor
     std: torch.Tensor
+    presence: torch.Tensor | None
 
 
-def distribution_std(logits: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    """Standard deviation of the offset ``sum_n p_n w_n`` with p = softmax(logits) over bins."""
-    probs = logits.float().softmax(dim=-1)
-    mean = (probs * weights).sum(dim=-1, keepdim=True)
-    return ((probs * (weights - mean).square()).sum(dim=-1)).sqrt()
-
-
-def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> OMRDetector:
+def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> tuple[OMRDetector, Config]:
+    """The detector, with its slot count and presence read from the checkpoint (``cfg`` is
+    returned with that ``num_shapes``)."""
+    checkpoint: dict[str, object] = torch.load(cfg.checkpoint, map_location=device, weights_only=True)
+    state = checkpoint["model"]
+    assert isinstance(state, dict)
+    num_shapes, presence = head_layout(state, dataset.num_symbol_classes)
+    cfg = replace(cfg, num_shapes=num_shapes)
     model = create_detector(
         backbone_size=cfg.backbone_size,
         patch_size=cfg.patch_size,
@@ -85,13 +87,11 @@ def load_model(cfg: Config, dataset: CocoDataset, device: torch.device) -> OMRDe
         num_line_classes=dataset.num_line_classes,
         num_shapes=cfg.num_shapes,
         base_anchor_size=cfg.base_anchor_size,
+        presence=presence,
     ).to(device)
-    checkpoint: dict[str, object] = torch.load(cfg.checkpoint, map_location=device, weights_only=True)
-    state = checkpoint["model"]
-    assert isinstance(state, dict)
     model.load_state_dict(state)
     model.eval()
-    return model
+    return model, cfg
 
 
 def page_inputs(dataset: CocoDataset, cfg: Config, indices: Sequence[int]) -> Iterator[PageInput]:
@@ -114,14 +114,20 @@ def page_inputs(dataset: CocoDataset, cfg: Config, indices: Sequence[int]) -> It
         )
 
 
-def occupied(logits: torch.Tensor, floor: float) -> torch.Tensor:
-    return (logits.float().sigmoid().amax(dim=-1) >= floor).nonzero().squeeze(1)
+def occupied(logits: torch.Tensor, presence: torch.Tensor | None, floor: float, presence_floor: float) -> torch.Tensor:
+    """Slots whose best class probability reaches ``floor`` or whose presence reaches
+    ``presence_floor``."""
+    keep = logits.float().sigmoid().amax(dim=-1) >= floor
+    if presence is not None:
+        keep = keep | (presence.float().sigmoid() >= presence_floor)
+    return keep.nonzero().squeeze(1)
 
 
 def symbol_slots(model: OMRDetector, logits: torch.Tensor, boxes: torch.Tensor,
-                 edge_logits: torch.Tensor, shapes: torch.Tensor, floor: float) -> SlotSet:
+                 edge_logits: torch.Tensor, shapes: torch.Tensor, presence: torch.Tensor | None,
+                 floor: float, presence_floor: float) -> SlotSet:
     """Box edges are ``x1 = cx - (w/2 + r_L w)`` etc., so the std of x1 is std(r_L) * w."""
-    keep = occupied(logits, floor)
+    keep = occupied(logits, presence, floor, presence_floor)
     spread = distribution_std(edge_logits[keep], model.symbol_head.weighting_fn.w)
     w, h = shapes[keep, 0:1], shapes[keep, 1:2]
     return SlotSet(
@@ -129,14 +135,15 @@ def symbol_slots(model: OMRDetector, logits: torch.Tensor, boxes: torch.Tensor,
         logits=logits[keep].half().cpu(),
         geometry=boxes[keep].float().cpu(),
         std=(spread * torch.cat([w, h, w, h], dim=-1)).half().cpu(),
+        presence=None if presence is None else presence[keep].half().cpu(),
     )
 
 
 def line_slots(model: OMRDetector, logits: torch.Tensor, keypoints: torch.Tensor,
                edge_logits: torch.Tensor, base_dirs: torch.Tensor, base_anchor_size: float,
-               floor: float) -> SlotSet:
+               presence: torch.Tensor | None, floor: float, presence_floor: float) -> SlotSet:
     """Endpoint coordinates are ``base + r * (|base| + anchor)``, so their std is std(r) * scale."""
-    keep = occupied(logits, floor)
+    keep = occupied(logits, presence, floor, presence_floor)
     spread = distribution_std(edge_logits[keep], model.line_head.weighting_fn.w)
     scale = base_dirs[keep].abs() + base_anchor_size
     return SlotSet(
@@ -144,6 +151,7 @@ def line_slots(model: OMRDetector, logits: torch.Tensor, keypoints: torch.Tensor
         logits=logits[keep].half().cpu(),
         geometry=keypoints[keep].float().cpu(),
         std=(spread * scale).half().cpu(),
+        presence=None if presence is None else presence[keep].half().cpu(),
     )
 
 
@@ -172,7 +180,7 @@ def refine(refiner: EndpointRefiner, grid: TokenGrid, lines: SlotSet, num_shapes
 def run(cfg: Config) -> None:
     device = torch.device("cuda")
     dataset = parse_coco(cfg.anno_path, cache_dir=cfg.cache_dir)
-    model = load_model(cfg, dataset, device)
+    model, cfg = load_model(cfg, dataset, device)
     refiner = load_refiner(cfg.refiner, model.backbone.patch_embed[1].out_features,
                            dataset.num_line_classes, device)
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -196,13 +204,15 @@ def run(cfg: Config) -> None:
             sym = out.symbols
             symbols = symbol_slots(
                 model, sym.pred_logits.data[0], sym.pred_boxes.data[0],
-                sym.pred_edge_logits.data[0], sym.learnable_shapes.data[0], cfg.floor,
+                sym.pred_edge_logits.data[0], sym.learnable_shapes.data[0],
+                None if sym.pred_presence is None else sym.pred_presence.data[0], cfg.floor, cfg.presence_floor,
             )
             ln = out.lines
             lines = line_slots(
                 model, ln.pred_logits.data[0], ln.pred_keypoints.data[0],
                 ln.pred_endpoint_logits.data[0], ln.raw_directions.data[0],
-                cfg.base_anchor_size, cfg.floor,
+                cfg.base_anchor_size, None if ln.pred_presence is None else ln.pred_presence.data[0],
+                cfg.floor, cfg.presence_floor,
             )
             _, height, width = patches.image_shape
             grid_h, grid_w = height // patches.patch_size[0], width // patches.patch_size[1]
@@ -245,6 +255,9 @@ def parse_args() -> Config:
     parser.add_argument("--base_anchor_size", type=float, default=1.0)
     parser.add_argument("--var_threshold", type=float, default=0.001)
     parser.add_argument("--floor", type=float, default=0.01)
+    parser.add_argument(
+        "--presence_floor", type=float, default=0.1, help="Also keep slots with presence >= this."
+    )
     parser.add_argument("--use_sdpa", action="store_true")
     parser.add_argument("--max_pages", type=int, default=None)
     args = parser.parse_args()
@@ -262,6 +275,7 @@ def parse_args() -> Config:
         base_anchor_size=float(args.base_anchor_size),
         var_threshold=float(args.var_threshold),
         floor=float(args.floor),
+        presence_floor=float(args.presence_floor),
         use_sdpa=bool(args.use_sdpa),
         max_pages=None if args.max_pages is None else int(args.max_pages),
     )
